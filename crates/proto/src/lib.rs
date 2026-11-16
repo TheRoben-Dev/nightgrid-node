@@ -39,6 +39,12 @@ pub mod method {
     pub const METRICS_LATEST: &str = "metrics.latest";
     pub const METRICS_HISTORY: &str = "metrics.history";
     pub const METRICS_SYNC: &str = "metrics.sync";
+    pub const EVENTS_SYNC: &str = "events.sync";
+    pub const UPTIME_SYNC: &str = "uptime.sync";
+    pub const DISK_SYNC: &str = "disk.sync";
+    pub const ALERTS_ACTIVE: &str = "alerts.active";
+    pub const ALERTS_RULES_GET: &str = "alerts.rules.get";
+    pub const ALERTS_RULES_SET: &str = "alerts.rules.set";
 }
 
 /// Capability names. A capability's version bumps when its methods gain
@@ -50,6 +56,14 @@ pub mod cap {
     pub const METRICS: &str = "metrics";
     /// `metrics.sync`: gap-filling from local history.
     pub const METRICS_SYNC: &str = "metrics.sync";
+    /// `events.sync`: alerts fired/resolved and outages, by sequence number.
+    pub const EVENTS: &str = "events";
+    /// `uptime.sync`: up/down/asleep seconds per hour for the host.
+    pub const UPTIME: &str = "uptime";
+    /// `disk.sync`: hourly usage per mount (for fill-up forecasts).
+    pub const DISK: &str = "disk";
+    /// `alerts.active`, `alerts.rules.get`, `alerts.rules.set`.
+    pub const ALERTS: &str = "alerts";
 }
 
 /// Capability name → version.
@@ -366,6 +380,216 @@ pub struct Point {
     pub n: u32,
 }
 
+// ---- events, uptime, disk usage (N1) ----
+
+/// Most events, hours or rows one sync answer carries.
+pub const MAX_ROWS: usize = 2000;
+
+/// Same kinds and strings as the app's `alerts::AlertKind`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AlertKind {
+    HostOffline,
+    DiskFull,
+    ContainerDown,
+    ServiceDown,
+    CertExpiring,
+    SmartWarning,
+    BackupFailed,
+    BackupStale,
+    LogBurst,
+    LogNewError,
+    ExpirySoon,
+    DiskFilling,
+    PoolDegraded,
+    UpsOnBattery,
+    LogMatch,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Severity {
+    Warn,
+    Critical,
+}
+
+/// An alert as the node tracks it. Same fields as the app's `alerts::Alert`
+/// minus `hostId` (a node is one host) and `causedBy` (folding is the app's).
+///
+/// `key` is the app's key with the host segment left out: the node's
+/// `disk:/srv` is the app's `disk:<hostId>:/srv`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Alert {
+    /// Node-local id (stable across restarts).
+    pub id: u32,
+    pub key: String,
+    pub kind: AlertKind,
+    pub severity: Severity,
+    pub title: String,
+    pub detail: String,
+    /// When the condition was first seen.
+    pub since: i64,
+    /// When it resolved; `None` while active.
+    pub resolved: Option<i64>,
+}
+
+/// Same strings as the app's `timeline::EventKind`, plus `outage`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum EventKind {
+    /// An alert fired (or got worse).
+    Alert,
+    /// An alert cleared.
+    Recovered,
+    /// The host booted.
+    Boot,
+    /// A span the host was down or asleep, worked out at the next start.
+    Outage,
+    /// A container died, restarted, ran out of memory or turned unhealthy.
+    Container,
+    /// Kinds added by newer nodes.
+    #[serde(other)]
+    Other,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Level {
+    Info,
+    Ok,
+    Warn,
+    Critical,
+}
+
+/// How the host spent a span the node couldn't watch live.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum OutageState {
+    /// Crashed or lost power (no clean shutdown before the reboot).
+    Down,
+    /// Suspended, or shut down cleanly and started again.
+    Asleep,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Event {
+    /// Increases by one per event on this node (cursor for `events.sync`).
+    pub seq: i64,
+    pub at: i64,
+    pub kind: EventKind,
+    pub level: Level,
+    pub title: String,
+    pub detail: String,
+    /// For `alert` / `recovered`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alert: Option<Alert>,
+    /// For `outage`: the span and how it was spent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outage: Option<OutageSpan>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OutageSpan {
+    pub start: i64,
+    pub end: i64,
+    pub state: OutageState,
+}
+
+/// `events.sync`, `uptime.sync`, `disk.sync` params.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CursorParams {
+    pub after: i64,
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EventsResult {
+    pub events: Vec<Event>,
+    /// The last event's `seq`, or `after` if none.
+    pub next: i64,
+    pub more: bool,
+    /// Oldest `seq` still kept. If it is above the client's cursor + 1,
+    /// events in between were pruned.
+    pub oldest: Option<i64>,
+}
+
+/// Seconds of one hour, for the host (like a row of the app's `uptime_hours`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UptimeHour {
+    pub hour: i64,
+    pub up: u32,
+    pub down: u32,
+    pub asleep: u32,
+}
+
+/// `uptime.sync`: closed hours with `hour > after`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UptimeResult {
+    pub hours: Vec<UptimeHour>,
+    pub next: i64,
+    pub more: bool,
+}
+
+/// One mount's usage in one hour (like a row of the app's `disk_usage`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiskUsageRow {
+    pub mount: String,
+    pub ts: i64,
+    pub used: u64,
+    pub size: u64,
+}
+
+/// `disk.sync`: closed hours with `ts > after`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiskResult {
+    pub rows: Vec<DiskUsageRow>,
+    pub next: i64,
+    pub more: bool,
+}
+
+/// The alert rules the node evaluates, pushed by the app (`alerts.rules.set`).
+/// Field names and defaults match the app's `AlertSettings`; settings the node
+/// has no source for yet are ignored.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct AlertRules {
+    pub enabled: bool,
+    pub disk_full: bool,
+    /// Percent used that counts as full, 50-99.
+    pub disk_percent: u8,
+    pub disk_forecast: bool,
+    /// 1-90.
+    pub forecast_days: u16,
+}
+
+impl Default for AlertRules {
+    fn default() -> Self {
+        Self { enabled: true, disk_full: true, disk_percent: 90, disk_forecast: true, forecast_days: 14 }
+    }
+}
+
+impl AlertRules {
+    pub fn validate(&self) -> Result<(), String> {
+        if !(50..=99).contains(&self.disk_percent) {
+            return Err("diskPercent must be 50-99".into());
+        }
+        if !(1..=90).contains(&self.forecast_days) {
+            return Err("forecastDays must be 1-90".into());
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -397,6 +621,20 @@ mod tests {
         for k in ["netRx", "diskWrite", "gpuPower", "load1"] {
             assert!(v.get(k).is_some(), "{k}");
         }
+    }
+
+    #[test]
+    fn alert_and_event_json_match_the_app() {
+        assert_eq!(serde_json::to_string(&AlertKind::DiskFilling).unwrap(), r#""diskFilling""#);
+        assert_eq!(serde_json::to_string(&Severity::Critical).unwrap(), r#""critical""#);
+        let e: Event =
+            serde_json::from_str(r#"{"seq":1,"at":5,"kind":"somethingNew","level":"info","title":"t","detail":""}"#)
+                .unwrap();
+        assert_eq!(e.kind, EventKind::Other);
+        // The app's settings JSON (more fields than the node knows) is accepted.
+        let r: AlertRules = serde_json::from_str(r#"{"diskPercent":80,"hostOffline":true,"webhook":"none"}"#).unwrap();
+        assert_eq!((r.disk_percent, r.forecast_days, r.enabled), (80, 14, true));
+        assert!(AlertRules { disk_percent: 20, ..Default::default() }.validate().is_err());
     }
 
     #[test]

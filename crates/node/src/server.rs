@@ -12,8 +12,9 @@ use std::path::Path;
 use std::sync::Arc;
 
 use nightgrid_node_proto::{
-    cap, method, negotiate, resolution, Caps, ErrorCode, Hello, HistoryParams, HistoryResult, NodeInfo, Request,
-    Response, Retention, SyncParams, SyncResult, Welcome, MAX_LINE, MAX_POINTS, PROTO_MIN, PROTO_VERSION,
+    cap, method, negotiate, resolution, AlertRules, Caps, CursorParams, DiskResult, ErrorCode, EventsResult, Hello,
+    HistoryParams, HistoryResult, NodeInfo, Request, Response, Retention, SyncParams, SyncResult, UptimeResult,
+    Welcome, MAX_LINE, MAX_POINTS, MAX_ROWS, PROTO_MIN, PROTO_VERSION,
 };
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -106,7 +107,18 @@ pub struct Session {
 /// What this node offers. Every capability here is on in N0; later ones
 /// will depend on the root-owned config.
 pub fn caps() -> Caps {
-    [(cap::NODE, 1), (cap::METRICS, 1), (cap::METRICS_SYNC, 1)].into_iter().map(|(k, v)| (k.to_owned(), v)).collect()
+    [
+        (cap::NODE, 1),
+        (cap::METRICS, 1),
+        (cap::METRICS_SYNC, 1),
+        (cap::EVENTS, 1),
+        (cap::UPTIME, 1),
+        (cap::DISK, 1),
+        (cap::ALERTS, 1),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_owned(), v))
+    .collect()
 }
 
 fn params<T: DeserializeOwned>(v: &Value) -> Result<T, Response> {
@@ -203,6 +215,63 @@ fn dispatch(shared: &Shared, session: &mut Session, req: &Request) -> Result<Res
             let oldest = st.oldest(p.res).map_err(internal)?;
             Ok(Response::ok(0, SyncResult { res: p.res, points, next, more, oldest }))
         }
+        method::EVENTS_SYNC => {
+            let p: CursorParams = params(&req.params)?;
+            let limit = p.limit.unwrap_or(MAX_ROWS).clamp(1, MAX_ROWS);
+            let st = shared.store.lock().unwrap_or_else(|e| e.into_inner());
+            let mut events = st.events_after(p.after, limit + 1).map_err(internal)?;
+            let more = events.len() > limit;
+            events.truncate(limit);
+            let next = events.last().map_or(p.after, |e| e.seq);
+            let oldest = st.events_oldest().map_err(internal)?;
+            Ok(Response::ok(0, EventsResult { events, next, more, oldest }))
+        }
+        method::UPTIME_SYNC => {
+            let p: CursorParams = params(&req.params)?;
+            let limit = p.limit.unwrap_or(MAX_ROWS).clamp(1, MAX_ROWS);
+            let st = shared.store.lock().unwrap_or_else(|e| e.into_inner());
+            let mut hours = st.uptime_after(p.after, now_secs(), limit + 1).map_err(internal)?;
+            let more = hours.len() > limit;
+            hours.truncate(limit);
+            let next = hours.last().map_or(p.after, |h| h.hour);
+            Ok(Response::ok(0, UptimeResult { hours, next, more }))
+        }
+        method::DISK_SYNC => {
+            let p: CursorParams = params(&req.params)?;
+            let limit = p.limit.unwrap_or(MAX_ROWS).clamp(1, MAX_ROWS);
+            let st = shared.store.lock().unwrap_or_else(|e| e.into_inner());
+            // Whole hours only, so a page never splits an hour's mounts.
+            let mut rows = st.disk_usage_after(p.after, now_secs(), limit + 1).map_err(internal)?;
+            let more = rows.len() > limit;
+            if more {
+                let cut = rows[limit].ts;
+                rows.retain(|r| r.ts < cut);
+                if rows.is_empty() {
+                    rows = st.disk_usage_after(cut - 1, now_secs(), usize::MAX >> 1).map_err(internal)?;
+                    rows.retain(|r| r.ts == cut);
+                }
+            }
+            let next = rows.last().map_or(p.after, |r| r.ts);
+            Ok(Response::ok(0, DiskResult { rows, next, more }))
+        }
+        method::ALERTS_ACTIVE => {
+            let active = shared.active.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            Ok(Response::ok(0, active))
+        }
+        method::ALERTS_RULES_GET => {
+            let rules = shared.rules.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            Ok(Response::ok(0, rules))
+        }
+        method::ALERTS_RULES_SET => {
+            let rules: AlertRules = params(&req.params)?;
+            rules.validate().map_err(|e| Response::err(0, ErrorCode::BadRequest, e))?;
+            let st = shared.store.lock().unwrap_or_else(|e| e.into_inner());
+            st.set_meta(crate::engine::META_RULES, &serde_json::to_string(&rules).unwrap_or_default())
+                .map_err(internal)?;
+            crate::info!("alert rules updated by uid {}", session.uid);
+            *shared.rules.lock().unwrap_or_else(|e| e.into_inner()) = rules.clone();
+            Ok(Response::ok(0, rules))
+        }
         _ => Err(Response::err(0, ErrorCode::UnknownMethod, format!("unknown method {}", req.method))),
     }
 }
@@ -287,6 +356,62 @@ mod tests {
         assert_eq!((h.res, h.points.len(), h.truncated), (MINUTE, 61, false));
         let r = call(&s, &mut ses, 5, "metrics.sync", json!({"res": 61, "after": 0}));
         assert_eq!(code(&r), Some(ErrorCode::BadRequest));
+    }
+
+    #[test]
+    fn events_uptime_disk_and_rules() {
+        use crate::events::NewEvent;
+        use nightgrid_node_proto::{EventKind, Level};
+        let s = shared();
+        {
+            let st = s.store.lock().unwrap();
+            for i in 0..5 {
+                st.event_add(&NewEvent::new(100 + i, EventKind::Boot, Level::Info, "Booted", "")).unwrap();
+            }
+            let m = |mount: &str| nightgrid_node_proto::MountUsage {
+                device: "d".into(),
+                mount: mount.into(),
+                fstype: "ext4".into(),
+                total: 10,
+                used: 5,
+                avail: 5,
+            };
+            for h in 0..3 {
+                st.disk_usage_record(&[m("/"), m("/srv")], 3600 * (10 + h)).unwrap();
+            }
+        }
+        let mut ses = Session::default();
+        call(&s, &mut ses, 1, "hello", json!({"protoMin": 1, "protoMax": 1}));
+        let r: EventsResult = serde_json::from_value(
+            call(&s, &mut ses, 2, "events.sync", json!({"after": 0, "limit": 3})).result.unwrap(),
+        )
+        .unwrap();
+        assert_eq!((r.events.len(), r.next, r.more, r.oldest), (3, 3, true, Some(1)));
+        let r: EventsResult =
+            serde_json::from_value(call(&s, &mut ses, 3, "events.sync", json!({"after": 3})).result.unwrap()).unwrap();
+        assert_eq!((r.events.len(), r.next, r.more), (2, 5, false));
+
+        // Disk pages never split an hour: limit 3 gives one whole hour (2 rows).
+        let r: DiskResult =
+            serde_json::from_value(call(&s, &mut ses, 4, "disk.sync", json!({"after": 0, "limit": 3})).result.unwrap())
+                .unwrap();
+        assert_eq!((r.rows.len(), r.next, r.more), (2, 36000, true));
+        let r: DiskResult =
+            serde_json::from_value(call(&s, &mut ses, 5, "disk.sync", json!({"after": 0, "limit": 1})).result.unwrap())
+                .unwrap();
+        assert_eq!((r.rows.len(), r.next), (2, 36000));
+
+        let r = call(&s, &mut ses, 6, "uptime.sync", json!({"after": 0}));
+        assert!(r.error.is_none());
+
+        let r = call(&s, &mut ses, 7, "alerts.rules.set", json!({"diskPercent": 20}));
+        assert_eq!(code(&r), Some(ErrorCode::BadRequest));
+        let r = call(&s, &mut ses, 8, "alerts.rules.set", json!({"diskPercent": 80, "webhook": "ntfy"}));
+        assert!(r.error.is_none());
+        let r = call(&s, &mut ses, 9, "alerts.rules.get", Value::Null);
+        assert_eq!(r.result.unwrap()["diskPercent"], 80);
+        assert_eq!(crate::engine::load_rules(&s.store.lock().unwrap()).disk_percent, 80);
+        assert_eq!(call(&s, &mut ses, 10, "alerts.active", Value::Null).result, Some(json!([])));
     }
 
     #[test]

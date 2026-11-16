@@ -77,6 +77,9 @@ Goal: graphs, uptime bars, timeline and SLA reports have no gaps for time the no
 
 ## 6. Alerts while offline (N1)
 
+Shipped in 0.2.0: disk full and disk filling, plus outages and uptime (see N-015 to N-018 in [DECISIONS](DECISIONS.md)). The rest of the list below arrives with the milestone that collects its data.
+
+
 The node evaluates the same conditions as the app's alerts loop (host resources, disks and forecasts, containers, services and certificates, SMART and pools, backups, UPS, log anomalies) with the same pure `Tracker` semantics: per-kind grace periods (host offline 120 s, service down 90 s), clear holds (disk 5 min, forecasts 3 h) and scoped reports. Rules come from the app (`alerts.rules.set`, stored in the node's state directory), so the app stays the single place to edit them. Fired and resolved alerts go into the `events` stream; the app pulls them on reconnect and shows them as "while you were away", feeding its own alert history, timeline and notifications. There are no external channels (ntfy, email, webhooks) for now, and the node can't make outbound connections anyway.
 
 ## 7. Security model

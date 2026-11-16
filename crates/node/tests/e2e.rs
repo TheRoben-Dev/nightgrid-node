@@ -85,6 +85,25 @@ fn serves_info_latest_and_history() {
         Err(CallError::Rpc(e)) => assert_eq!(e.code, ErrorCode::BadRequest),
         other => panic!("{other:?}"),
     }
+
+    // N1: events, uptime, disk usage and alert rules.
+    for cap in ["events", "uptime", "disk", "alerts"] {
+        assert!(c.welcome.caps.contains_key(cap), "{cap}");
+    }
+    let ev = c.call("events.sync", json!({"after": 0})).unwrap();
+    assert!(ev["events"].is_array() && ev["more"] == false);
+    assert!(c.call("uptime.sync", json!({"after": 0})).unwrap()["hours"].is_array());
+    assert!(c.call("disk.sync", json!({"after": 0})).unwrap()["rows"].is_array());
+    assert!(c.call("alerts.active", Value::Null).unwrap().is_array());
+    let mut rules = c.call("alerts.rules.get", Value::Null).unwrap();
+    assert_eq!(rules["diskPercent"], 90);
+    rules["diskPercent"] = json!(85);
+    c.call("alerts.rules.set", rules).unwrap();
+    assert_eq!(c.call("alerts.rules.get", Value::Null).unwrap()["diskPercent"], 85);
+    match c.call("alerts.rules.set", json!({"enabled": true, "diskPercent": 5})) {
+        Err(CallError::Rpc(e)) => assert_eq!(e.code, ErrorCode::BadRequest),
+        other => panic!("{other:?}"),
+    }
 }
 
 #[test]

@@ -5,7 +5,7 @@ use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use nightgrid_node_proto::{NodeIdentity, Sample};
+use nightgrid_node_proto::{Alert, AlertRules, NodeIdentity, Sample};
 
 use crate::config::Config;
 use crate::metrics::{collect::Reader, point_from_sample, Collector, MinuteAverager};
@@ -29,6 +29,10 @@ pub struct Shared {
     pub started: i64,
     pub store: Mutex<Store>,
     pub latest: Mutex<Option<Sample>>,
+    /// Alert rules from the app (`alerts.rules.set`), or the defaults.
+    pub rules: Mutex<AlertRules>,
+    /// Active alerts, as the engine last saw them.
+    pub active: Mutex<Vec<Alert>>,
 }
 
 impl Shared {
@@ -39,7 +43,16 @@ impl Shared {
             hostname: std::fs::read_to_string("/proc/sys/kernel/hostname").unwrap_or_default().trim().to_owned(),
             arch: std::env::consts::ARCH.to_owned(),
         };
-        Arc::new(Self { config, identity, started: now_secs(), store: Mutex::new(store), latest: Mutex::new(None) })
+        let rules = crate::engine::load_rules(&store);
+        Arc::new(Self {
+            config,
+            identity,
+            started: now_secs(),
+            store: Mutex::new(store),
+            latest: Mutex::new(None),
+            rules: Mutex::new(rules),
+            active: Mutex::new(Vec::new()),
+        })
     }
 }
 
@@ -79,6 +92,13 @@ impl Sampler {
             let mut collector = Collector::new();
             let mut minutes = MinuteAverager::default();
             let mut last_prune: Option<std::time::Instant> = None;
+            let mut engine = match crate::engine::Engine::start(&shared, now_secs()) {
+                Ok(e) => Some(e),
+                Err(e) => {
+                    crate::error!("uptime and alerts are off: {e}");
+                    None
+                }
+            };
             loop {
                 let started = std::time::Instant::now();
                 let raw = crate::metrics::parse(&reader.read());
@@ -88,6 +108,9 @@ impl Sampler {
                     if let Some(done) = minutes.push(&point_from_sample(&sample)) {
                         store_minute(&shared, &done);
                     }
+                }
+                if let Some(e) = engine.as_mut() {
+                    e.sample(&shared, &sample, now_secs());
                 }
                 *shared.latest.lock().unwrap_or_else(|e| e.into_inner()) = Some(sample);
                 if last_prune.map_or(true, |t| t.elapsed() >= PRUNE_EVERY) {
@@ -107,6 +130,9 @@ impl Sampler {
             }
             if let Some(p) = minutes.flush() {
                 store_minute(&shared, &p);
+            }
+            if let Some(e) = engine.as_mut() {
+                e.stop(&shared, now_secs());
             }
         })?;
         Ok(Self { stop, thread: Some(thread) })
