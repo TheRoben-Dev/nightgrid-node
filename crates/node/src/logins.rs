@@ -162,7 +162,10 @@ fn spawn(cursor: Option<&str>) -> std::io::Result<Child> {
     c.args(["--follow", "--output=json", "--no-pager", "--identifier=sshd", "--identifier=sshd-session"]);
     match cursor {
         Some(cur) => c.arg(format!("--after-cursor={cur}")),
-        None => c.arg("--lines=0"),
+        // Not `--lines=0`: following from the tail that way can miss the
+        // first entry written after journalctl starts. Starting from a time
+        // has no such gap (at worst a login from this very second is read).
+        None => c.arg(format!("--since=@{}", crate::daemon::now_secs())),
     };
     c.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn()
 }
