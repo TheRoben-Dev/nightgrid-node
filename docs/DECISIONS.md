@@ -47,3 +47,6 @@ Hand-rolled argument parsing and a 50-line stderr logger with `sd-daemon` priori
 
 ### N-013 · 14 days of minute points by default
 The app keeps 7 days of minutes by default, but the node is the copy that bridges the app's absences, so it keeps two weeks (about 20 000 rows, ~2 MB). Rollup tiers match the app (90 and 400 days).
+
+### N-014 · Checksums and provenance now, signatures later (2026-11-16)
+Roben decided checksums are enough for now. Releases ship `SHA256SUMS` and GitHub build provenance (`gh attestation verify`). The release workflow signs with minisign only if a `NODE_MINISIGN_KEY` secret is ever added; nothing else changes when it is.

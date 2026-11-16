@@ -35,7 +35,7 @@ Suggested home: `core/src/node/` (`client.rs` for the channel + NDJSON framing, 
 Confirmation names the host and lists what will happen (security rule 5). Then:
 
 1. `uname -m` → `x86_64` or `aarch64` (anything else: "not supported").
-2. Get the release binary `nightgrid-node-v<ver>-<arch>-linux` and its `.minisig` from this repo's GitHub Releases (the same origin class as the app's own updater, rule 7), or let the person pick a local file. Verify the **minisign signature against the node public key pinned in the app** (separate from the app's updater key) and the SHA-256 from `SHA256SUMS` (also signed). Cache verified binaries in the app data dir. Never upload an unverified file.
+2. Get the release binary `nightgrid-node-v<ver>-<arch>-linux` from this repo's GitHub Releases (the same origin class as the app's own updater, rule 7), or let the person pick a local file. Verify the SHA-256 against `SHA256SUMS` from the same release (decided 2026-11-16: checksums plus GitHub build provenance are enough for now). If minisign signatures are added later (`.minisig` next to each file), the app also verifies them against a node public key pinned in the app, separate from its updater key. Cache verified binaries in the app data dir. Never upload an unverified file.
 3. `mktemp -d` on the host (mode 0700), upload over SFTP, `chmod 700`.
 4. Run, through the existing `sudo::run` flow (password on stdin, D-048):
    `<tmp>/nightgrid-node install --json --user <ssh login user>`

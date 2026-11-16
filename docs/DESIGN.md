@@ -90,7 +90,7 @@ The node evaluates the same conditions as the app's alerts loop (host resources,
 | Privileged reads and actions (N3, N5) | Never run by the daemon itself. Each capability is opted into by root (`nightgrid-node allow <cap>`), and the work is done by a separate, short-lived, root helper that accepts only fixed, typed operations listed in the policy (no shell strings). See DECISIONS.md N-010. |
 | Audit | (N5) Append-only, hash-chained action log in the state directory: who (uid, client), what, target, result, before/after for rollbacks. Synced to the app with the events stream. |
 | Secrets | N0 stores none. Later ones (e.g. a service check's token) use `systemd-creds` (encrypted at rest, TPM-bound where available) or are pushed by the app per session and held in memory only. Logs and events go through the same secret filter as the app (`redact::line_has_secret`). |
-| Releases | Static binaries with SHA256SUMS, minisign signatures, and GitHub build provenance. The app pins the minisign public key and verifies before uploading; `install` is only run on a verified file. |
+| Releases | Static binaries with SHA256SUMS and GitHub build provenance; the app verifies the checksum before uploading, and `install` is only run on a verified file. Minisign signing is wired in the release workflow but off until a key is configured (N-014). |
 | Public repo | No secrets, host names or personal details anywhere; fixtures are synthetic (`server01`, `pi`). |
 
 ## 8. Install, upgrade, uninstall
