@@ -24,4 +24,8 @@ Login events need the system journal. `sudo nightgrid-node allow journal` writes
 
 The file watcher only records metadata (size, owner, mode, time) and a short SHA-256 of files the service can read. It never stores or sends contents. Root chooses the list in `/etc/nightgrid-node/config.toml`.
 
+## Network watch
+
+The device inventory comes from `/proc/net/arp` and `/proc/net/route`, which any user can read. The node sends no packets for it and the service still has no network address family (`RestrictAddressFamilies=AF_UNIX`). It stores MAC and IPv4 addresses of devices on the LAN in its database; `uninstall --purge` removes them. DHCP watching (N3b) will run as a separate, opt-in unit holding only `CAP_NET_RAW`, never in this service (decision N-021).
+
 Full details: [docs/DESIGN.md §7](docs/DESIGN.md#7-security-model).

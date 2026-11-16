@@ -100,6 +100,10 @@ fn serves_info_latest_and_history() {
     rules["diskPercent"] = json!(85);
     c.call("alerts.rules.set", rules).unwrap();
     assert_eq!(c.call("alerts.rules.get", Value::Null).unwrap()["diskPercent"], 85);
+    // N3a: the LAN inventory answers (empty or not, depending on the machine).
+    assert!(c.welcome.caps.contains_key("net"));
+    let net = c.call("net.devices", Value::Null).unwrap();
+    assert!(net["devices"].is_array() && net["at"].is_i64(), "{net}");
     match c.call("alerts.rules.set", json!({"enabled": true, "diskPercent": 5})) {
         Err(CallError::Rpc(e)) => assert_eq!(e.code, ErrorCode::BadRequest),
         other => panic!("{other:?}"),

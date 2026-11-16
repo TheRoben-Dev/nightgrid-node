@@ -46,6 +46,8 @@ pub mod method {
     pub const ALERTS_RULES_GET: &str = "alerts.rules.get";
     pub const ALERTS_RULES_SET: &str = "alerts.rules.set";
     pub const CONTAINERS_LIST: &str = "containers.list";
+    /// Devices the node has seen on its LAN (neighbour table).
+    pub const NET_DEVICES: &str = "net.devices";
     /// Protocol 2: start pushing frames for streams.
     pub const SUBSCRIBE: &str = "subscribe";
     /// Protocol 2: stop pushing frames for streams.
@@ -88,6 +90,8 @@ pub mod cap {
     pub const LOGINS: &str = "logins";
     /// Watched file changes in `events`.
     pub const FILES: &str = "files";
+    /// `net.devices`; network events (new devices, IP changes and conflicts) in `events`.
+    pub const NET: &str = "net";
 }
 
 /// Capability name → version.
@@ -463,6 +467,36 @@ pub struct Alert {
     pub resolved: Option<i64>,
 }
 
+/// One device in the node's LAN inventory (`net.devices`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NetDevice {
+    /// Lower-case `aa:bb:cc:dd:ee:ff`. The app adds the maker from its own
+    /// OUI table; the node ships none.
+    pub mac: String,
+    /// Its latest IPv4 address.
+    pub ip: String,
+    /// The interface it was seen on.
+    pub iface: String,
+    pub first_seen: i64,
+    pub last_seen: i64,
+    /// In the neighbour table at the last look.
+    pub online: bool,
+}
+
+/// `net.devices` result.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NetDevicesResult {
+    /// When the neighbour table was last read (0: not yet).
+    pub at: i64,
+    /// The default gateway's address, when there is one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gateway: Option<String>,
+    /// Most recently seen first.
+    pub devices: Vec<NetDevice>,
+}
+
 /// Same strings as the app's `timeline::EventKind`, plus `outage`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -481,6 +515,9 @@ pub enum EventKind {
     Login,
     /// A watched file or directory changed.
     File,
+    /// The LAN changed: a new device, a device on a new address, an
+    /// address answering from a new MAC, an IP conflict.
+    Network,
     /// Kinds added by newer nodes.
     #[serde(other)]
     Other,

@@ -18,6 +18,7 @@ pub mod files;
 pub mod install;
 pub mod logins;
 pub mod metrics;
+pub mod netwatch;
 pub mod redact;
 pub mod server;
 pub mod store;

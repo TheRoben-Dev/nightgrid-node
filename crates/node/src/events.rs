@@ -20,6 +20,7 @@ fn kind_str(k: EventKind) -> &'static str {
         EventKind::Container => "container",
         EventKind::Login => "login",
         EventKind::File => "file",
+        EventKind::Network => "network",
         EventKind::Other => "other",
     }
 }

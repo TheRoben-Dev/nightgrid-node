@@ -91,6 +91,7 @@ The node never buffers without bound for a slow client: each stream keeps a shor
 | `containers` 1 | `containers.list`; `container` events; container-down alerts | N1b |
 | `logins` 1 | `login` events (with `allow journal`) | N2b |
 | `files` 1 | `file` events for the paths root listed | N2b |
+| `net` 1 | `net.devices`; `network` events | N3a |
 
 ### `node.info` (`node` 1)
 
@@ -160,9 +161,10 @@ The cursor is the event's `seq`, which only grows.
            "title": "server01", "detail": "/srv is 91% full (40 GB free)", "since": 1763290000, "resolved": null}}
 ```
 
-- `kind`: `alert` (fired, worse, or changed: `level: info` when it got better), `recovered` (`level: ok`, `alert.resolved` set), `boot`, `outage`, `container` (N1b), `login` and `file` (N2b); unknown kinds read as `other`.
+- `kind`: `alert` (fired, worse, or changed: `level: info` when it got better), `recovered` (`level: ok`, `alert.resolved` set), `boot`, `outage`, `container` (N1b), `login` and `file` (N2b), `network` (N3a); unknown kinds read as `other`.
 - `login`: "alice logged in from 10.0.0.5" (`detail`: "ssh, publickey"), or failed logins summed per minute: "failed login for root from 192.0.2.7" / "12 failed logins from 3 addresses" (`detail`: users and the top addresses; `warn` from 10 failures). Needs `allow journal`.
 - `file`: "changed /etc/ssh/sshd_config", "added /etc/cron.d/backup", "removed …". `detail` lists size, a short SHA-256, mode and owner changes, never contents; "(while the node was not running)" when found at start. `warn` for SSH, sudoers, passwd, shadow and group files.
+- `network`: "new device 192.168.1.23" (`detail`: "aa:bb:cc:dd:ee:ff on eth0"), "N new devices" (more than 20 in one read), "device moved 192.168.1.20 → 192.168.1.21" (a new lease), "address 192.168.1.50 answers from a new MAC" (`detail`: "old → new"), "IP conflict on 192.168.1.50" (`warn`: the address keeps switching between MACs; `critical` on the gateway), "gateway 192.168.1.1 answers from a new MAC" (`warn`: a replaced router, or ARP spoofing), and one "network watch started" on a fresh install.
 - `level`: `info`, `ok`, `warn`, `critical`.
 - `outage` events carry `"outage": {"start", "end", "state": "down" | "asleep"}`. Titles: `Down` (the host or node went away without a clean stop), `Restarted` (clean stop, then a new boot), `Suspended` (the host slept).
 - Title and detail go through the app's secret filter and are capped (200 / 600 characters).
@@ -217,11 +219,27 @@ What the watcher last read (every 15 s by default):
 - Container events reach `events.sync` with `kind: container`, the app's titles and levels ("web restarted", "db exited", "big ran out of memory", "api unhealthy"). They are written about two minutes after they happen, so a crash followed by a restart is one entry.
 - Container-down alerts use keys `docker:<name>` (app: `docker:<hostId>:<name>`) and the `containerDown` rule. Only containers seen running alert when they stop; a clean exit (0 or 143) forgets them.
 
+### `net.devices` (`net` 1)
+
+The LAN inventory from the kernel's IPv4 neighbour table, read every 30 s by default. Most recently seen first, at most 1000.
+
+```json
+{"at": 1763290000, "gateway": "192.168.1.1", "devices": [
+  {"mac": "aa:bb:cc:dd:ee:ff", "ip": "192.168.1.23", "iface": "eth0",
+   "firstSeen": 1763000000, "lastSeen": 1763290000, "online": true}
+]}
+```
+
+- `at` is 0 before the first read; `gateway` is left out when there is no IPv4 default route.
+- `online`: in the table at the last read. The table only holds devices this host exchanged traffic with recently, so `online: false` means "not seen lately", not "off".
+- No vendor: the app looks the MAC up in its own OUI table (`netmap::mac_vendor`).
+- Container bridges (`docker0`, `br-*`, `veth*`, …) and interfaces root lists in `[network] ignore_ifaces` are left out. Devices unseen for 400 days are forgotten.
+
 ## Planned (not in version 1 yet)
 
 | Capability | Methods | Milestone |
 |---|---|---|
-| `net` | `net.devices`, `net.events` | N3 |
+| `net.dhcp` | DHCP servers and leases seen on the LAN; rogue-DHCP events (separate `CAP_NET_RAW` unit) | N3b |
 | `act.*`, `heal` | typed actions and self-healing rules, each opt-in, every run audited | N4 |
 | `logs` | `logs.rules.set`, `logs.findings` | N5 |
 | `checks` | `checks.set`, `checks.latest` | N7 |

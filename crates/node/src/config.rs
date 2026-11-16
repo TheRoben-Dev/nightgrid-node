@@ -17,6 +17,26 @@ pub struct Config {
     pub docker: DockerConfig,
     pub logins: LoginsConfig,
     pub files: FilesConfig,
+    pub network: NetworkConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct NetworkConfig {
+    /// Keep an inventory of LAN devices from the kernel's neighbour table
+    /// (no privileges, nothing sent) and record new devices, address
+    /// changes and IP conflicts.
+    pub enabled: bool,
+    /// Seconds between reads (5-600).
+    pub interval_secs: u32,
+    /// Interfaces to ignore, besides container bridges (always ignored).
+    pub ignore_ifaces: Vec<String>,
+}
+
+impl Default for NetworkConfig {
+    fn default() -> Self {
+        Self { enabled: true, interval_secs: 30, ignore_ifaces: Vec::new() }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -152,6 +172,12 @@ impl Config {
         if self.files.watch.len() > 64 || self.files.watch.iter().any(|p| !p.is_absolute()) {
             return Err("files.watch takes at most 64 absolute paths".into());
         }
+        if !(5..=600).contains(&self.network.interval_secs) {
+            return Err("network.interval_secs must be 5-600".into());
+        }
+        if self.network.ignore_ifaces.len() > 64 {
+            return Err("network.ignore_ifaces takes at most 64 names".into());
+        }
         if !(1..=64).contains(&self.server.max_connections) {
             return Err("server.max_connections must be 1-64".into());
         }
@@ -214,6 +240,17 @@ watch = [
 ]
 # Seconds between checks (2-300).
 interval_secs = 10
+
+[network]
+# Keep an inventory of devices on the LAN from the kernel's neighbour (ARP)
+# table, and record new devices, address changes and IP conflicts. Needs no
+# privileges and sends nothing.
+enabled = true
+# Seconds between reads (5-600).
+interval_secs = 30
+# Interfaces to ignore. Container bridges (docker0, br-*, veth*, ...) are
+# always ignored.
+ignore_ifaces = []
 "#;
 
 #[cfg(test)]
