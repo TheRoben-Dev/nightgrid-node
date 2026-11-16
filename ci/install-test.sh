@@ -57,6 +57,38 @@ done
 as_user "/usr/local/bin/nightgrid-node query alerts.active" >/dev/null || fail "alerts.active"
 as_user "/usr/local/bin/nightgrid-node query alerts.rules.get" | grep -q '"diskPercent":90' || fail "default rules"
 
+if [ "${WAIT_FOR_MINUTE:-0}" = 1 ] && command -v docker >/dev/null && docker info >/dev/null 2>&1; then
+  q() { as_user "/usr/local/bin/nightgrid-node query $1"; }
+  say "containers: no access until root allows it"
+  q containers.list | tee /tmp/ngn-ct.json
+  grep -q '"access":"denied"' /tmp/ngn-ct.json || fail "expected denied before allow"
+
+  say "allow docker"
+  /usr/local/bin/nightgrid-node allow docker --json | tee /tmp/ngn-allow.json
+  grep -q 'root-equivalent' /tmp/ngn-allow.json || fail "no warning"
+  grep -q 'SupplementaryGroups=docker' /etc/systemd/system/nightgrid-node.service.d/docker.conf || fail "drop-in"
+  docker rm -f ngn-crash >/dev/null 2>&1 || true
+  docker run -d --name ngn-crash alpine:3.20 sh -c 'sleep 75; exit 3' >/dev/null
+  i=0; until q containers.list | grep -q '"name":"ngn-crash","state":"running"'; do
+    i=$((i+1)); [ $i -lt 60 ] || { q containers.list; fail "watcher never saw ngn-crash running"; }; sleep 1; done
+  q containers.list | grep -q '"access":"ok"' || fail "access not ok"
+
+  say "a crashed container raises an alert and a timeline event"
+  i=0; until q alerts.active | grep -q '"key":"docker:ngn-crash"'; do
+    i=$((i+1)); [ $i -lt 180 ] || fail "no container-down alert"; sleep 1; done
+  q alerts.active
+  i=0; until q "events.sync '{\"after\":0}'" | grep -q '"title":"ngn-crash exited"'; do
+    i=$((i+1)); [ $i -lt 300 ] || fail "no container event"; sleep 1; done
+  q "events.sync '{\"after\":0}'" | tr '}' '\n' | grep ngn-crash | head -3
+  docker rm -f ngn-crash >/dev/null
+
+  say "deny docker"
+  /usr/local/bin/nightgrid-node deny docker >/dev/null
+  [ ! -e /etc/systemd/system/nightgrid-node.service.d/docker.conf ] || fail "drop-in left"
+  sleep 2
+  q containers.list | grep -q '"access":"denied"' || fail "still has access after deny"
+fi
+
 say "reinstall (upgrade in place) keeps the node id"
 before=$(as_user "/usr/local/bin/nightgrid-node query node.info" | sed 's/.*"nodeId":"\([0-9a-f]*\)".*/\1/')
 cp "$bin" /tmp/ngn-upgrade && /tmp/ngn-upgrade install --json >/dev/null

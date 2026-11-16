@@ -19,6 +19,9 @@ COMMANDS:
     uninstall               Stop and remove the service (root)
         --purge             Also remove history, config and the service account
         --json              Print a machine-readable report
+    allow docker            Let the service read containers through the engine
+                            socket's group (root; root-equivalent access)
+    deny docker             Take that access away again (root)
     status                  Show what the running node reports
     query METHOD [JSON]     Send one request and print the answer
     bridge                  Connect stdin/stdout to the node's socket
@@ -123,6 +126,19 @@ fn real_main() -> Result<(), String> {
             let exe = std::env::current_exe().map_err(|e| e.to_string())?;
             let opts = install::InstallOptions { allow_users: users, no_start: a.no_start };
             let r = install::install(&install::Layout::system(), &mut install::RealSys, &exe, &opts)?;
+            print_report(&r, a.json);
+            Ok(())
+        }
+        "allow" | "deny" => {
+            let what = a.rest.first().ok_or("allow/deny what? (docker)")?;
+            let grant = install::Grant::parse(what).ok_or_else(|| format!("unknown access {what:?} (docker)"))?;
+            let layout = install::Layout::system();
+            let r = if a.cmd == "allow" {
+                let config = Config::load(&a.config)?;
+                install::allow(&layout, &mut install::RealSys, grant, &config.docker.socket, a.no_start)?
+            } else {
+                install::deny(&layout, &mut install::RealSys, grant, a.no_start)?
+            };
             print_report(&r, a.json);
             Ok(())
         }

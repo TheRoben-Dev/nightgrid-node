@@ -33,6 +33,8 @@ pub struct Shared {
     pub rules: Mutex<AlertRules>,
     /// Active alerts, as the engine last saw them.
     pub active: Mutex<Vec<Alert>>,
+    /// What the container watcher last saw.
+    pub containers: Mutex<crate::containers::ContainerState>,
 }
 
 impl Shared {
@@ -44,6 +46,11 @@ impl Shared {
             arch: std::env::consts::ARCH.to_owned(),
         };
         let rules = crate::engine::load_rules(&store);
+        let docker_access = if config.docker.enabled {
+            nightgrid_node_proto::ContainerAccess::Absent
+        } else {
+            nightgrid_node_proto::ContainerAccess::Off
+        };
         Arc::new(Self {
             config,
             identity,
@@ -52,6 +59,7 @@ impl Shared {
             latest: Mutex::new(None),
             rules: Mutex::new(rules),
             active: Mutex::new(Vec::new()),
+            containers: Mutex::new(crate::containers::ContainerState::new(docker_access)),
         })
     }
 }
@@ -195,6 +203,11 @@ pub fn run(config: Config, paths: Paths) -> Result<(), String> {
     let sampler =
         Sampler::start(shared.clone(), Reader::system(), Duration::from_secs(config.metrics.interval_secs.into()))
             .map_err(|e| format!("sampler: {e}"))?;
+    let watcher = if config.docker.enabled {
+        Some(crate::containers::Watcher::start(shared.clone()).map_err(|e| format!("container watcher: {e}"))?)
+    } else {
+        None
+    };
 
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| e.to_string())?;
     let result = rt.block_on(async {
@@ -212,6 +225,9 @@ pub fn run(config: Config, paths: Paths) -> Result<(), String> {
     });
     sd_notify("STOPPING=1");
     sampler.stop();
+    if let Some(w) = watcher {
+        w.stop();
+    }
     let _ = std::fs::remove_file(&config.server.socket);
     crate::info!("stopped");
     result

@@ -1,13 +1,56 @@
 # Nightgrid Node
 
-An optional, lightweight agent for Linux servers that extends [Nightgrid](https://github.com/TheRoben-Dev/nightgrid), the homelab desktop app. Nightgrid works over plain SSH while it's open; Nightgrid Node keeps collecting when the app is closed or your computer is offline, and hands the history over when the app reconnects.
+An optional, lightweight agent for Linux servers that extends [Nightgrid](https://github.com/TheRoben-Dev/nightgrid), the homelab desktop app.
 
-- **Optional.** Every Nightgrid feature works without it. The node only makes things faster and gap-free.
-- **Tiny.** One static binary (~2 MB, x86_64 and aarch64), ~2.5 MB of RAM, no measurable idle CPU.
-- **No open ports, no outbound connections, no telemetry.** The app talks to it through the SSH connection it already has. systemd enforces this (`IPAddressDeny=any`, unix sockets only).
-- **Least privilege.** Its own system account, a heavily sandboxed unit, read-only. Root decides what it may do.
+Nightgrid is agentless: it does everything over SSH, but only while the app is open. Close the laptop and nobody is watching. Nightgrid Node runs on the server and keeps watching. When the app reconnects, it hands over everything that happened, so graphs, uptime bars, the timeline and alerts have no gaps.
 
-Status: **N0** — install/uninstall, metrics history with the app's 1-minute / 15-minute / hourly tiers (400 days), and sync. See [docs/MILESTONES.md](docs/MILESTONES.md) for what's next.
+- **Optional.** Every Nightgrid feature works without it. The node makes things gap-free and faster; it is never required.
+- **Tiny.** One static binary (about 2 MB, x86_64 and aarch64), about 2.5 MB of RAM, no measurable idle CPU.
+- **No open ports, no outbound connections, no telemetry, no cloud.** The app talks to the node through the SSH connection it already has. systemd enforces this (`IPAddressDeny=any`, unix sockets only).
+- **Least privilege.** Its own system account and a heavily sandboxed unit. Root decides what it may do, one grant at a time.
+
+## What it does
+
+While the app is closed, the node:
+
+| | What | Since |
+|---|---|---|
+| 📈 | **Records metrics**: CPU, memory, swap, load, disks, network, temperatures and GPUs every 10 s. Keeps 1-minute points for 14 days, 15-minute ones for 90 days and hourly ones for 400 days, the same tiers as the app. | 0.1 |
+| ⏱ | **Tracks uptime**: a heartbeat every minute. After a reboot it can tell a crash or power loss ("Down") from a clean reboot ("Restarted") and from a suspend ("Suspended"). | 0.2 |
+| 💾 | **Watches disks**: hourly usage per mount and a "full in about N days" forecast. | 0.2 |
+| 🚨 | **Evaluates alerts**: disk full, disk filling up and container down, with your thresholds from the app and the app's own grace periods. Alerts are kept and delivered when the app comes back ("while you were away"). | 0.2 / 0.3 |
+| 🐳 | **Watches containers** (opt-in): states, crashes, restarts, out-of-memory kills and health changes, through Docker's or Podman's socket. Read-only. | 0.3 |
+| 🗒 | **Keeps a timeline**: alerts firing and clearing, outages, boots and container events, numbered so the app pulls only what's new. | 0.2 |
+
+When the app reconnects, it asks for everything after its last cursor and merges it in. The node keeps no per-app state, so several computers running Nightgrid can sync from the same node.
+
+### Coming next
+
+See [docs/MILESTONES.md](docs/MILESTONES.md) for detail. The order is:
+
+1. **Real-time push**: events, alerts, container lifecycle, logins and file changes streamed to the app as they happen.
+2. **Network watch**: new or unknown devices, IP conflicts, DHCP changes and rogue DHCP on the LAN, feeding the app's network map.
+3. **Actions and self-healing**: rules such as "container unhealthy for 5 minutes → restart". Off by default per rule, with rate limits, dry-run and an audit log.
+4. **Root-only health and logs**: SMART, pools, updates, backups and UPS through a small root helper; log anomalies using the app's rules.
+5. **Fine-grained stats and host security**: 1 s per-process and per-container stats, power draw, file integrity, new listening ports, failed-login bursts.
+6. **Node-to-node and service checks, scheduled jobs, group actions**: from inside the LAN, with the app closed.
+7. **Upgrades with automatic revert, an optional tailnet transport and a status page.**
+
+Anything that acts on its own (self-healing, auto-block, scheduled power) is off unless you turn it on, and every run is logged.
+
+## How it fits together
+
+```
+Nightgrid app ──SSH──> server: sshd ──> nightgrid-node bridge ──> /run/nightgrid-node/node.sock
+                                                                    │
+                                          nightgrid-node run (user nightgrid-node)
+                                            ├ sampler: /proc, /sys, statvfs
+                                            ├ engine: uptime, disk usage, alerts
+                                            ├ containers (only if root allowed it)
+                                            └ SQLite history in /var/lib/nightgrid-node
+```
+
+The app speaks a small, versioned JSON-lines protocol to the socket. It starts with `hello`, which lists the node's capabilities, and the app only uses what is listed. Anything missing falls back to plain SSH. See [docs/PROTOCOL.md](docs/PROTOCOL.md).
 
 ## Install by hand
 
@@ -22,9 +65,15 @@ sudo ./nightgrid-node-*-linux install          # adds you (the sudo user) to the
 nightgrid-node status
 ```
 
+Optional: let it watch containers. Read [SECURITY.md](SECURITY.md) first, because Docker's group is root-equivalent.
+
+```sh
+sudo nightgrid-node allow docker     # undo with: sudo nightgrid-node deny docker
+```
+
 Remove it with `sudo nightgrid-node uninstall` (keeps history and config) or `sudo nightgrid-node uninstall --purge` (removes everything, including the service account). If the binary is gone, [dist/uninstall.sh](dist/uninstall.sh) does the same.
 
-Works on any systemd distro: tested on Debian, Ubuntu and Fedora; Proxmox VE and Fedora Atomic / Bazzite use the same paths.
+Works on any systemd distro. It is tested in CI on Debian 12, Ubuntu 22.04/24.04 (x86_64 and arm64) and Fedora 41. Proxmox VE and Fedora Atomic / Bazzite use the same paths.
 
 ## Commands
 
@@ -32,8 +81,10 @@ Works on any systemd distro: tested on Debian, Ubuntu and Fedora; Proxmox VE and
 nightgrid-node run                 the service (systemd starts it)
 nightgrid-node install [--user NAME]... [--no-start] [--json]
 nightgrid-node uninstall [--purge] [--json]
+nightgrid-node allow docker        let it read containers (root; root-equivalent)
+nightgrid-node deny docker         take that away again
 nightgrid-node status              what the running node reports
-nightgrid-node query METHOD [JSON] one protocol request, e.g. query metrics.latest
+nightgrid-node query METHOD [JSON] one protocol request, e.g. query alerts.active
 nightgrid-node bridge              stdin/stdout ⇄ the node's socket (used by the app over SSH)
 ```
 
@@ -41,7 +92,7 @@ Configuration: `/etc/nightgrid-node/config.toml` (root-owned; every setting is i
 
 ## Docs
 
-- [Design](docs/DESIGN.md): architecture, transport, storage, sync, security model, upgrades, feature map
+- [Design](docs/DESIGN.md): architecture, transport, storage, sync, security model, automatic actions, feature map
 - [Protocol](docs/PROTOCOL.md): versioned NDJSON protocol with capability negotiation
 - [Milestones](docs/MILESTONES.md) and [Decisions](docs/DECISIONS.md)
 - [App integration specs](docs/app-integration/): what the Nightgrid app needs to do
@@ -57,7 +108,7 @@ cargo run -- run --socket /tmp/ngn.sock --data-dir /tmp/ngn --config /dev/null  
 cargo run -- query node.info --socket /tmp/ngn.sock
 ```
 
-Parts of the metrics code are vendored from Nightgrid (MIT, attributed in the file headers).
+Parts of the metrics, alert, forecast, timeline and secret-filter code are vendored from Nightgrid (MIT, attributed in the file headers).
 
 ## License
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.0 · N1b (unreleased)
+
+- Container watcher over the Docker (or Podman) socket: `containers.list`, lifecycle events in the timeline (restarts merged, crashes, OOM kills, health changes) and container-down alerts with the app's rules.
+- `nightgrid-node allow docker` / `deny docker`: root grants or removes access through a systemd drop-in, with a root-equivalence warning.
+- Milestones re-planned for the expanded brief: real-time push, network watch and self-healing come next.
+- README describes what the node does.
+
 ## 0.2.0 · N1 (unreleased)
 
 - Events stream (`events.sync`) with a growing `seq`, 90 days, secret filter on titles and details.

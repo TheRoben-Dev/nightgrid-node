@@ -45,6 +45,7 @@ pub mod method {
     pub const ALERTS_ACTIVE: &str = "alerts.active";
     pub const ALERTS_RULES_GET: &str = "alerts.rules.get";
     pub const ALERTS_RULES_SET: &str = "alerts.rules.set";
+    pub const CONTAINERS_LIST: &str = "containers.list";
 }
 
 /// Capability names. A capability's version bumps when its methods gain
@@ -64,6 +65,8 @@ pub mod cap {
     pub const DISK: &str = "disk";
     /// `alerts.active`, `alerts.rules.get`, `alerts.rules.set`.
     pub const ALERTS: &str = "alerts";
+    /// `containers.list`; container events in `events`; container-down alerts.
+    pub const CONTAINERS: &str = "containers";
 }
 
 /// Capability name → version.
@@ -570,11 +573,19 @@ pub struct AlertRules {
     pub disk_forecast: bool,
     /// 1-90.
     pub forecast_days: u16,
+    pub container_down: bool,
 }
 
 impl Default for AlertRules {
     fn default() -> Self {
-        Self { enabled: true, disk_full: true, disk_percent: 90, disk_forecast: true, forecast_days: 14 }
+        Self {
+            enabled: true,
+            disk_full: true,
+            disk_percent: 90,
+            disk_forecast: true,
+            forecast_days: 14,
+            container_down: true,
+        }
     }
 }
 
@@ -588,6 +599,52 @@ impl AlertRules {
         }
         Ok(())
     }
+}
+
+/// Whether the node can read the container engine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ContainerAccess {
+    /// Reading containers and events.
+    Ok,
+    /// Switched off in the node's config (`[docker] enabled = false`).
+    Off,
+    /// No engine socket on this host.
+    Absent,
+    /// The socket exists but the service account may not use it
+    /// (root has not run `nightgrid-node allow docker`).
+    Denied,
+    /// The engine didn't answer properly; see `message`.
+    Error,
+}
+
+/// One container, as `docker ps -a` would show it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContainerInfo {
+    pub id: String,
+    pub name: String,
+    pub image: String,
+    /// created, running, paused, restarting, exited, removing, dead
+    pub state: String,
+    /// The engine's status line, e.g. "Up 3 hours (healthy)".
+    pub status: String,
+    /// healthy, unhealthy, starting; none without a healthcheck.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub health: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContainersResult {
+    pub access: ContainerAccess,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    /// When the list was read (unix seconds); 0 if never.
+    pub at: i64,
+    pub containers: Vec<ContainerInfo>,
 }
 
 #[cfg(test)]
