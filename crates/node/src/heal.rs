@@ -26,7 +26,7 @@ use crate::events::NewEvent;
 use crate::store::Store;
 
 pub const META_RULES: &str = "heal_rules";
-const TICK: Duration = Duration::from_secs(15);
+const CHANGES_TICK: Duration = Duration::from_secs(5);
 const DAY: i64 = 86_400;
 
 /// A condition that holds now: what kind, and on which container or mount.
@@ -210,8 +210,14 @@ impl Healer {
     pub fn start(shared: Arc<Shared>) -> std::io::Result<Self> {
         let (stop, rx) = mpsc::channel::<()>();
         let thread = std::thread::Builder::new().name("heal".into()).spawn(move || {
-            while let Err(RecvTimeoutError::Timeout) = rx.recv_timeout(TICK) {
-                tick(&shared);
+            let mut n = 0u32;
+            while let Err(RecvTimeoutError::Timeout) = rx.recv_timeout(CHANGES_TICK) {
+                // The rollback timer every 5 s, the rules every 15 s.
+                crate::rollback::tick(&shared);
+                n = n.wrapping_add(1);
+                if n % 3 == 0 {
+                    tick(&shared);
+                }
             }
         })?;
         Ok(Self { stop, thread: Some(thread) })

@@ -63,6 +63,14 @@ pub mod method {
     pub const HEAL_RULES_SET: &str = "heal.rules.set";
     /// What each self-healing rule is doing right now.
     pub const HEAL_STATUS: &str = "heal.status";
+    /// Snapshot files before a change and arm the dead-man timer.
+    pub const CHANGES_BEGIN: &str = "changes.begin";
+    /// The change worked: keep it, drop the snapshot.
+    pub const CHANGES_CONFIRM: &str = "changes.confirm";
+    /// Put the files back now.
+    pub const CHANGES_REVERT: &str = "changes.revert";
+    /// Pending and recent changes.
+    pub const CHANGES_LIST: &str = "changes.list";
     /// Protocol 2: start pushing frames for streams.
     pub const SUBSCRIBE: &str = "subscribe";
     /// Protocol 2: stop pushing frames for streams.
@@ -113,6 +121,8 @@ pub mod cap {
     pub const ACTIONS: &str = "actions";
     /// `heal.rules.get`, `heal.rules.set`, `heal.status`.
     pub const HEAL: &str = "heal";
+    /// `changes.begin`, `changes.confirm`, `changes.revert`, `changes.list`.
+    pub const CHANGES: &str = "changes";
 }
 
 /// Typed actions (N4). Root lists the ones the node may run in
@@ -132,7 +142,10 @@ pub mod action {
     /// Reboot or power off, one minute after the request (root helper).
     pub const POWER_REBOOT: &str = "power.reboot";
     pub const POWER_POWEROFF: &str = "power.poweroff";
-    pub const ALL: [&str; 9] = [
+    /// Snapshot files under `[rollback] paths` and put them back unless the
+    /// change is confirmed in time (`changes.*`, root helper).
+    pub const FILES_ROLLBACK: &str = "files.rollback";
+    pub const ALL: [&str; 10] = [
         CONTAINER_RESTART,
         CONTAINER_START,
         CONTAINER_STOP,
@@ -142,6 +155,7 @@ pub mod action {
         UNIT_STOP,
         POWER_REBOOT,
         POWER_POWEROFF,
+        FILES_ROLLBACK,
     ];
     /// Whether the action works on one named container.
     pub fn takes_container(a: &str) -> bool {
@@ -153,7 +167,7 @@ pub mod action {
     }
     /// Whether the root helper carries the action out.
     pub fn needs_helper(a: &str) -> bool {
-        takes_unit(a) || matches!(a, POWER_REBOOT | POWER_POWEROFF)
+        takes_unit(a) || matches!(a, POWER_REBOOT | POWER_POWEROFF | FILES_ROLLBACK)
     }
     /// Whether self-healing rules may run it (not units or power, for now).
     pub fn for_rules(a: &str) -> bool {
@@ -1177,4 +1191,64 @@ pub struct HealStatusResult {
     pub enabled: u32,
     /// Conditions the rules are tracking now.
     pub tracking: Vec<HealStatus>,
+}
+
+/// Most files one change may snapshot, and the largest one.
+pub const MAX_CHANGE_FILES: usize = 32;
+pub const MAX_CHANGE_FILE_BYTES: u64 = 1 << 20;
+
+/// `changes.begin`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ChangeBegin {
+    /// Absolute paths of the files the change will touch, under root's
+    /// `[rollback] paths`. A file that doesn't exist yet is removed on revert.
+    pub paths: Vec<String>,
+    /// Seconds until the node reverts unless confirmed, 30-3600.
+    pub confirm_within_secs: u32,
+    /// Run after the files are put back, e.g. restart the unit that reads them.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub on_revert: Option<ActionRequest>,
+    /// What the change is, for the log (at most 200 characters kept).
+    pub note: String,
+}
+
+/// `changes.confirm` / `changes.revert`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChangeId {
+    pub id: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ChangeState {
+    /// Snapshot taken, timer running.
+    Pending,
+    Confirmed,
+    /// Put back, by the timer or on request.
+    Reverted,
+    /// The snapshot or the revert failed (see `detail`).
+    Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Change {
+    pub id: String,
+    pub created: i64,
+    pub deadline: i64,
+    pub paths: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_revert: Option<ActionRequest>,
+    pub note: String,
+    pub state: ChangeState,
+    pub detail: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finished: Option<i64>,
+}
+
+/// `changes.list`: pending ones first, then the latest 50 others.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChangesResult {
+    pub changes: Vec<Change>,
 }

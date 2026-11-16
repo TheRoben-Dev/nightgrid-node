@@ -19,6 +19,27 @@ pub struct Config {
     pub files: FilesConfig,
     pub network: NetworkConfig,
     pub actions: ActionsConfig,
+    pub rollback: RollbackConfig,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct RollbackConfig {
+    /// Files or directories whose files `changes.begin` may snapshot and the
+    /// root helper may put back (needs `files.rollback` in `[actions] allow`).
+    pub paths: Vec<String>,
+}
+
+/// A path root may list in `[rollback] paths`.
+pub fn rollback_path_ok(p: &str) -> bool {
+    let path = Path::new(p);
+    path.is_absolute()
+        && p.len() <= 1024
+        && p != "/"
+        && !p.ends_with('/')
+        && p.chars().all(|c| c.is_ascii_graphic() && !matches!(c, '"' | '\'' | '\\' | '%'))
+        && path.components().all(|c| matches!(c, std::path::Component::RootDir | std::path::Component::Normal(_)))
+        && !["/proc", "/sys", "/dev", "/run", "/etc/nightgrid-node"].iter().any(|bad| path.starts_with(bad))
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -214,6 +235,15 @@ impl Config {
         if !(1..=1000).contains(&self.actions.max_per_hour) {
             return Err("actions.max_per_hour must be 1-1000".into());
         }
+        if self.rollback.paths.len() > 32 {
+            return Err("rollback.paths takes at most 32 paths".into());
+        }
+        if let Some(p) = self.rollback.paths.iter().find(|p| !rollback_path_ok(p)) {
+            return Err(format!(
+                "rollback.paths: {p:?} must be an absolute path without spaces or quotes, not / and not under \
+                 /proc, /sys, /dev, /run or /etc/nightgrid-node"
+            ));
+        }
         if self.actions.units.len() > 64 {
             return Err("actions.units takes at most 64 units".into());
         }
@@ -317,6 +347,15 @@ max_per_hour = 20
 # systemd units the unit.* actions may act on, by full name, e.g.
 #   units = ["nginx.service", "smbd.service"]
 units = []
+
+[rollback]
+# Files, or directories of files, that a change from the app may snapshot
+# and that are put back unless the app confirms the change in time (needs
+# files.rollback in [actions] allow and the root helper). Keep this narrow,
+# e.g. ["/srv/compose", "/etc/ssh/sshd_config"]. After editing it, run
+#   nightgrid-node allow helper
+# again so the helper may write there.
+paths = []
 "#;
 
 #[cfg(test)]

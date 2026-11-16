@@ -24,6 +24,7 @@ pub mod logins;
 pub mod metrics;
 pub mod netwatch;
 pub mod redact;
+pub mod rollback;
 pub mod server;
 pub mod sniff;
 pub mod store;

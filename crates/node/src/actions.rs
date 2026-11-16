@@ -205,6 +205,9 @@ fn check(shared: &Shared, req: &ActionRequest, now: i64) -> std::result::Result<
     if !action::ALL.contains(&req.action.as_str()) {
         return Err(format!("unknown action {:?}", req.action));
     }
+    if req.action == action::FILES_ROLLBACK {
+        return Err("files.rollback runs through changes.begin".into());
+    }
     if !shared.config.actions.allow.iter().any(|a| a == &req.action) {
         return Err(format!(
             "{} is not allowed on this host (root can add it to [actions] allow in /etc/nightgrid-node/config.toml)",
@@ -260,7 +263,7 @@ fn human_bytes(b: u64) -> String {
 /// Carries out an allowed, checked action through the engine.
 fn execute(shared: &Shared, req: &ActionRequest) -> std::result::Result<String, String> {
     if action::needs_helper(&req.action) {
-        let r = crate::helper::call(&shared.helper_socket, req)?;
+        let r = crate::helper::call(&shared.helper_socket, &req.into())?;
         return if r.ok { Ok(r.detail) } else { Err(r.detail) };
     }
     let sock = &shared.config.docker.socket;

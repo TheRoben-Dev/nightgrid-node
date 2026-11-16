@@ -97,6 +97,7 @@ The node never buffers without bound for a slow client: each stream keeps a shor
 | `actions` 1 | `actions.policy`, `actions.run`, `actions.log`; `action` events | N4a |
 | `actions` 2 | `unit.*` and `power.*` actions through the root helper; `units`, `helper` in the policy | N4b |
 | `heal` 1 | `heal.rules.get`, `heal.rules.set`, `heal.status` | N4a |
+| `changes` 1 | `changes.begin`, `changes.confirm`, `changes.revert`, `changes.list` | N4c |
 
 ### `node.info` (`node` 1)
 
@@ -314,10 +315,41 @@ Per rule and target, the node runs the action once the condition has held `forMi
 {"enabled": 1, "tracking": [{"rule": "web-unhealthy", "target": "web", "since": 1763300000, "attempts": 1, "lastRun": 1763300300, "gaveUp": false}]}
 ```
 
+### `changes.begin` (`changes` 1)
+
+Snapshots files before the app changes them and arms a dead-man timer: unless the app calls `changes.confirm` in time, the node puts the files back (even across a crash or reboot of the node). Needs `files.rollback` in `[actions] allow`, the paths under `[rollback] paths`, and the root helper.
+
+```json
+{"paths": ["/etc/ssh/sshd_config"], "confirmWithinSecs": 120, "note": "move SSH to port 2222",
+ "onRevert": {"action": "unit.restart", "target": "ssh.service"}}
+```
+
+- `paths`: 1-32 absolute file paths, each at most 1 MiB. A file that doesn't exist yet is removed on revert. Symlinks, other file types and anything outside root's list are refused, by the helper itself.
+- `confirmWithinSecs`: 30-3600.
+- `onRevert` (optional): an allowed `container.*` or `unit.*` action run after the files are back.
+- At most 8 changes wait at once.
+
+Answers with the `Change`; errors (refusals, a path not allowed) are `bad_request` with the reason, and are logged too.
+
+```json
+{"id": "5cc513397f706ff0", "created": 1763300000, "deadline": 1763300120, "paths": ["/etc/ssh/sshd_config"],
+ "onRevert": {"action": "unit.restart", "target": "ssh.service"}, "note": "move SSH to port 2222",
+ "state": "pending", "detail": "saved 1 file"}
+```
+
+`state`: `pending`, `confirmed`, `reverted`, `failed` (with `detail`; a failed revert keeps the snapshot in `/var/lib/nightgrid-node-rollback/<id>` for root). `finished` is set once it isn't pending.
+
+### `changes.confirm` / `changes.revert` (`changes` 1)
+
+Params `{"id": "..."}`. Confirm keeps the change and drops the snapshot; revert puts the files back now and runs `onRevert`. Both answer with the updated `Change`; a change that isn't pending is `bad_request`. Every step is an `action` event ("change started / confirmed / reverted: \"note\"", "could not revert …" as `warn`) and an `actions.log` record with action `files.rollback` and the change id as target.
+
+### `changes.list` (`changes` 1)
+
+`{"changes": [Change]}`: pending ones first, then the latest 50 others.
+
 ## Planned (not in version 1 yet)
 
 | Capability | Methods | Milestone |
 |---|---|---|
-| `actions` 2 | unit restart and power through the root helper; rollbacks | N4b/N4c |
 | `logs` | `logs.rules.set`, `logs.findings` | N5 |
 | `checks` | `checks.set`, `checks.latest` | N7 |
