@@ -23,7 +23,7 @@ While the app is closed, the node:
 | 🗒 | **Keeps a timeline**: alerts firing and clearing, outages, boots and container events, numbered so the app pulls only what's new. | 0.2 |
 | 🔑 | **Records logins** (opt-in): SSH logins and failed logins (summed per minute), from the journal. | 0.5 |
 | 📄 | **Watches important files**: `sshd_config`, sudoers, `passwd`/`shadow`, cron, `hosts`, `fstab`, systemd units. It records what changed (size, hash, owner, mode), never the contents. | 0.5 |
-| 🌐 | **Watches the LAN**: keeps an inventory of devices from the kernel's neighbour table and notes new devices, address changes, IP conflicts and a gateway that suddenly answers from another MAC (possible ARP spoofing). No privileges, nothing sent. | 0.6 |
+| 🌐 | **Watches the LAN**: keeps an inventory of devices from the kernel's neighbour table and notes new devices, address changes, IP conflicts and a gateway that suddenly answers from another MAC (possible ARP spoofing). No privileges, nothing sent. With `allow netwatch`, a listen-only helper also spots DHCP servers, a rogue one, and devices' names. | 0.6 / 0.7 |
 | ⚡ | **Pushes live**: while the app is connected, new events, alerts, container changes and metrics every 2 s are pushed as they happen, instead of the app polling over SSH. | 0.4 |
 
 When the app reconnects, it asks for everything after its last cursor and merges it in. The node keeps no per-app state, so several computers running Nightgrid can sync from the same node.
@@ -32,12 +32,11 @@ When the app reconnects, it asks for everything after its last cursor and merges
 
 See [docs/MILESTONES.md](docs/MILESTONES.md) for detail. The order is:
 
-1. **DHCP watch**: DHCP changes and rogue DHCP servers, from a separate opt-in unit that holds only the right to read raw packets.
-2. **Actions and self-healing**: rules such as "container unhealthy for 5 minutes → restart". Off by default per rule, with rate limits, dry-run and an audit log.
-3. **Root-only health and logs**: SMART, pools, updates, backups and UPS through a small root helper; log anomalies using the app's rules.
-4. **Fine-grained stats and host security**: 1 s per-process and per-container stats, power draw, file integrity, new listening ports, failed-login bursts.
-5. **Node-to-node and service checks, scheduled jobs, group actions**: from inside the LAN, with the app closed.
-6. **Upgrades with automatic revert, an optional tailnet transport and a status page.**
+1. **Actions and self-healing**: rules such as "container unhealthy for 5 minutes → restart". Off by default per rule, with rate limits, dry-run and an audit log.
+2. **Root-only health and logs**: SMART, pools, updates, backups and UPS through a small root helper; log anomalies using the app's rules.
+3. **Fine-grained stats and host security**: 1 s per-process and per-container stats, power draw, file integrity, new listening ports, failed-login bursts.
+4. **Node-to-node and service checks, scheduled jobs, group actions**: from inside the LAN, with the app closed.
+5. **Upgrades with automatic revert, an optional tailnet transport and a status page.**
 
 Anything that acts on its own (self-healing, auto-block, scheduled power) is off unless you turn it on, and every run is logged.
 
@@ -68,11 +67,12 @@ sudo ./nightgrid-node-*-linux install          # adds you (the sudo user) to the
 nightgrid-node status
 ```
 
-Optional: let it watch containers and SSH logins. Read [SECURITY.md](SECURITY.md) first: Docker's group is root-equivalent, and the journal's group can read every log.
+Optional: let it watch containers, SSH logins and DHCP. Read [SECURITY.md](SECURITY.md) first: Docker's group is root-equivalent, the journal's group can read every log, and the network helper may read raw packets (it is filtered to ARP and DHCP and only listens).
 
 ```sh
 sudo nightgrid-node allow docker     # undo with: sudo nightgrid-node deny docker
 sudo nightgrid-node allow journal    # SSH logins; undo with: sudo nightgrid-node deny journal
+sudo nightgrid-node allow netwatch   # DHCP and rogue DHCP (listen-only helper); undo with: sudo nightgrid-node deny netwatch
 ```
 
 Remove it with `sudo nightgrid-node uninstall` (keeps history and config) or `sudo nightgrid-node uninstall --purge` (removes everything, including the service account). If the binary is gone, [dist/uninstall.sh](dist/uninstall.sh) does the same.
@@ -87,7 +87,9 @@ nightgrid-node install [--user NAME]... [--no-start] [--json]
 nightgrid-node uninstall [--purge] [--json]
 nightgrid-node allow docker        let it read containers (root; root-equivalent)
 nightgrid-node allow journal       let it read the journal for SSH logins (root)
-nightgrid-node deny docker|journal take that away again
+nightgrid-node allow netwatch      start the listen-only ARP/DHCP helper (root; CAP_NET_RAW)
+nightgrid-node deny docker|journal|netwatch   take that away again
+nightgrid-node netwatch            the helper (its unit starts it)
 nightgrid-node status              what the running node reports
 nightgrid-node query METHOD [JSON] one protocol request, e.g. query alerts.active
 nightgrid-node watch STREAM...     live frames: events, metrics, containers

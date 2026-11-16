@@ -187,7 +187,66 @@ fn access(shared: &Shared) -> std::collections::BTreeMap<String, String> {
         "off".into()
     };
     let journal = if shared.config.logins.enabled { crate::logins::journal_access() } else { "off" };
-    [("docker".to_owned(), docker), ("journal".to_owned(), journal.to_owned())].into_iter().collect()
+    let netwatch = if !shared.config.network.enabled {
+        "off"
+    } else if shared.dhcp.lock().unwrap_or_else(|e| e.into_inner()).watching(crate::daemon::now_secs()) {
+        "ok"
+    } else {
+        "denied"
+    };
+    [
+        ("docker".to_owned(), docker),
+        ("journal".to_owned(), journal.to_owned()),
+        ("netwatch".to_owned(), netwatch.to_owned()),
+    ]
+    .into_iter()
+    .collect()
+}
+
+/// Takes a report from the network watch helper.
+fn net_report(shared: &Shared, r: nightgrid_node_proto::NetReport) {
+    use crate::netwatch::{Inbox, Neigh};
+    let now = crate::daemon::now_secs();
+    let mac_ok = |m: &str| m.len() == 17 && m.bytes().all(|b| b.is_ascii_hexdigit() || b == b':');
+    {
+        let mut inbox = shared.net_inbox.lock().unwrap_or_else(|e| e.into_inner());
+        let arp = r.arp.iter().map(|a| (a.ip.as_str(), a.mac.as_str(), a.iface.as_str()));
+        // A DHCP ack tells us a client's new address before it ARPs.
+        let acks = r
+            .dhcp
+            .iter()
+            .filter(|d| d.msg == "ack")
+            .filter_map(|d| Some((d.ip.as_deref()?, d.client_mac.as_str(), d.iface.as_str())));
+        for (ip, mac, iface) in arp.chain(acks) {
+            if inbox.arp.len() < Inbox::MAX && ip.parse::<std::net::Ipv4Addr>().is_ok() && mac_ok(mac) {
+                inbox.arp.push(Neigh {
+                    ip: ip.to_owned(),
+                    mac: mac.to_ascii_lowercase(),
+                    iface: iface.chars().take(16).collect(),
+                });
+            }
+        }
+        for d in &r.dhcp {
+            if let Some(h) = d.hostname.as_deref() {
+                let h: String =
+                    h.chars().filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '.' | '_')).take(63).collect();
+                if !h.is_empty() && mac_ok(&d.client_mac) && inbox.names.len() < Inbox::MAX {
+                    inbox.names.push((d.client_mac.to_ascii_lowercase(), h));
+                }
+            }
+        }
+    }
+    let mut dhcp = shared.dhcp.lock().unwrap_or_else(|e| e.into_inner());
+    let events = dhcp.observe(now, &r.dhcp);
+    let st = shared.store.lock().unwrap_or_else(|e| e.into_inner());
+    for e in &events {
+        if let Err(err) = shared.bus.record(&st, e) {
+            crate::warn!("could not record a DHCP event: {err}");
+        }
+    }
+    if let Err(e) = dhcp.save(&st) {
+        crate::warn!("could not save DHCP servers: {e}");
+    }
 }
 
 /// What this node offers. Every capability here is on in N0; later ones
@@ -205,6 +264,7 @@ pub fn caps() -> Caps {
         (cap::LOGINS, 1),
         (cap::FILES, 1),
         (cap::NET, 1),
+        (cap::NET_DHCP, 1),
     ]
     .into_iter()
     .map(|(k, v)| (k.to_owned(), v))
@@ -367,6 +427,21 @@ fn dispatch(shared: &Shared, session: &mut Session, req: &Request) -> Result<Res
         method::CONTAINERS_LIST => {
             let r = shared.containers.lock().unwrap_or_else(|e| e.into_inner()).result.clone();
             Ok(Response::ok(0, r))
+        }
+        method::NET_DHCP => {
+            let r = shared.dhcp.lock().unwrap_or_else(|e| e.into_inner()).result(crate::daemon::now_secs());
+            Ok(Response::ok(0, r))
+        }
+        method::NET_REPORT => {
+            // Only the helper, which runs as the service's own account.
+            // SAFETY: geteuid has no preconditions.
+            let me = unsafe { libc::geteuid() };
+            if session.uid.parse::<u32>().ok() != Some(me) {
+                return Err(Response::err(0, ErrorCode::Forbidden, "only the network watch helper may report"));
+            }
+            let r: nightgrid_node_proto::NetReport = params(&req.params)?;
+            net_report(shared, r);
+            Ok(Response::ok(0, Value::Null))
         }
         method::NET_DEVICES => {
             let r = shared.net.lock().unwrap_or_else(|e| e.into_inner()).clone();

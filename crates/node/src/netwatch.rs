@@ -118,6 +118,8 @@ struct Dev {
     last: i64,
     /// `last` as written to the database.
     written: i64,
+    /// From DHCP (option 12), '' when unknown.
+    name: String,
 }
 
 /// What the node knows about the LAN, and how a new read changes it.
@@ -137,17 +139,26 @@ pub struct Watch {
     full_said: bool,
     /// MACs to write back.
     dirty: HashSet<String>,
+    /// Names heard for devices not in the inventory yet.
+    pending_names: HashMap<String, String>,
 }
 
 impl Watch {
     /// Loads what earlier runs saw.
     pub fn load(store: &Store) -> Result<Self> {
         let mut w = Self { baselined: store.meta(META_BASELINE)?.is_some(), ..Self::default() };
-        let mut st = store.conn().prepare("SELECT mac, ip, iface, first_seen, last_seen FROM net_devices")?;
+        let mut st = store.conn().prepare("SELECT mac, ip, iface, first_seen, last_seen, name FROM net_devices")?;
         let rows = st.query_map([], |r| {
             Ok((
                 r.get::<_, String>(0)?,
-                Dev { ip: r.get(1)?, iface: r.get(2)?, first: r.get(3)?, last: r.get(4)?, written: r.get(4)? },
+                Dev {
+                    ip: r.get(1)?,
+                    iface: r.get(2)?,
+                    first: r.get(3)?,
+                    last: r.get(4)?,
+                    written: r.get(4)?,
+                    name: r.get(5)?,
+                },
             ))
         })?;
         for row in rows {
@@ -194,7 +205,14 @@ impl Watch {
                     }
                     self.devices.insert(
                         (*mac).to_owned(),
-                        Dev { ip: n.ip.clone(), iface: n.iface.clone(), first: now, last: now, written: 0 },
+                        Dev {
+                            ip: n.ip.clone(),
+                            iface: n.iface.clone(),
+                            first: now,
+                            last: now,
+                            written: 0,
+                            name: self.pending_names.remove(*mac).unwrap_or_default(),
+                        },
                     );
                     self.dirty.insert((*mac).to_owned());
                     new_devices.push(*n);
@@ -242,7 +260,10 @@ impl Watch {
                         EventKind::Network,
                         Level::Info,
                         format!("new device {}", n.ip),
-                        format!("{} on {}", n.mac, n.iface),
+                        match self.devices.get(&n.mac).map(|d| d.name.as_str()).filter(|s| !s.is_empty()) {
+                            Some(name) => format!("{} on {}, named {name}", n.mac, n.iface),
+                            None => format!("{} on {}", n.mac, n.iface),
+                        },
                     ));
                 }
             }
@@ -312,17 +333,33 @@ impl Watch {
         events
     }
 
+    /// Remembers the host name a device asked DHCP for.
+    pub fn set_name(&mut self, mac: &str, name: &str) {
+        match self.devices.get_mut(mac) {
+            Some(d) if d.name != name => {
+                d.name = name.to_owned();
+                self.dirty.insert(mac.to_owned());
+            }
+            Some(_) => {}
+            None if self.pending_names.len() < 1024 => {
+                self.pending_names.insert(mac.to_owned(), name.to_owned());
+            }
+            None => {}
+        }
+    }
+
     /// Writes changed devices (and the baseline mark) back.
     pub fn save(&mut self, store: &mut Store, now: i64) -> Result<()> {
         let tx = store.conn_mut().transaction()?;
         {
             let mut up = tx.prepare_cached(
-                "INSERT INTO net_devices (mac, ip, iface, first_seen, last_seen) VALUES (?1, ?2, ?3, ?4, ?5)
-                 ON CONFLICT (mac) DO UPDATE SET ip = excluded.ip, iface = excluded.iface, last_seen = excluded.last_seen",
+                "INSERT INTO net_devices (mac, ip, iface, first_seen, last_seen, name) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                 ON CONFLICT (mac) DO UPDATE SET ip = excluded.ip, iface = excluded.iface,
+                   last_seen = excluded.last_seen, name = excluded.name",
             )?;
             for mac in self.dirty.drain() {
                 if let Some(d) = self.devices.get_mut(&mac) {
-                    up.execute(params![mac, d.ip, d.iface, d.first, d.last])?;
+                    up.execute(params![mac, d.ip, d.iface, d.first, d.last, d.name])?;
                     d.written = d.last;
                 }
             }
@@ -349,6 +386,7 @@ impl Watch {
                 first_seen: d.first,
                 last_seen: d.last,
                 online: self.online.contains(mac),
+                name: (!d.name.is_empty()).then(|| d.name.clone()),
             })
             .collect();
         devices.sort_by(|a, b| b.last_seen.cmp(&a.last_seen).then_with(|| ip_key(&a.ip).cmp(&ip_key(&b.ip))));
@@ -395,6 +433,19 @@ impl NetWatcher {
     }
 }
 
+/// What the network watch helper reported since the last read.
+#[derive(Debug, Default)]
+pub struct Inbox {
+    pub arp: Vec<Neigh>,
+    /// (MAC, host name) from DHCP.
+    pub names: Vec<(String, String)>,
+}
+
+impl Inbox {
+    /// Most entries kept between reads.
+    pub const MAX: usize = 4096;
+}
+
 /// Most devices `net.devices` returns.
 pub const LIST_LIMIT: usize = 1000;
 
@@ -418,7 +469,18 @@ fn run(shared: &Shared, src: &Sources, stop: &mpsc::Receiver<()>) {
             Ok(arp) => {
                 let gateway = std::fs::read_to_string(&src.route).ok().and_then(|r| parse_gateway(&r));
                 let now = now_secs();
-                let events = watch.observe(now, &parse_arp(&arp), gateway, &cfg.ignore_ifaces);
+                let mut table = parse_arp(&arp);
+                {
+                    let mut inbox = shared.net_inbox.lock().unwrap_or_else(|e| e.into_inner());
+                    for (mac, name) in inbox.names.drain(..) {
+                        watch.set_name(&mac, &name);
+                    }
+                    // What the helper heard on the wire counts as seen too;
+                    // the kernel's table wins where both have a MAC.
+                    let have: HashSet<String> = table.iter().map(|n| n.mac.clone()).collect();
+                    table.extend(inbox.arp.drain(..).filter(|n| !have.contains(&n.mac)));
+                }
+                let events = watch.observe(now, &table, gateway, &cfg.ignore_ifaces);
                 let mut st = shared.store.lock().unwrap_or_else(|e| e.into_inner());
                 for e in &events {
                     if let Err(err) = shared.bus.record(&st, e) {

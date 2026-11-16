@@ -125,11 +125,11 @@ if [ "${WAIT_FOR_MINUTE:-0}" = 1 ]; then
 
   say "network watch: new device, a new MAC for its address, then an IP conflict"
   dev=$(ip route show default 2>/dev/null | awk '{print $5; exit}')
+  wait_ev() {
+    i=0; until ev | grep -q "\"title\":\"$1\""; do
+      i=$((i+1)); [ $i -lt 50 ] || fail "no network event: $1"; sleep 1; done
+  }
   if [ -n "$dev" ] && ip neigh replace 198.51.100.77 lladdr 02:00:5e:00:00:77 dev "$dev" nud permanent 2>/dev/null; then
-    wait_ev() {
-      i=0; until ev | grep -q "\"title\":\"$1\""; do
-        i=$((i+1)); [ $i -lt 50 ] || fail "no network event: $1"; sleep 1; done
-    }
     wait_ev "new device 198.51.100.77"
     q net.devices | grep -q '"ip":"198.51.100.77","lastSeen"' || { q net.devices; fail "not in net.devices"; }
     ip neigh replace 198.51.100.77 lladdr 02:00:5e:00:00:78 dev "$dev" nud permanent
@@ -139,6 +139,33 @@ if [ "${WAIT_FOR_MINUTE:-0}" = 1 ]; then
     ip neigh del 198.51.100.77 dev "$dev"
   else
     echo "skipped: cannot add a neighbour entry here"
+  fi
+
+  say "network watch helper: off until root allows it, then DHCP servers and a rogue one"
+  q node.info | grep -q '"netwatch":"denied"' || { q node.info; fail "netwatch should be denied"; }
+  q "net.report '{\"arp\":[]}'" 2>&1 | grep -q 'only the network watch helper' || fail "a login user could send helper reports"
+  if command -v python3 >/dev/null && ip link add ngn0 type veth peer name ngn1 2>/dev/null; then
+    ip link set ngn0 up && ip link set ngn1 up
+    /usr/local/bin/nightgrid-node allow netwatch --json | tee /tmp/ngn-allow-n.json
+    grep -q 'CAP_NET_RAW' /tmp/ngn-allow-n.json || fail "no netwatch warning"
+    systemctl is-active --quiet nightgrid-node-netwatch || { journalctl -u nightgrid-node-netwatch --no-pager -n 20; fail "helper not running"; }
+    systemctl show -p CapabilityBoundingSet --value nightgrid-node-netwatch | tee /dev/stderr | grep -qx 'cap_net_raw' || fail "helper has more than CAP_NET_RAW"
+    i=0; until q node.info | grep -q '"netwatch":"ok"'; do
+      i=$((i+1)); [ $i -lt 90 ] || { journalctl -u nightgrid-node-netwatch --no-pager -n 20; fail "helper never reported"; }; sleep 1; done
+    python3 "$(dirname "$0")/dhcp-frames.py" ngn1 first
+    wait_ev "DHCP server 10.99.0.1"
+    python3 "$(dirname "$0")/dhcp-frames.py" ngn1 rogue
+    wait_ev "another DHCP server on the LAN: 10.99.0.66"
+    q net.dhcp | tee /tmp/ngn-dhcp.json
+    grep -q '"ip":"10.99.0.66"' /tmp/ngn-dhcp.json || fail "rogue server not listed"
+    i=0; until q net.devices | grep -q '"mac":"02:00:5e:10:00:02","name":"ngn-phone"'; do
+      i=$((i+1)); [ $i -lt 50 ] || { q net.devices; fail "DHCP client not in the inventory with its name"; }; sleep 1; done
+    /usr/local/bin/nightgrid-node deny netwatch >/dev/null
+    test ! -e /etc/systemd/system/nightgrid-node-netwatch.service || fail "helper unit left after deny"
+    systemctl is-active --quiet nightgrid-node-netwatch && fail "helper still running after deny"
+    ip link del ngn0
+  else
+    echo "skipped: no python3 or no veth here"
   fi
 fi
 

@@ -48,6 +48,11 @@ pub mod method {
     pub const CONTAINERS_LIST: &str = "containers.list";
     /// Devices the node has seen on its LAN (neighbour table).
     pub const NET_DEVICES: &str = "net.devices";
+    /// DHCP servers seen on the LAN (needs `allow netwatch`).
+    pub const NET_DHCP: &str = "net.dhcp";
+    /// Internal: the network watch helper's reports. Only the node's own
+    /// service account may call it.
+    pub const NET_REPORT: &str = "net.report";
     /// Protocol 2: start pushing frames for streams.
     pub const SUBSCRIBE: &str = "subscribe";
     /// Protocol 2: stop pushing frames for streams.
@@ -92,6 +97,8 @@ pub mod cap {
     pub const FILES: &str = "files";
     /// `net.devices`; network events (new devices, IP changes and conflicts) in `events`.
     pub const NET: &str = "net";
+    /// `net.dhcp`; DHCP events and device names (needs `allow netwatch`).
+    pub const NET_DHCP: &str = "net.dhcp";
 }
 
 /// Capability name → version.
@@ -148,6 +155,8 @@ pub enum ErrorCode {
     TooLarge,
     /// Something failed on the node (details are in the node's log).
     Internal,
+    /// This caller may not use the method.
+    Forbidden,
     /// Codes added by newer nodes.
     #[serde(other)]
     Unknown,
@@ -482,6 +491,90 @@ pub struct NetDevice {
     pub last_seen: i64,
     /// In the neighbour table at the last look.
     pub online: bool,
+    /// The host name the device asked DHCP for (needs `allow netwatch`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+/// A device seen sending ARP on the LAN (network watch helper).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArpSeen {
+    pub ip: String,
+    pub mac: String,
+    pub iface: String,
+}
+
+/// One DHCP message seen on the LAN (network watch helper).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DhcpSeen {
+    pub at: i64,
+    /// `discover`, `offer`, `request`, `decline`, `ack`, `nak`, `release`, `inform`.
+    pub msg: String,
+    pub iface: String,
+    /// The client's hardware address (`chaddr`).
+    pub client_mac: String,
+    /// The server's identifier (option 54).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server: Option<String>,
+    /// Ethernet source of a server's message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_mac: Option<String>,
+    /// The address offered or acknowledged (`yiaddr`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ip: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub router: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dns: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subnet: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lease_secs: Option<u32>,
+    /// The client's host name (option 12).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hostname: Option<String>,
+}
+
+/// `net.report` params (internal).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct NetReport {
+    pub arp: Vec<ArpSeen>,
+    pub dhcp: Vec<DhcpSeen>,
+}
+
+/// A DHCP server the node has seen answering on the LAN.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DhcpServer {
+    /// Its server identifier (option 54).
+    pub ip: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mac: Option<String>,
+    pub first_seen: i64,
+    pub last_seen: i64,
+    /// What it hands out, from its last offer or ack.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub router: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dns: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subnet: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lease_secs: Option<u32>,
+    /// Listed by root in `[network] dhcp_servers`.
+    pub trusted: bool,
+}
+
+/// `net.dhcp` result.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DhcpResult {
+    /// The helper has reported in the last two minutes.
+    pub watching: bool,
+    pub servers: Vec<DhcpServer>,
 }
 
 /// `net.devices` result.

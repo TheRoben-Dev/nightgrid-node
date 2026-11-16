@@ -41,6 +41,10 @@ pub struct Shared {
     pub bus: crate::bus::Bus,
     /// The LAN inventory, as the network watcher last saw it.
     pub net: Mutex<nightgrid_node_proto::NetDevicesResult>,
+    /// Sightings from the network watch helper, for the next read.
+    pub net_inbox: Mutex<crate::netwatch::Inbox>,
+    /// DHCP servers seen by the helper.
+    pub dhcp: Mutex<crate::dhcp::Dhcp>,
 }
 
 impl Shared {
@@ -52,6 +56,7 @@ impl Shared {
             arch: std::env::consts::ARCH.to_owned(),
         };
         let rules = crate::engine::load_rules(&store);
+        let dhcp = crate::dhcp::Dhcp::load(&store, &config.network.dhcp_servers);
         let docker_access = if config.docker.enabled {
             nightgrid_node_proto::ContainerAccess::Absent
         } else {
@@ -68,6 +73,8 @@ impl Shared {
             containers: Mutex::new(crate::containers::ContainerState::new(docker_access)),
             bus: crate::bus::Bus::default(),
             net: Mutex::new(nightgrid_node_proto::NetDevicesResult { at: 0, gateway: None, devices: Vec::new() }),
+            net_inbox: Mutex::new(crate::netwatch::Inbox::default()),
+            dhcp: Mutex::new(dhcp),
         })
     }
 }

@@ -21,6 +21,9 @@ use serde::Serialize;
 pub const SERVICE: &str = "nightgrid-node";
 pub const USER: &str = "nightgrid-node";
 pub const UNIT: &str = include_str!("../../../dist/systemd/nightgrid-node.service");
+/// The opt-in network watch helper (`allow netwatch`).
+pub const NETWATCH_UNIT: &str = include_str!("../../../dist/systemd/nightgrid-node-netwatch.service");
+pub const NETWATCH_SERVICE: &str = "nightgrid-node-netwatch";
 pub const SYSUSERS: &str = "# Nightgrid Node service account (no login shell, no password).\n\
                             u nightgrid-node - \"Nightgrid Node\" /var/lib/nightgrid-node\n";
 
@@ -42,6 +45,9 @@ impl Layout {
     }
     pub fn unit(&self) -> PathBuf {
         self.at("/etc/systemd/system/nightgrid-node.service")
+    }
+    pub fn netwatch_unit(&self) -> PathBuf {
+        self.at("/etc/systemd/system/nightgrid-node-netwatch.service")
     }
     pub fn sysusers(&self) -> PathBuf {
         self.at("/etc/sysusers.d/nightgrid-node.conf")
@@ -198,6 +204,11 @@ pub fn install(layout: &Layout, sys: &mut dyn Sys, self_exe: &Path, opts: &Insta
 
     write_file(&layout.unit(), UNIT, 0o644)?;
     rep.step(format!("wrote {}", layout.unit().display()));
+    let netwatch = layout.netwatch_unit().exists();
+    if netwatch {
+        write_file(&layout.netwatch_unit(), NETWATCH_UNIT, 0o644)?;
+        rep.step(format!("updated {}", layout.netwatch_unit().display()));
+    }
 
     for u in &opts.allow_users {
         sys.run("id", &["-u", u]).map_err(|_| format!("no such user: {u}"))?;
@@ -215,6 +226,12 @@ pub fn install(layout: &Layout, sys: &mut dyn Sys, self_exe: &Path, opts: &Insta
         rep.step("service started".to_string());
         if layout.is_system() {
             wait_ready(&mut rep);
+        }
+        if netwatch {
+            match sys.run("systemctl", &["restart", NETWATCH_SERVICE]) {
+                Ok(_) => rep.step("network watch helper restarted".to_string()),
+                Err(e) => rep.warnings.push(e),
+            }
         }
     }
     Ok(rep)
@@ -239,6 +256,13 @@ fn wait_ready(rep: &mut Report) {
 pub fn uninstall(layout: &Layout, sys: &mut dyn Sys, purge: bool) -> Result<Report, String> {
     preflight(layout)?;
     let mut rep = Report { action: "uninstall", version: env!("CARGO_PKG_VERSION"), ..Default::default() };
+    if layout.netwatch_unit().exists() {
+        match sys.run("systemctl", &["disable", "--now", NETWATCH_SERVICE]) {
+            Ok(_) => rep.step("network watch helper stopped and disabled".to_string()),
+            Err(e) => rep.warnings.push(e),
+        }
+        remove(&layout.netwatch_unit(), &mut rep)?;
+    }
     match sys.run("systemctl", &["disable", "--now", SERVICE]) {
         Ok(_) => rep.step("service stopped and disabled".to_string()),
         Err(e) => rep.warnings.push(e),
@@ -279,6 +303,8 @@ pub enum Grant {
     Docker,
     /// The journal's group: reads every log on the host.
     Journal,
+    /// The network watch helper: a separate unit with `CAP_NET_RAW`.
+    Netwatch,
 }
 
 impl Grant {
@@ -286,6 +312,7 @@ impl Grant {
         match s {
             "docker" => Some(Self::Docker),
             "journal" => Some(Self::Journal),
+            "netwatch" => Some(Self::Netwatch),
             _ => None,
         }
     }
@@ -293,6 +320,7 @@ impl Grant {
         match self {
             Self::Docker => "docker.conf",
             Self::Journal => "journal.conf",
+            Self::Netwatch => "netwatch",
         }
     }
 }
@@ -327,7 +355,27 @@ pub fn allow(
 ) -> Result<Report, String> {
     preflight(layout)?;
     let mut rep = Report { action: "allow", version: env!("CARGO_PKG_VERSION"), ..Default::default() };
+    if grant == Grant::Netwatch {
+        rep.warnings.push(
+            "the helper may read every packet on this host's network interfaces (CAP_NET_RAW). A kernel filter \
+             passes it only ARP and DHCP, it sends nothing, and it keeps only addresses, MACs, DHCP settings \
+             and host names."
+                .into(),
+        );
+        write_file(&layout.netwatch_unit(), NETWATCH_UNIT, 0o644)?;
+        rep.step(format!("wrote {}", layout.netwatch_unit().display()));
+        sys.run("systemctl", &["daemon-reload"])?;
+        if no_start {
+            sys.run("systemctl", &["enable", NETWATCH_SERVICE])?;
+            rep.step("enabled at boot, not started".to_string());
+        } else {
+            sys.run("systemctl", &["enable", "--now", NETWATCH_SERVICE])?;
+            rep.step("network watch helper started".to_string());
+        }
+        return Ok(rep);
+    }
     let body = match grant {
+        Grant::Netwatch => unreachable!("handled above"),
         Grant::Docker => {
             let group = socket_group(sys, socket, layout.is_system())?;
             rep.warnings.push(format!(
@@ -371,6 +419,19 @@ pub fn allow(
 pub fn deny(layout: &Layout, sys: &mut dyn Sys, grant: Grant, no_start: bool) -> Result<Report, String> {
     preflight(layout)?;
     let mut rep = Report { action: "deny", version: env!("CARGO_PKG_VERSION"), ..Default::default() };
+    if grant == Grant::Netwatch {
+        if !layout.netwatch_unit().exists() {
+            rep.step("netwatch was not allowed".to_string());
+            return Ok(rep);
+        }
+        if let Err(e) = sys.run("systemctl", &["disable", "--now", NETWATCH_SERVICE]) {
+            rep.warnings.push(e);
+        }
+        remove(&layout.netwatch_unit(), &mut rep)?;
+        sys.run("systemctl", &["daemon-reload"])?;
+        rep.step("network watch helper stopped".to_string());
+        return Ok(rep);
+    }
     let path = layout.dropin_dir().join(grant.file());
     if !path.exists() {
         rep.step(format!("{} was not allowed", grant.file().trim_end_matches(".conf")));
@@ -466,6 +527,32 @@ mod tests {
         std::fs::write(&exe, b"\x7fELF fake").unwrap();
         let layout = Layout { root: d.path().join("root") };
         (d, layout, exe)
+    }
+
+    #[test]
+    fn allow_and_deny_netwatch() {
+        let (_d, layout, exe) = setup();
+        let mut sys = FakeSys::default();
+        install(&layout, &mut sys, &exe, &InstallOptions::default()).unwrap();
+        let rep = allow(&layout, &mut sys, Grant::Netwatch, Path::new("/x"), false).unwrap();
+        assert!(rep.warnings[0].contains("CAP_NET_RAW"));
+        let unit = std::fs::read_to_string(layout.netwatch_unit()).unwrap();
+        assert!(
+            unit.contains("CapabilityBoundingSet=CAP_NET_RAW")
+                && unit.contains("RestrictAddressFamilies=AF_UNIX AF_PACKET")
+        );
+        assert!(sys.log.ends_with(&["systemctl enable --now nightgrid-node-netwatch".to_string()]));
+        // A reinstall refreshes and restarts it.
+        install(&layout, &mut sys, &exe, &InstallOptions::default()).unwrap();
+        assert!(sys.log.ends_with(&["systemctl restart nightgrid-node-netwatch".to_string()]));
+        deny(&layout, &mut sys, Grant::Netwatch, false).unwrap();
+        assert!(!layout.netwatch_unit().exists());
+        assert!(sys.log.contains(&"systemctl disable --now nightgrid-node-netwatch".to_string()));
+        assert_eq!(deny(&layout, &mut sys, Grant::Netwatch, false).unwrap().steps, ["netwatch was not allowed"]);
+        // Uninstall takes it away too.
+        allow(&layout, &mut sys, Grant::Netwatch, Path::new("/x"), true).unwrap();
+        uninstall(&layout, &mut sys, false).unwrap();
+        assert!(!layout.netwatch_unit().exists());
     }
 
     #[test]
