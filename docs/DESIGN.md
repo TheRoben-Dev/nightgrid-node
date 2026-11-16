@@ -2,7 +2,7 @@
 
 Nightgrid is agentless: the app does everything over SSH while it is open. Nightgrid Node is an **optional** agent for Linux servers that keeps collecting while the app is closed or the computer is offline, and hands everything over when the app reconnects. It is an accelerator, never a requirement: every app feature keeps working over plain SSH on hosts without it.
 
-Status: N0 to N3a are built (metrics, events, uptime, disk usage, offline alerts, containers, live push, logins, watched files, LAN device inventory); this document describes the whole plan and marks what exists with its milestone in bold. The order after N1 follows the expanded brief of 2026-11-16: real-time push, network watch, self-healing, then the rest. Milestones are in [MILESTONES.md](MILESTONES.md), the wire format in [PROTOCOL.md](PROTOCOL.md), choices and their reasons in [DECISIONS.md](DECISIONS.md), and the app-side work in [app-integration/](app-integration/).
+Status: N0 to N3 are built (metrics, events, uptime, disk usage, offline alerts, containers, live push, logins, watched files, LAN device inventory, DHCP watch); this document describes the whole plan and marks what exists with its milestone in bold. The order after N1 follows the expanded brief of 2026-11-16: real-time push, network watch, self-healing, then the rest. Milestones are in [MILESTONES.md](MILESTONES.md), the wire format in [PROTOCOL.md](PROTOCOL.md), choices and their reasons in [DECISIONS.md](DECISIONS.md), and the app-side work in [app-integration/](app-integration/).
 
 ## 1. Shape
 
@@ -131,7 +131,7 @@ Portability: needs systemd ≥ 247 and `usermod`. Tested in CI on Ubuntu (x86_64
 | Alerts while away (disk, filling, containers) | `alerts`, `events.sync` | **N1** / **N1b** | only while the app runs |
 | Container states, restarts, health | `containers` (opt-in docker grant) | **N1b** | Docker API over SSH |
 | Real-time events (alerts, containers, logins, file changes) | protocol 2 streams, `logins`, `files` | **N2** | polling over SSH |
-| Network map, device inventory, IP conflicts, rogue DHCP | `net` | **N3a** (inventory, conflicts), N3b (DHCP) | scans from the app |
+| Network map, device inventory, IP conflicts, rogue DHCP | `net` | **N3a** (inventory, conflicts), **N3b** (DHCP helper) | scans from the app |
 | Container/unit/power actions, self-healing | `act.*`, `heal` (opt-in per rule) | N4 | SSH + sudo prompt |
 | Snapshot and rollback (compose, config, network) | `rollback` with dead-man timer | N4 | app-driven |
 | SMART, pools, updates, backups, UPS | root helper reads | N5 | sudo over SSH |

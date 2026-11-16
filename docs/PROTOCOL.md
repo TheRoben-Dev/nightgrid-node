@@ -28,6 +28,7 @@ Field names are camelCase. Unknown fields are ignored by both sides. Times are u
 | `capability_disabled` | The method's capability is switched off on this node |
 | `too_large` | Line over 4 MiB |
 | `internal` | Failed on the node; details are only in the node's journal |
+| `forbidden` | This caller may not use the method (0.7.0+: `net.report` from anyone but the helper) |
 
 Clients treat unknown codes like `internal`.
 
@@ -92,6 +93,7 @@ The node never buffers without bound for a slow client: each stream keeps a shor
 | `logins` 1 | `login` events (with `allow journal`) | N2b |
 | `files` 1 | `file` events for the paths root listed | N2b |
 | `net` 1 | `net.devices`; `network` events | N3a |
+| `net.dhcp` 1 | `net.dhcp`; DHCP `network` events; device `name` (with `allow netwatch`) | N3b |
 
 ### `node.info` (`node` 1)
 
@@ -108,11 +110,11 @@ The node never buffers without bound for a slow client: each stream keeps a shor
   ],
   "rssBytes": 2633728,
   "dbBytes": 3145728,
-  "access": {"docker": "ok", "journal": "denied"}
+  "access": {"docker": "ok", "journal": "denied", "netwatch": "denied"}
 }
 ```
 
-`access` (0.5.0+) says which optional access root has granted: `ok`, `denied` (root hasn't run `nightgrid-node allow <name>`), `absent` (nothing to read on this host) or `off` (disabled in the config).
+`access` (0.5.0+; `netwatch` 0.7.0+, `ok` while the helper has reported in the last 2½ minutes) says which optional access root has granted: `ok`, `denied` (root hasn't run `nightgrid-node allow <name>`), `absent` (nothing to read on this host) or `off` (disabled in the config).
 
 ### `metrics.latest` (`metrics` 1)
 
@@ -164,7 +166,7 @@ The cursor is the event's `seq`, which only grows.
 - `kind`: `alert` (fired, worse, or changed: `level: info` when it got better), `recovered` (`level: ok`, `alert.resolved` set), `boot`, `outage`, `container` (N1b), `login` and `file` (N2b), `network` (N3a); unknown kinds read as `other`.
 - `login`: "alice logged in from 10.0.0.5" (`detail`: "ssh, publickey"), or failed logins summed per minute: "failed login for root from 192.0.2.7" / "12 failed logins from 3 addresses" (`detail`: users and the top addresses; `warn` from 10 failures). Needs `allow journal`.
 - `file`: "changed /etc/ssh/sshd_config", "added /etc/cron.d/backup", "removed …". `detail` lists size, a short SHA-256, mode and owner changes, never contents; "(while the node was not running)" when found at start. `warn` for SSH, sudoers, passwd, shadow and group files.
-- `network`: "new device 192.168.1.23" (`detail`: "aa:bb:cc:dd:ee:ff on eth0"), "N new devices" (more than 20 in one read), "device moved 192.168.1.20 → 192.168.1.21" (a new lease), "address 192.168.1.50 answers from a new MAC" (`detail`: "old → new"), "IP conflict on 192.168.1.50" (`warn`: the address keeps switching between MACs; `critical` on the gateway), "gateway 192.168.1.1 answers from a new MAC" (`warn`: a replaced router, or ARP spoofing), and one "network watch started" on a fresh install.
+- `network`: "new device 192.168.1.23" (`detail`: "aa:bb:cc:dd:ee:ff on eth0"), "N new devices" (more than 20 in one read), "device moved 192.168.1.20 → 192.168.1.21" (a new lease), "address 192.168.1.50 answers from a new MAC" (`detail`: "old → new"), "IP conflict on 192.168.1.50" (`warn`: the address keeps switching between MACs; `critical` on the gateway), "gateway 192.168.1.1 answers from a new MAC" (`warn`: a replaced router, or ARP spoofing), and one "network watch started" on a fresh install. With `allow netwatch` (N3b): "DHCP server 192.168.1.1" (the first one seen, or one root listed), "another DHCP server on the LAN: 192.168.1.66" (`warn`: possibly rogue), "DHCP server 192.168.1.1 hands out a different router / DNS / router and DNS" (`warn`).
 - `level`: `info`, `ok`, `warn`, `critical`.
 - `outage` events carry `"outage": {"start", "end", "state": "down" | "asleep"}`. Titles: `Down` (the host or node went away without a clean stop), `Restarted` (clean stop, then a new boot), `Suspended` (the host slept).
 - Title and detail go through the app's secret filter and are capped (200 / 600 characters).
@@ -235,11 +237,31 @@ The LAN inventory from the kernel's IPv4 neighbour table, read every 30 s by def
 - No vendor: the app looks the MAC up in its own OUI table (`netmap::mac_vendor`).
 - Container bridges (`docker0`, `br-*`, `veth*`, …) and interfaces root lists in `[network] ignore_ifaces` are left out. Devices unseen for 400 days are forgotten.
 
+- `name` (0.7.0+, with `allow netwatch`): the host name the device asked DHCP for. Left out when unknown.
+
+### `net.dhcp` (`net.dhcp` 1)
+
+DHCP servers the network watch helper has seen (needs `sudo nightgrid-node allow netwatch`). Servers unseen for 30 days are dropped.
+
+```json
+{"watching": true, "servers": [
+  {"ip": "192.168.1.1", "mac": "aa:bb:cc:dd:ee:01", "firstSeen": 1763000000, "lastSeen": 1763290000,
+   "router": "192.168.1.1", "dns": ["192.168.1.1"], "subnet": "255.255.255.0", "leaseSecs": 86400, "trusted": false}
+]}
+```
+
+- `watching`: the helper reported in the last 2½ minutes. `false` with an empty list means it isn't allowed or isn't running.
+- `trusted`: root listed the address in `[network] dhcp_servers`.
+- A server seen only in a client's request has no `mac`, `router` or `dns` until one of its own replies is seen.
+
+### `net.report` (internal)
+
+How the helper hands over what it saw: `{"arp": [{ip, mac, iface}], "dhcp": [DhcpSeen]}`. Only a connection from the service's own account may call it; anyone else gets `forbidden`. Apps never call it.
+
 ## Planned (not in version 1 yet)
 
 | Capability | Methods | Milestone |
 |---|---|---|
-| `net.dhcp` | DHCP servers and leases seen on the LAN; rogue-DHCP events (separate `CAP_NET_RAW` unit) | N3b |
 | `act.*`, `heal` | typed actions and self-healing rules, each opt-in, every run audited | N4 |
 | `logs` | `logs.rules.set`, `logs.findings` | N5 |
 | `checks` | `checks.set`, `checks.latest` | N7 |

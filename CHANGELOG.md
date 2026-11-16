@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.0 · N3b (unreleased)
+
+- Network watch helper, off until root runs `nightgrid-node allow netwatch`: a separate unit (`nightgrid-node-netwatch.service`) whose only privilege is `CAP_NET_RAW`. It listens for ARP and DHCP through a kernel filter, sends nothing, and reports to the service over the unix socket.
+- `net.dhcp`: DHCP servers on the LAN with what they hand out. Events for the first server, another server (possible rogue DHCP, `warn`, unless listed in `[network] dhcp_servers`) and a server handing out a different router or DNS (`warn`).
+- Devices heard on the wire join the inventory (also ones this host never talks to), with the host name they asked DHCP for (`name`).
+- `node.info.access.netwatch`; error code `forbidden`.
+
 ## 0.6.0 · N3a (unreleased)
 
 - Network watch: an inventory of LAN devices from the kernel's neighbour table (`net.devices`), read every 30 s with no privileges and nothing sent. `network` events for new devices, devices on a new address, addresses answering from a new MAC, IP conflicts (an address switching between MACs) and a gateway answering from a new MAC (possible ARP spoofing). The first read on a fresh install is the baseline.

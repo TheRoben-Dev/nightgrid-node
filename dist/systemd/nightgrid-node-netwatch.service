@@ -1,0 +1,59 @@
+# Nightgrid Node network watch helper (optional, off by default).
+# Installed by `nightgrid-node allow netwatch`; removed by `nightgrid-node deny netwatch`.
+# It listens for ARP and DHCP on the LAN to spot devices, DHCP servers and
+# rogue DHCP servers. It holds one capability, CAP_NET_RAW, sends no packets,
+# and hands what it sees to the main service over its unix socket.
+
+[Unit]
+Description=Nightgrid Node network watch (ARP and DHCP, listen only)
+Documentation=https://github.com/TheRoben-Dev/nightgrid-node
+After=nightgrid-node.service network.target
+PartOf=nightgrid-node.service
+
+[Service]
+Type=simple
+User=nightgrid-node
+Group=nightgrid-node
+ExecStart=/usr/local/bin/nightgrid-node netwatch
+Restart=on-failure
+RestartSec=10s
+TimeoutStopSec=5s
+
+# The one capability: a packet socket to listen with. No other privileges.
+AmbientCapabilities=CAP_NET_RAW
+CapabilityBoundingSet=CAP_NET_RAW
+NoNewPrivileges=yes
+
+# Packet socket to listen, unix socket to report. No IP sockets at all.
+RestrictAddressFamilies=AF_UNIX AF_PACKET
+IPAddressDeny=any
+
+# Nothing to write anywhere.
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+UMask=0077
+
+MemoryMax=32M
+TasksMax=4
+CPUWeight=20
+Nice=10
+
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+
+[Install]
+WantedBy=multi-user.target

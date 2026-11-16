@@ -26,10 +26,14 @@ impl Drop for Service {
 }
 
 fn start() -> Service {
+    start_with("[metrics]\ninterval_secs = 2\n")
+}
+
+fn start_with(config_text: &str) -> Service {
     let dir = tempfile::tempdir().unwrap();
     let socket = dir.path().join("run/node.sock");
     let config = dir.path().join("config.toml");
-    std::fs::write(&config, "[metrics]\ninterval_secs = 2\n").unwrap();
+    std::fs::write(&config, config_text).unwrap();
     let child = Command::new(BIN)
         .args(["run", "--config"])
         .arg(&config)
@@ -175,13 +179,19 @@ fn pushes_live_metrics_and_keeps_protocol_1() {
     let r = c.call("subscribe", json!({"streams": ["metrics", "events"]})).unwrap();
     assert_eq!(r["streams"], json!(["events", "metrics"]));
     // Frames don't confuse request/response matching.
+    // Events (e.g. "network watch started") may arrive in between.
+    let next_metrics = |c: &mut Client| loop {
+        let f = c.next_frame().unwrap();
+        if f.stream == "metrics" {
+            break f;
+        }
+        assert_eq!(f.stream, "events");
+    };
     let t = Instant::now();
-    let f = c.next_frame().unwrap();
-    assert_eq!(f.stream, "metrics");
+    let f = next_metrics(&mut c);
     assert!(f.data["memTotal"].as_u64().unwrap() > 0);
     assert!(c.call("node.info", Value::Null).is_ok());
-    let f = c.next_frame().unwrap();
-    assert_eq!(f.stream, "metrics");
+    next_metrics(&mut c);
     assert!(t.elapsed() < Duration::from_secs(8), "{:?}", t.elapsed());
     match c.call("subscribe", json!({"streams": ["nope"]})) {
         Err(CallError::Rpc(e)) => assert_eq!(e.code, ErrorCode::BadRequest),
@@ -202,4 +212,57 @@ fn pushes_live_metrics_and_keeps_protocol_1() {
     s.write_all(b"{\"id\":2,\"method\":\"subscribe\",\"params\":{\"streams\":[\"metrics\"]}}\n").unwrap();
     rd.read_line(&mut line).unwrap();
     assert!(line.contains("unknown_method"), "{line}");
+}
+
+#[test]
+fn takes_netwatch_reports_from_its_own_account() {
+    let svc = start_with("[network]\ninterval_secs = 5\n[docker]\nenabled = false\n");
+    let mut c = Client::connect(&svc.socket, "e2e").unwrap();
+    assert!(c.welcome.caps.contains_key("net.dhcp"));
+    let info = c.call("node.info", Value::Null).unwrap();
+    assert_eq!(info["access"]["netwatch"], "denied");
+    let empty = c.call("net.dhcp", Value::Null).unwrap();
+    assert_eq!(empty, json!({"watching": false, "servers": []}));
+
+    // The test runs as the service's own uid, like the helper does.
+    let offer = |server: &str, dns: &str| {
+        json!({"at": 1, "msg": "offer", "iface": "eth0", "clientMac": "aa:bb:cc:00:00:02",
+               "server": server, "serverMac": "02:00:00:00:00:01", "ip": "10.99.0.50",
+               "router": server, "dns": [dns], "subnet": "255.255.255.0", "leaseSecs": 3600})
+    };
+    let report = json!({
+        "arp": [{"ip": "10.99.0.1", "mac": "02:00:00:00:00:01", "iface": "eth0"}],
+        "dhcp": [
+            offer("10.99.0.1", "10.99.0.1"),
+            {"at": 2, "msg": "request", "iface": "eth0", "clientMac": "aa:bb:cc:00:00:02",
+             "server": "10.99.0.1", "hostname": "ngn-phone"},
+            {"at": 3, "msg": "ack", "iface": "eth0", "clientMac": "aa:bb:cc:00:00:02",
+             "server": "10.99.0.1", "ip": "10.99.0.50"}
+        ]
+    });
+    c.call("net.report", report).unwrap();
+    c.call("net.report", json!({"dhcp": [offer("10.99.0.66", "10.99.0.66")]})).unwrap();
+
+    let d = c.call("net.dhcp", Value::Null).unwrap();
+    assert_eq!(d["watching"], true);
+    let ips: Vec<&str> = d["servers"].as_array().unwrap().iter().map(|s| s["ip"].as_str().unwrap()).collect();
+    assert!(ips.contains(&"10.99.0.1") && ips.contains(&"10.99.0.66"), "{d}");
+    assert_eq!(c.call("node.info", Value::Null).unwrap()["access"]["netwatch"], "ok");
+    let ev = c.call("events.sync", json!({"after": 0})).unwrap();
+    let titles: Vec<&str> = ev["events"].as_array().unwrap().iter().map(|e| e["title"].as_str().unwrap()).collect();
+    assert!(titles.contains(&"DHCP server 10.99.0.1"), "{titles:?}");
+    assert!(titles.contains(&"another DHCP server on the LAN: 10.99.0.66"), "{titles:?}");
+
+    // The device and its DHCP name reach the inventory at the next read.
+    let t = Instant::now();
+    loop {
+        let net = c.call("net.devices", Value::Null).unwrap();
+        let dev = net["devices"].as_array().unwrap().iter().find(|d| d["mac"] == "aa:bb:cc:00:00:02").cloned();
+        if let Some(dev) = dev {
+            assert_eq!((dev["ip"].as_str(), dev["name"].as_str()), (Some("10.99.0.50"), Some("ngn-phone")), "{dev}");
+            break;
+        }
+        assert!(t.elapsed() < Duration::from_secs(15), "device never listed: {net}");
+        std::thread::sleep(Duration::from_millis(250));
+    }
 }

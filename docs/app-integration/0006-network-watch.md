@@ -1,6 +1,6 @@
 # 0006 · Network watch
 
-Node milestone: **N3a** (nightgrid-node 0.6.0, protocol 1 and 2). Status: **proposed** for the app. Builds on 0002 (events sync) and 0004 (live streams).
+Node milestones: **N3a** (nightgrid-node 0.6.0) and **N3b** (0.7.0), protocol 1 and 2. Status: **proposed** for the app. Builds on 0002 (events sync) and 0004 (live streams).
 
 ## What the person gets
 
@@ -32,9 +32,28 @@ The detail of "new device" events is "<mac> on <iface>". The app can add the ven
 
 Show "Watching the LAN: N devices, M online" from `net.devices`. Settings are root's: "Edit `[network]` in /etc/nightgrid-node/config.toml on the server" (interval, interfaces to ignore, or switch it off).
 
+## 4. DHCP watch (N3b, `net.dhcp`)
+
+`node.info.access.netwatch`:
+
+| Value | Panel shows | Button |
+|---|---|---|
+| `ok` | "Watching DHCP and ARP on the LAN" | **Stop** → `sudo nightgrid-node deny netwatch --json` |
+| `denied` | "Not watching DHCP" | **Allow** → confirmation, then `sudo nightgrid-node allow netwatch --json` |
+| `off` | "Network watch is switched off in the node's config" | none |
+
+Confirmation text: "This starts a small helper that may read raw network packets. A kernel filter passes it only ARP and DHCP, it never sends anything, and it keeps only addresses, MACs, DHCP settings and device names." Run through the existing sudo flow and show `warnings`. No reconnect is needed; the helper reports within a minute.
+
+With `net.dhcp`:
+
+- **Map:** mark devices whose IP is a DHCP server ("DHCP server", with what it hands out). A second, untrusted server gets the warning colour. Use `name` from `net.devices` as the device's label when the person hasn't named it.
+- **Timeline:** the DHCP events are `network` events like the rest; the "another DHCP server" one is `warn`.
+- **Trusting a second server** is root's: show "List it in `[network] dhcp_servers` in /etc/nightgrid-node/config.toml if it's expected".
+
 ## Tests in the app
 
 - `net.devices` from a fixture fills the map with vendors from the app's table and dimmed offline devices.
 - A scan after that keeps first/last seen and labels for devices keyed by MAC.
 - `network` events from a fixture show with the right kind and level.
 - A host without `net` still scans as before.
+- `access.netwatch: denied` offers Allow; `ok` offers Stop; a `net.dhcp` fixture with two servers marks the untrusted one.

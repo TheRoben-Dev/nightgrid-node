@@ -22,7 +22,10 @@ COMMANDS:
     allow docker            Let the service read containers through the engine
                             socket's group (root; root-equivalent access)
     allow journal           Let the service read the journal for SSH logins (root)
-    deny docker|journal     Take that access away again (root)
+    allow netwatch          Start the listen-only helper for ARP and DHCP (root; CAP_NET_RAW)
+    deny docker|journal|netwatch
+                            Take that access away again (root)
+    netwatch                Run the network watch helper (its unit starts this)
     status                  Show what the running node reports
     query METHOD [JSON]     Send one request and print the answer
     watch STREAM... [--count N]
@@ -137,9 +140,9 @@ fn real_main() -> Result<(), String> {
             Ok(())
         }
         "allow" | "deny" => {
-            let what = a.rest.first().ok_or("allow/deny what? (docker, journal)")?;
-            let grant =
-                install::Grant::parse(what).ok_or_else(|| format!("unknown access {what:?} (docker, journal)"))?;
+            let what = a.rest.first().ok_or("allow/deny what? (docker, journal, netwatch)")?;
+            let grant = install::Grant::parse(what)
+                .ok_or_else(|| format!("unknown access {what:?} (docker, journal, netwatch)"))?;
             let layout = install::Layout::system();
             let r = if a.cmd == "allow" {
                 let config = Config::load(&a.config)?;
@@ -149,6 +152,13 @@ fn real_main() -> Result<(), String> {
             };
             print_report(&r, a.json);
             Ok(())
+        }
+        "netwatch" => {
+            let mut config = Config::load(&a.config)?;
+            if let Some(s) = &a.socket {
+                config.server.socket = s.clone();
+            }
+            nightgrid_node::sniff::run(&config)
         }
         "uninstall" => {
             let r = install::uninstall(&install::Layout::system(), &mut install::RealSys, a.purge)?;

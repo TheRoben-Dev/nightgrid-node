@@ -26,6 +26,10 @@ The file watcher only records metadata (size, owner, mode, time) and a short SHA
 
 ## Network watch
 
-The device inventory comes from `/proc/net/arp` and `/proc/net/route`, which any user can read. The node sends no packets for it and the service still has no network address family (`RestrictAddressFamilies=AF_UNIX`). It stores MAC and IPv4 addresses of devices on the LAN in its database; `uninstall --purge` removes them. DHCP watching (N3b) will run as a separate, opt-in unit holding only `CAP_NET_RAW`, never in this service (decision N-021).
+The device inventory comes from `/proc/net/arp` and `/proc/net/route`, which any user can read. The node sends no packets for it and the service still has no network address family (`RestrictAddressFamilies=AF_UNIX`). It stores MAC and IPv4 addresses of devices on the LAN in its database; `uninstall --purge` removes them. 
+
+## Network watch helper (`allow netwatch`)
+
+DHCP and ARP from other devices can only be seen with a packet socket. `sudo nightgrid-node allow netwatch` installs and starts `nightgrid-node-netwatch.service`, a second process under the same service account whose only privilege is `CAP_NET_RAW` (decision N-021). It is listen-only: a kernel BPF filter passes it ARP and DHCP (UDP 67/68) and nothing else, it never sends a packet, it has no IP sockets (`RestrictAddressFamilies=AF_UNIX AF_PACKET`, `IPAddressDeny=any`) and nothing to write. It hands addresses, MACs, DHCP settings and DHCP host names to the main service, which accepts those reports only from its own account. `sudo nightgrid-node deny netwatch` stops and removes it.
 
 Full details: [docs/DESIGN.md §7](docs/DESIGN.md#7-security-model).

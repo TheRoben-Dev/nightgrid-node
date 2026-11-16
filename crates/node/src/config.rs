@@ -31,11 +31,14 @@ pub struct NetworkConfig {
     pub interval_secs: u32,
     /// Interfaces to ignore, besides container bridges (always ignored).
     pub ignore_ifaces: Vec<String>,
+    /// DHCP servers (their IPv4 identifiers) that are expected: a second
+    /// server listed here is noted, not warned about. Needs `allow netwatch`.
+    pub dhcp_servers: Vec<String>,
 }
 
 impl Default for NetworkConfig {
     fn default() -> Self {
-        Self { enabled: true, interval_secs: 30, ignore_ifaces: Vec::new() }
+        Self { enabled: true, interval_secs: 30, ignore_ifaces: Vec::new(), dhcp_servers: Vec::new() }
     }
 }
 
@@ -178,6 +181,11 @@ impl Config {
         if self.network.ignore_ifaces.len() > 64 {
             return Err("network.ignore_ifaces takes at most 64 names".into());
         }
+        if self.network.dhcp_servers.len() > 32
+            || self.network.dhcp_servers.iter().any(|s| s.parse::<std::net::Ipv4Addr>().is_err())
+        {
+            return Err("network.dhcp_servers takes at most 32 IPv4 addresses".into());
+        }
         if !(1..=64).contains(&self.server.max_connections) {
             return Err("server.max_connections must be 1-64".into());
         }
@@ -251,6 +259,12 @@ interval_secs = 30
 # Interfaces to ignore. Container bridges (docker0, br-*, veth*, ...) are
 # always ignored.
 ignore_ifaces = []
+# Watching DHCP (servers, rogue servers, device names) needs a separate
+# helper that may read raw packets; root turns it on with
+#   nightgrid-node allow netwatch
+# DHCP servers you expect, by address. A server not listed here that shows
+# up next to another one is reported as a possible rogue DHCP server.
+dhcp_servers = []
 "#;
 
 #[cfg(test)]
