@@ -107,3 +107,14 @@ An ARP table holds one MAC per address, so two devices on one address show up as
 
 ### N-028 · The netwatch helper only listens, and the service trusts it by uid
 The helper opens one `AF_PACKET` socket with a classic BPF filter for ARP and unfragmented UDP 67/68, so other traffic never reaches user space. It sends nothing: no DHCP discover, no ARP probes. That means it sees what clients broadcast (discover, request with the chosen server and host name, ARP) and servers' broadcast replies, but can miss unicast offers on a switched LAN. A rogue server still shows up as soon as a client accepts it, because the client's broadcast request names the server. An active probe would need the helper to send, which the brief's "no outbound" rule argues against; it can be added later as its own opt-in. Reports go over the existing socket as `net.report`, which the service accepts only from its own uid (the helper runs as the same account), so a member of the node's group can't inject fake devices or servers. The main service decides what is news; the helper keeps no state.
+
+## N4
+
+### N-029 · Root allows action types; the app and its rules choose when
+`[actions] allow` in the root-owned config lists the action types that may run at all (none by default), with a global `max_per_hour` for real runs. Anyone who may use the socket may run an allowed action or push rules, the same trust as `alerts.rules.set`: root decides *what* can happen, the app decides *when*. Container actions use the engine socket that `allow docker` already grants (root-equivalent, as SECURITY.md says), so N4a adds no privilege. Unit restarts and power need the root helper and come in N4b.
+
+### N-030 · The audit log is a SHA-256 chain in the node's database
+Each `action_log` row stores the previous row's hash and SHA-256 over it and its own fields; `actions.log` re-checks the chain for the page it returns. This catches edits and deletions made with the database file but not a rewrite of the whole chain by someone who can write the file (the service account or root). An external anchor (the app storing the latest hash it saw, or signing) can tighten that later; the app spec asks it to keep the last hash. Refusals are logged too, so a rule repeatedly hitting a missing permission is visible.
+
+### N-031 · Self-healing waits between runs and gives up per target
+A rule acts once its condition held `forMinutes`, then waits `forMinutes` again before the next run, so a restart has time to work and health checks time to pass. Per rule and target, runs are capped per hour and day and the caps survive the condition clearing, so a flapping container can't be restarted in a loop. After `giveUpAfter` runs without the condition clearing, the rule stops for that target and warns; a cleared condition resets the count. Rules evaluate every 15 s in their own thread from the alert engine's active alerts and the container list, so they add no extra polling.

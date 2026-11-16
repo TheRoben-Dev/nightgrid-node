@@ -32,4 +32,8 @@ The device inventory comes from `/proc/net/arp` and `/proc/net/route`, which any
 
 DHCP and ARP from other devices can only be seen with a packet socket. `sudo nightgrid-node allow netwatch` installs and starts `nightgrid-node-netwatch.service`, a second process under the same service account whose only privilege is `CAP_NET_RAW` (decision N-021). It is listen-only: a kernel BPF filter passes it ARP and DHCP (UDP 67/68) and nothing else, it never sends a packet, it has no IP sockets (`RestrictAddressFamilies=AF_UNIX AF_PACKET`, `IPAddressDeny=any`) and nothing to write. It hands addresses, MACs, DHCP settings and DHCP host names to the main service, which accepts those reports only from its own account. `sudo nightgrid-node deny netwatch` stops and removes it.
 
+## Actions and self-healing
+
+The node changes nothing on the host unless root lists an action type in `[actions] allow` in `/etc/nightgrid-node/config.toml` (empty by default). Actions are typed (`container.restart` and so on, with the container name checked against the engine's list), never shell strings, and container actions go through the engine socket that `allow docker` already grants. Self-healing rules come from the app, are off and dry-run by default, and can only run allowed actions within a global hourly cap and their own caps. Every request, including dry runs and refusals, is written to a hash-chained audit log (`actions.log`) and the timeline.
+
 Full details: [docs/DESIGN.md §7](docs/DESIGN.md#7-security-model).

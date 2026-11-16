@@ -217,7 +217,7 @@ dependencies = [
 
 [[package]]
 name = "nightgrid-node"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "libc",
  "nightgrid-node-proto",
@@ -233,7 +233,7 @@ dependencies = [
 
 [[package]]
 name = "nightgrid-node-proto"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "serde",
  "serde_json",
