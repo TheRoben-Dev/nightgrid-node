@@ -7,6 +7,7 @@ The Nightgrid app repository is developed elsewhere and is read-only from here. 
 | [0001 · Install the node and sync metric history](0001-install-and-metrics-sync.md) | N0 | proposed |
 | [0002 · Events, uptime, disk usage and offline alerts](0002-events-uptime-disk.md) | N1 | proposed |
 | [0003 · Containers](0003-containers.md) | N1b | proposed |
+| [0004 · Live streams (protocol 2)](0004-live-streams.md) | N2a | proposed |
 
 Rules every spec follows:
 

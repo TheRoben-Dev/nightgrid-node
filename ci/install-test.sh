@@ -57,6 +57,10 @@ done
 as_user "/usr/local/bin/nightgrid-node query alerts.active" >/dev/null || fail "alerts.active"
 as_user "/usr/local/bin/nightgrid-node query alerts.rules.get" | grep -q '"diskPercent":90' || fail "default rules"
 
+say "live metrics are pushed (protocol 2)"
+timeout 20 su -s /bin/sh "$user" -c "/usr/local/bin/nightgrid-node watch metrics --count 2" | tee /tmp/ngn-watch.txt
+[ "$(grep -c '"stream":"metrics"' /tmp/ngn-watch.txt)" = 2 ] || fail "no metrics frames"
+
 if [ "${WAIT_FOR_MINUTE:-0}" = 1 ] && command -v docker >/dev/null && docker info >/dev/null 2>&1; then
   q() { as_user "/usr/local/bin/nightgrid-node query $1"; }
   say "containers: no access until root allows it"

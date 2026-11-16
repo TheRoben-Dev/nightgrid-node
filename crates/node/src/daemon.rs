@@ -13,6 +13,8 @@ use crate::store::Store;
 
 /// How often old history is pruned.
 const PRUNE_EVERY: Duration = Duration::from_secs(3600);
+/// Sampling interval while a `metrics` subscriber is connected.
+pub const LIVE_INTERVAL: Duration = Duration::from_secs(2);
 
 pub fn now_secs() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
@@ -35,6 +37,8 @@ pub struct Shared {
     pub active: Mutex<Vec<Alert>>,
     /// What the container watcher last saw.
     pub containers: Mutex<crate::containers::ContainerState>,
+    /// Live streams for protocol 2 subscribers.
+    pub bus: crate::bus::Bus,
 }
 
 impl Shared {
@@ -60,6 +64,7 @@ impl Shared {
             rules: Mutex::new(rules),
             active: Mutex::new(Vec::new()),
             containers: Mutex::new(crate::containers::ContainerState::new(docker_access)),
+            bus: crate::bus::Bus::default(),
         })
     }
 }
@@ -120,6 +125,9 @@ impl Sampler {
                 if let Some(e) = engine.as_mut() {
                     e.sample(&shared, &sample, now_secs());
                 }
+                if shared.bus.metrics_watched() {
+                    let _ = shared.bus.metrics.send(sample.clone());
+                }
                 *shared.latest.lock().unwrap_or_else(|e| e.into_inner()) = Some(sample);
                 if last_prune.map_or(true, |t| t.elapsed() >= PRUNE_EVERY) {
                     last_prune = Some(std::time::Instant::now());
@@ -130,10 +138,21 @@ impl Sampler {
                         Err(e) => crate::warn!("prune failed: {e}"),
                     }
                 }
-                let wait = interval.saturating_sub(started.elapsed());
-                match rx.recv_timeout(wait) {
-                    Err(RecvTimeoutError::Timeout) => continue,
-                    _ => break,
+                // Sample faster while someone watches live metrics; check
+                // every second so a new subscriber doesn't wait a full interval.
+                let stop = loop {
+                    let every = if shared.bus.metrics_watched() { interval.min(LIVE_INTERVAL) } else { interval };
+                    let left = every.saturating_sub(started.elapsed());
+                    if left.is_zero() {
+                        break false;
+                    }
+                    match rx.recv_timeout(left.min(Duration::from_secs(1))) {
+                        Err(RecvTimeoutError::Timeout) => continue,
+                        _ => break true,
+                    }
+                };
+                if stop {
+                    break;
                 }
             }
             if let Some(p) = minutes.flush() {

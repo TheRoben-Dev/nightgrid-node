@@ -21,6 +21,7 @@ While the app is closed, the node:
 | 🚨 | **Evaluates alerts**: disk full, disk filling up and container down, with your thresholds from the app and the app's own grace periods. Alerts are kept and delivered when the app comes back ("while you were away"). | 0.2 / 0.3 |
 | 🐳 | **Watches containers** (opt-in): states, crashes, restarts, out-of-memory kills and health changes, through Docker's or Podman's socket. Read-only. | 0.3 |
 | 🗒 | **Keeps a timeline**: alerts firing and clearing, outages, boots and container events, numbered so the app pulls only what's new. | 0.2 |
+| ⚡ | **Pushes live**: while the app is connected, new events, alerts, container changes and metrics every 2 s are pushed as they happen, instead of the app polling over SSH. | 0.4 |
 
 When the app reconnects, it asks for everything after its last cursor and merges it in. The node keeps no per-app state, so several computers running Nightgrid can sync from the same node.
 
@@ -28,7 +29,7 @@ When the app reconnects, it asks for everything after its last cursor and merges
 
 See [docs/MILESTONES.md](docs/MILESTONES.md) for detail. The order is:
 
-1. **Real-time push**: events, alerts, container lifecycle, logins and file changes streamed to the app as they happen.
+1. **Real-time push**: events, alerts, container lifecycle and live metrics are pushed now; logins and file changes come next.
 2. **Network watch**: new or unknown devices, IP conflicts, DHCP changes and rogue DHCP on the LAN, feeding the app's network map.
 3. **Actions and self-healing**: rules such as "container unhealthy for 5 minutes → restart". Off by default per rule, with rate limits, dry-run and an audit log.
 4. **Root-only health and logs**: SMART, pools, updates, backups and UPS through a small root helper; log anomalies using the app's rules.
@@ -85,6 +86,7 @@ nightgrid-node allow docker        let it read containers (root; root-equivalent
 nightgrid-node deny docker         take that away again
 nightgrid-node status              what the running node reports
 nightgrid-node query METHOD [JSON] one protocol request, e.g. query alerts.active
+nightgrid-node watch STREAM...     live frames: events, metrics, containers
 nightgrid-node bridge              stdin/stdout ⇄ the node's socket (used by the app over SSH)
 ```
 

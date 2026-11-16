@@ -4,13 +4,15 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 
-use nightgrid_node_proto::{method, Hello, Request, Response, RpcError, Welcome, MAX_LINE};
+use nightgrid_node_proto::{method, Frame, Hello, Request, Response, RpcError, Welcome, MAX_LINE};
 use serde_json::Value;
 
 pub struct Client {
     w: UnixStream,
     r: BufReader<UnixStream>,
     next: u64,
+    /// Frames that arrived while waiting for a response.
+    frames: std::collections::VecDeque<Frame>,
     pub welcome: Welcome,
 }
 
@@ -42,7 +44,7 @@ impl Client {
     pub fn connect(path: &Path, client: &str) -> Result<Self, CallError> {
         let w = UnixStream::connect(path)?;
         let r = BufReader::new(w.try_clone()?);
-        let mut c = Self { w, r, next: 1, welcome: placeholder() };
+        let mut c = Self { w, r, next: 1, frames: Default::default(), welcome: placeholder() };
         let v = c.call(method::HELLO, serde_json::to_value(Hello::this_client(client)).unwrap_or_default())?;
         c.welcome = serde_json::from_value(v).map_err(|e| CallError::Protocol(e.to_string()))?;
         Ok(c)
@@ -55,12 +57,12 @@ impl Client {
             .map_err(|e| CallError::Protocol(e.to_string()))?;
         line.push(b'\n');
         self.w.write_all(&line)?;
-        let mut buf = Vec::new();
-        (&mut self.r).take(MAX_LINE as u64 + 1).read_until(b'\n', &mut buf)?;
-        if buf.is_empty() {
-            return Err(CallError::Protocol("connection closed".into()));
-        }
-        let resp: Response = serde_json::from_slice(&buf).map_err(|e| CallError::Protocol(e.to_string()))?;
+        let resp = loop {
+            match self.read()? {
+                Incoming::Frame(f) => self.frames.push_back(f),
+                Incoming::Response(r) => break r,
+            }
+        };
         if resp.id != id {
             return Err(CallError::Protocol(format!("answer for {} while waiting for {id}", resp.id)));
         }
@@ -68,6 +70,39 @@ impl Client {
             (_, Some(e)) => Err(CallError::Rpc(e)),
             (Some(v), None) => Ok(v),
             (None, None) => Ok(Value::Null),
+        }
+    }
+}
+
+enum Incoming {
+    Response(Response),
+    Frame(Frame),
+}
+
+impl Client {
+    fn read(&mut self) -> Result<Incoming, CallError> {
+        let mut buf = Vec::new();
+        (&mut self.r).take(MAX_LINE as u64 + 1).read_until(b'\n', &mut buf)?;
+        if buf.is_empty() {
+            return Err(CallError::Protocol("connection closed".into()));
+        }
+        let v: Value = serde_json::from_slice(&buf).map_err(|e| CallError::Protocol(e.to_string()))?;
+        let bad = |e: serde_json::Error| CallError::Protocol(e.to_string());
+        if v.get("stream").is_some() && v.get("id").is_none() {
+            Ok(Incoming::Frame(serde_json::from_value(v).map_err(bad)?))
+        } else {
+            Ok(Incoming::Response(serde_json::from_value(v).map_err(bad)?))
+        }
+    }
+
+    /// The next pushed frame (after `subscribe`), waiting for it.
+    pub fn next_frame(&mut self) -> Result<Frame, CallError> {
+        if let Some(f) = self.frames.pop_front() {
+            return Ok(f);
+        }
+        match self.read()? {
+            Incoming::Frame(f) => Ok(f),
+            Incoming::Response(r) => Err(CallError::Protocol(format!("unexpected answer {}", r.id))),
         }
     }
 }

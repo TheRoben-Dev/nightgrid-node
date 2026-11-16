@@ -56,7 +56,7 @@ fn wait_for(socket: &Path) {
 fn serves_info_latest_and_history() {
     let svc = start();
     let mut c = Client::connect(&svc.socket, "e2e").unwrap();
-    assert_eq!(c.welcome.proto, 1);
+    assert_eq!(c.welcome.proto, 2);
     assert!(c.welcome.caps.contains_key("metrics.sync"));
 
     let info: NodeInfo = serde_json::from_value(c.call("node.info", Value::Null).unwrap()).unwrap();
@@ -162,4 +162,40 @@ fn version_and_help() {
     assert!(String::from_utf8_lossy(&out.stdout).starts_with("nightgrid-node "));
     let out = Command::new(BIN).arg("frobnicate").output().unwrap();
     assert!(!out.status.success());
+}
+
+#[test]
+fn pushes_live_metrics_and_keeps_protocol_1() {
+    let svc = start();
+    let mut c = Client::connect(&svc.socket, "e2e").unwrap();
+    let r = c.call("subscribe", json!({"streams": ["metrics", "events"]})).unwrap();
+    assert_eq!(r["streams"], json!(["events", "metrics"]));
+    // Frames don't confuse request/response matching.
+    let t = Instant::now();
+    let f = c.next_frame().unwrap();
+    assert_eq!(f.stream, "metrics");
+    assert!(f.data["memTotal"].as_u64().unwrap() > 0);
+    assert!(c.call("node.info", Value::Null).is_ok());
+    let f = c.next_frame().unwrap();
+    assert_eq!(f.stream, "metrics");
+    assert!(t.elapsed() < Duration::from_secs(8), "{:?}", t.elapsed());
+    match c.call("subscribe", json!({"streams": ["nope"]})) {
+        Err(CallError::Rpc(e)) => assert_eq!(e.code, ErrorCode::BadRequest),
+        other => panic!("{other:?}"),
+    }
+    let r = c.call("unsubscribe", json!({"streams": ["metrics", "events"]})).unwrap();
+    assert_eq!(r["streams"], json!([]));
+
+    // A protocol 1 client gets no streams.
+    use std::io::{BufRead, BufReader, Write};
+    let mut s = std::os::unix::net::UnixStream::connect(&svc.socket).unwrap();
+    let mut rd = BufReader::new(s.try_clone().unwrap());
+    let mut line = String::new();
+    s.write_all(b"{\"id\":1,\"method\":\"hello\",\"params\":{\"protoMin\":1,\"protoMax\":1}}\n").unwrap();
+    rd.read_line(&mut line).unwrap();
+    assert!(line.contains("\"proto\":1"), "{line}");
+    line.clear();
+    s.write_all(b"{\"id\":2,\"method\":\"subscribe\",\"params\":{\"streams\":[\"metrics\"]}}\n").unwrap();
+    rd.read_line(&mut line).unwrap();
+    assert!(line.contains("unknown_method"), "{line}");
 }

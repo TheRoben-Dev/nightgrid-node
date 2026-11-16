@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.0 · N2a (unreleased)
+
+- Protocol 2: `subscribe` / `unsubscribe` and pushed frames on the same connection. Streams: `events` (every new event as it is recorded), `metrics` (every 2 s while watched), `containers` (on state or health changes), plus `lagged` when a slow client missed frames. Protocol 1 clients are unchanged.
+- The node samples every 2 s and reads containers every 3 s only while someone subscribes.
+- `nightgrid-node watch STREAM... [--count N]` prints live frames.
+
 ## 0.3.0 · N1b (unreleased)
 
 - Container watcher over the Docker (or Podman) socket: `containers.list`, lifecycle events in the timeline (restarts merged, crashes, OOM kills, health changes) and container-down alerts with the app's rules.

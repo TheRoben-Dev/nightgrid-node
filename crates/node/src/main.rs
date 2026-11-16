@@ -24,6 +24,9 @@ COMMANDS:
     deny docker             Take that access away again (root)
     status                  Show what the running node reports
     query METHOD [JSON]     Send one request and print the answer
+    watch STREAM... [--count N]
+                            Print live frames (events, metrics, containers)
+                            as JSON lines; stop after N if given
     bridge                  Connect stdin/stdout to the node's socket
                             (what the app runs over SSH)
     version                 Print the version
@@ -45,6 +48,7 @@ struct Args {
     json: bool,
     purge: bool,
     no_start: bool,
+    count: Option<u64>,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -59,6 +63,7 @@ fn parse_args() -> Result<Args, String> {
         json: false,
         purge: false,
         no_start: false,
+        count: None,
     };
     while let Some(x) = it.next() {
         let mut val = |name: &str| it.next().ok_or_else(|| format!("{name} needs a value"));
@@ -70,6 +75,7 @@ fn parse_args() -> Result<Args, String> {
             "--json" => a.json = true,
             "--purge" => a.purge = true,
             "--no-start" => a.no_start = true,
+            "--count" => a.count = Some(val("--count")?.parse().map_err(|_| "--count needs a number")?),
             "-h" | "--help" => a.cmd = "help".into(),
             "-V" | "--version" => a.cmd = "version".into(),
             s if s.starts_with("--") => return Err(format!("unknown option {s}")),
@@ -171,6 +177,24 @@ fn real_main() -> Result<(), String> {
                 .map_err(|e| format!("{}: {e}", path.display()))?;
             let v = c.call(method, params).map_err(|e| e.to_string())?;
             println!("{v}");
+            Ok(())
+        }
+        "watch" => {
+            let streams = a.rest.clone();
+            let count = a.count;
+            if streams.is_empty() {
+                return Err("watch what? (events, metrics, containers)".into());
+            }
+            let path = socket(&a);
+            let mut c = client::Client::connect(&path, "nightgrid-node watch")
+                .map_err(|e| format!("{}: {e}", path.display()))?;
+            c.call("subscribe", serde_json::json!({ "streams": streams })).map_err(|e| e.to_string())?;
+            let mut seen = 0;
+            while count.map_or(true, |n| seen < n) {
+                let f = c.next_frame().map_err(|e| e.to_string())?;
+                println!("{}", serde_json::to_string(&f).unwrap_or_default());
+                seen += 1;
+            }
             Ok(())
         }
         "version" => {

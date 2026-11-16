@@ -6,21 +6,24 @@
 //! or SSH streamlocal forwarding). Nothing listens on the network. Every
 //! connection's peer uid is logged.
 
+use std::collections::BTreeSet;
 use std::future::Future;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::sync::Arc;
 
 use nightgrid_node_proto::{
-    cap, method, negotiate, resolution, AlertRules, Caps, CursorParams, DiskResult, ErrorCode, EventsResult, Hello,
-    HistoryParams, HistoryResult, NodeInfo, Request, Response, Retention, SyncParams, SyncResult, UptimeResult,
-    Welcome, MAX_LINE, MAX_POINTS, MAX_ROWS, PROTO_MIN, PROTO_VERSION,
+    cap, method, negotiate, resolution, stream, AlertRules, Caps, ContainersResult, CursorParams, DiskResult,
+    ErrorCode, Event, EventsResult, Frame, Hello, HistoryParams, HistoryResult, Lagged, NodeInfo, Request, Response,
+    Retention, Sample, StreamsParams, StreamsResult, SyncParams, SyncResult, UptimeResult, Welcome, MAX_LINE,
+    MAX_POINTS, MAX_ROWS, PROTO_MIN, PROTO_VERSION,
 };
 use serde::de::DeserializeOwned;
+use serde::Serialize;
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
-use tokio::sync::Semaphore;
+use tokio::sync::{broadcast, Semaphore};
 
 use crate::daemon::{now_secs, rss_bytes, Shared};
 use crate::store::{HOURLY_DAYS, ROLLUP_DAYS};
@@ -69,27 +72,96 @@ pub async fn serve(listener: UnixListener, shared: Arc<Shared>, shutdown: impl F
     }
 }
 
+/// Receivers for the streams a connection subscribed to.
+#[derive(Default)]
+struct Subs {
+    events: Option<broadcast::Receiver<Event>>,
+    metrics: Option<broadcast::Receiver<Sample>>,
+    containers: Option<broadcast::Receiver<ContainersResult>>,
+}
+
+impl Subs {
+    /// Opens or drops receivers to match what the session asked for.
+    fn sync(&mut self, shared: &Shared, want: &BTreeSet<String>) {
+        fn one<T: Clone>(slot: &mut Option<broadcast::Receiver<T>>, on: bool, tx: &broadcast::Sender<T>) {
+            match (slot.is_some(), on) {
+                (false, true) => *slot = Some(tx.subscribe()),
+                (true, false) => *slot = None,
+                _ => {}
+            }
+        }
+        one(&mut self.events, want.contains(stream::EVENTS), &shared.bus.events);
+        one(&mut self.metrics, want.contains(stream::METRICS), &shared.bus.metrics);
+        one(&mut self.containers, want.contains(stream::CONTAINERS), &shared.bus.containers);
+    }
+}
+
+/// The next item of a subscribed stream; pending forever when not subscribed.
+async fn next<T: Clone>(rx: &mut Option<broadcast::Receiver<T>>) -> Result<T, broadcast::error::RecvError> {
+    match rx {
+        Some(rx) => rx.recv().await,
+        None => std::future::pending().await,
+    }
+}
+
+fn frame(stream: &str, data: impl Serialize) -> Frame {
+    Frame { stream: stream.to_owned(), data: serde_json::to_value(data).unwrap_or(Value::Null) }
+}
+
+/// What to push for one stream's receive result, if anything.
+fn pushed<T: Serialize>(name: &str, r: Result<T, broadcast::error::RecvError>) -> Option<Frame> {
+    match r {
+        Ok(v) => Some(frame(name, v)),
+        Err(broadcast::error::RecvError::Lagged(missed)) => {
+            Some(frame(stream::LAGGED, Lagged { stream: name.to_owned(), missed }))
+        }
+        // The node is stopping.
+        Err(broadcast::error::RecvError::Closed) => None,
+    }
+}
+
 async fn connection(stream: UnixStream, shared: &Shared, uid: String) -> std::io::Result<()> {
     let (r, mut w) = stream.into_split();
     let mut r = BufReader::with_capacity(16 * 1024, r);
     let mut session = Session { uid, ..Default::default() };
+    let mut subs = Subs::default();
     let mut buf = Vec::new();
     loop {
-        buf.clear();
-        let n = (&mut r).take(MAX_LINE as u64 + 1).read_until(b'\n', &mut buf).await?;
-        if n == 0 {
-            return Ok(());
+        // `read_until` keeps what it read in `buf` if another branch wins,
+        // so a line split across a push is not lost.
+        let room = (MAX_LINE + 1).saturating_sub(buf.len()) as u64;
+        let mut line = (&mut r).take(room);
+        let out = tokio::select! {
+            n = line.read_until(b'\n', &mut buf) => {
+                let eof = n? == 0;
+                if eof && buf.is_empty() {
+                    return Ok(());
+                }
+                if buf.len() > MAX_LINE {
+                    send(&mut w, &Response::err(0, ErrorCode::TooLarge, "line too long")).await?;
+                    return Ok(());
+                }
+                drop(line);
+                let resp = handle_line(shared, &mut session, &buf);
+                buf.clear();
+                subs.sync(shared, &session.streams);
+                send(&mut w, &resp).await?;
+                if eof {
+                    return Ok(());
+                }
+                continue;
+            }
+            e = next(&mut subs.events) => pushed(stream::EVENTS, e),
+            m = next(&mut subs.metrics) => pushed(stream::METRICS, m),
+            c = next(&mut subs.containers) => pushed(stream::CONTAINERS, c),
+        };
+        if let Some(f) = out {
+            send(&mut w, &f).await?;
         }
-        if buf.len() > MAX_LINE {
-            send(&mut w, &Response::err(0, ErrorCode::TooLarge, "line too long")).await?;
-            return Ok(());
-        }
-        let resp = handle_line(shared, &mut session, &buf);
-        send(&mut w, &resp).await?;
     }
 }
 
-async fn send(w: &mut tokio::net::unix::OwnedWriteHalf, r: &Response) -> std::io::Result<()> {
+async fn send(w: &mut tokio::net::unix::OwnedWriteHalf, r: &impl Serialize) -> std::io::Result<()> {
     let mut line = serde_json::to_vec(r).unwrap_or_default();
     line.push(b'\n');
     w.write_all(&line).await
@@ -102,6 +174,8 @@ pub struct Session {
     pub proto: Option<u32>,
     /// The peer's uid, for the log.
     pub uid: String,
+    /// Streams subscribed to (protocol 2).
+    pub streams: BTreeSet<String>,
 }
 
 /// What this node offers. Every capability here is on in N0; later ones
@@ -254,6 +328,25 @@ fn dispatch(shared: &Shared, session: &mut Session, req: &Request) -> Result<Res
             }
             let next = rows.last().map_or(p.after, |r| r.ts);
             Ok(Response::ok(0, DiskResult { rows, next, more }))
+        }
+        method::SUBSCRIBE | method::UNSUBSCRIBE => {
+            if session.proto < Some(2) {
+                return Err(Response::err(0, ErrorCode::UnknownMethod, "streams need protocol 2"));
+            }
+            let p: StreamsParams = params(&req.params)?;
+            for name in &p.streams {
+                if !stream::ALL.contains(&name.as_str()) {
+                    return Err(Response::err(0, ErrorCode::BadRequest, format!("no stream {name:?}")));
+                }
+            }
+            for name in p.streams {
+                if req.method == method::SUBSCRIBE {
+                    session.streams.insert(name);
+                } else {
+                    session.streams.remove(&name);
+                }
+            }
+            Ok(Response::ok(0, StreamsResult { streams: session.streams.iter().cloned().collect() }))
         }
         method::CONTAINERS_LIST => {
             let r = shared.containers.lock().unwrap_or_else(|e| e.into_inner()).result.clone();

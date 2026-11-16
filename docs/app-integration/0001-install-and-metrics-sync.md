@@ -97,7 +97,7 @@ Notes:
 
 ### Live samples (optional in N0)
 
-With `caps.metrics >= 1` the poller may call `metrics.latest` instead of running `COLLECT` over SSH (same `Sample` shape; the node samples every 10 s, so keep the SSH script for the 2 s "visible" rate until protocol 2 streams arrive in N4).
+With `caps.metrics >= 1` the poller may call `metrics.latest` instead of running `COLLECT` over SSH (same `Sample` shape; the node samples every 10 s, so keep the SSH script for the 2 s "visible" rate until protocol 2 streams, see [0004](0004-live-streams.md)).
 
 ## 5. Settings
 

@@ -239,12 +239,39 @@ fn run(shared: &Shared, stop: &mpsc::Receiver<()>) {
     let mut buffer = EventBuffer::new(now_secs());
     let mut last_access = None;
     loop {
-        let now = now_secs();
-        round(shared, &mut watch, &mut buffer, &mut last_access, now);
-        match stop.recv_timeout(interval) {
-            Err(RecvTimeoutError::Timeout) => continue,
-            _ => break,
+        let started = std::time::Instant::now();
+        round(shared, &mut watch, &mut buffer, &mut last_access, now_secs());
+        // Read faster while someone watches the `containers` stream.
+        let stop = loop {
+            let every = if shared.bus.containers_watched() { interval.min(LIVE_INTERVAL) } else { interval };
+            let left = every.saturating_sub(started.elapsed());
+            if left.is_zero() {
+                break false;
+            }
+            match stop.recv_timeout(left.min(Duration::from_secs(1))) {
+                Err(RecvTimeoutError::Timeout) => continue,
+                _ => break true,
+            }
+        };
+        if stop {
+            break;
         }
+    }
+}
+
+/// Reading interval while a `containers` subscriber is connected.
+pub const LIVE_INTERVAL: Duration = Duration::from_secs(3);
+
+/// What a `containers` subscriber cares about (not the "Up 3 minutes" text).
+type Shape<'a> = (ContainerAccess, Vec<(&'a str, &'a str, Option<&'a str>)>);
+
+fn shape(r: &ContainersResult) -> Shape<'_> {
+    (r.access, r.containers.iter().map(|c| (c.name.as_str(), c.state.as_str(), c.health.as_deref())).collect())
+}
+
+fn push_if_changed(shared: &Shared, before: &ContainersResult, after: &ContainersResult) {
+    if shared.bus.containers_watched() && shape(before) != shape(after) {
+        let _ = shared.bus.containers.send(after.clone());
     }
 }
 
@@ -279,11 +306,15 @@ pub fn round(
                 save_seen(shared, &watch.seen_running);
             }
             state.conditions = Some(conds);
-            state.result = ContainersResult { access, message: None, at: now, containers: list };
+            let next = ContainersResult { access, message: None, at: now, containers: list };
+            push_if_changed(shared, &state.result, &next);
+            state.result = next;
         }
         Err(e) => {
+            let before = state.result.clone();
             state.result.access = e.access;
             state.result.message = Some(e.message);
+            push_if_changed(shared, &before, &state.result);
             return;
         }
     }
@@ -295,7 +326,7 @@ pub fn round(
                 if !due.is_empty() {
                     let st = shared.store.lock().unwrap_or_else(|e| e.into_inner());
                     for e in &due {
-                        if let Err(err) = st.event_add(e) {
+                        if let Err(err) = shared.bus.record(&st, e) {
                             crate::warn!("could not record a container event: {err}");
                         }
                     }
