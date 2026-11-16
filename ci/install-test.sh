@@ -249,6 +249,41 @@ PY
   fi
   q "actions.log '{\"after\":0}'" | grep -q '"verified":true' || fail "log chain"
 
+  say "rollback: a change that isn't confirmed is put back by the dead-man timer"
+  mkdir -p /srv/ngn-test
+  printf 'v1\n' > /srv/ngn-test/app.conf
+  chown "$user" /srv/ngn-test/app.conf && chmod 640 /srv/ngn-test/app.conf
+  sed -i 's/^allow = .*/allow = ["unit.restart", "files.rollback"]/; s|^paths = .*|paths = ["/srv/ngn-test"]|' /etc/nightgrid-node/config.toml
+  /usr/local/bin/nightgrid-node allow helper >/dev/null
+  grep -q 'ReadWritePaths=-/srv/ngn-test' /etc/systemd/system/nightgrid-node-helper@.service.d/rollback.conf || fail "no rollback drop-in"
+  systemctl restart nightgrid-node
+  i=0; until q node.info >/dev/null 2>&1; do i=$((i+1)); [ $i -lt 30 ] || fail "not back after restart"; sleep 1; done
+  q "changes.begin '{\"paths\":[\"/etc/hostname\"],\"confirmWithinSecs\":30}'" 2>&1 | grep -q 'not under \[rollback\] paths' || fail "a path outside [rollback] paths was accepted"
+  pid=$(systemctl show -p MainPID --value ngn-dummy)
+  q "changes.begin '{\"paths\":[\"/srv/ngn-test/app.conf\",\"/srv/ngn-test/new.conf\"],\"confirmWithinSecs\":30,\"note\":\"ci change\",\"onRevert\":{\"action\":\"unit.restart\",\"target\":\"ngn-dummy.service\"}}'" | tee /tmp/ngn-change.json
+  grep -q '"state":"pending"' /tmp/ngn-change.json || { journalctl -u 'nightgrid-node-helper@*' --no-pager -n 20; fail "change not started"; }
+  printf 'v2 broken\n' > /srv/ngn-test/app.conf && chmod 666 /srv/ngn-test/app.conf
+  printf 'new\n' > /srv/ngn-test/new.conf
+  i=0; until q changes.list | grep -q '"state":"reverted"'; do
+    i=$((i+1)); [ $i -lt 90 ] || { q changes.list; journalctl -u 'nightgrid-node-helper@*' --no-pager -n 20; fail "not reverted"; }; sleep 1; done
+  q changes.list
+  [ "$(cat /srv/ngn-test/app.conf)" = v1 ] || fail "content not put back"
+  [ "$(stat -c '%a %U' /srv/ngn-test/app.conf)" = "640 $user" ] || { stat /srv/ngn-test/app.conf; fail "mode/owner not put back"; }
+  test ! -e /srv/ngn-test/new.conf || fail "new file not removed"
+  i=0; until [ "$(systemctl show -p MainPID --value ngn-dummy)" != "$pid" ]; do
+    i=$((i+1)); [ $i -lt 20 ] || fail "onRevert did not restart ngn-dummy"; sleep 1; done
+  ev | grep -q '"title":"change reverted: \\"ci change\\""' || { ev | tr '}' '\n' | grep -i change; fail "no revert event"; }
+
+  say "rollback: a confirmed change stays"
+  id=$(q "changes.begin '{\"paths\":[\"/srv/ngn-test/app.conf\"],\"confirmWithinSecs\":30}'" | sed 's/.*"id":"\([0-9a-f]*\)".*/\1/')
+  printf 'v3\n' > /srv/ngn-test/app.conf
+  q "changes.confirm '{\"id\":\"$id\"}'" | grep -q '"state":"confirmed"' || fail "confirm"
+  test ! -e "/var/lib/nightgrid-node-rollback/$id" || fail "snapshot left after confirm"
+  sleep 40
+  [ "$(cat /srv/ngn-test/app.conf)" = v3 ] || fail "confirmed change was reverted"
+  q "actions.log '{\"after\":0}'" | grep -q '"verified":true' || fail "log chain"
+  rm -rf /srv/ngn-test
+
   /usr/local/bin/nightgrid-node deny helper >/dev/null
   test ! -e /run/nightgrid-node-helper.sock || fail "helper socket left after deny"
   q node.info | grep -q '"helper":"denied"' || fail "helper still ok after deny"

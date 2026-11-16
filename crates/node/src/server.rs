@@ -13,10 +13,10 @@ use std::path::Path;
 use std::sync::Arc;
 
 use nightgrid_node_proto::{
-    cap, method, negotiate, resolution, stream, ActionRequest, AlertRules, Caps, ContainersResult, CursorParams,
-    DiskResult, ErrorCode, Event, EventsResult, Frame, HealRules, Hello, HistoryParams, HistoryResult, Lagged,
-    NodeInfo, Request, Response, Retention, Sample, StreamsParams, StreamsResult, SyncParams, SyncResult, UptimeResult,
-    Welcome, MAX_LINE, MAX_POINTS, MAX_ROWS, PROTO_MIN, PROTO_VERSION,
+    cap, method, negotiate, resolution, stream, ActionRequest, AlertRules, Caps, ChangeBegin, ChangeId,
+    ContainersResult, CursorParams, DiskResult, ErrorCode, Event, EventsResult, Frame, HealRules, Hello, HistoryParams,
+    HistoryResult, Lagged, NodeInfo, Request, Response, Retention, Sample, StreamsParams, StreamsResult, SyncParams,
+    SyncResult, UptimeResult, Welcome, MAX_LINE, MAX_POINTS, MAX_ROWS, PROTO_MIN, PROTO_VERSION,
 };
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -188,7 +188,12 @@ fn slow(line: &[u8]) -> bool {
         #[serde(borrow, default)]
         method: std::borrow::Cow<'a, str>,
     }
-    serde_json::from_slice::<M>(line).is_ok_and(|m| m.method == method::ACTIONS_RUN)
+    serde_json::from_slice::<M>(line).is_ok_and(|m| {
+        matches!(
+            m.method.as_ref(),
+            method::ACTIONS_RUN | method::CHANGES_BEGIN | method::CHANGES_CONFIRM | method::CHANGES_REVERT
+        )
+    })
 }
 
 /// Per-connection protocol state.
@@ -292,6 +297,7 @@ pub fn caps() -> Caps {
         (cap::NET_DHCP, 1),
         (cap::ACTIONS, 2),
         (cap::HEAL, 1),
+        (cap::CHANGES, 1),
     ]
     .into_iter()
     .map(|(k, v)| (k.to_owned(), v))
@@ -500,6 +506,27 @@ fn dispatch(shared: &Shared, session: &mut Session, req: &Request) -> Result<Res
             crate::info!("self-healing rules updated by uid {} ({} rules, {on} on)", session.uid, rules.rules.len());
             shared.heal.lock().unwrap_or_else(|e| e.into_inner()).set_rules(rules.clone());
             Ok(Response::ok(0, rules))
+        }
+        method::CHANGES_BEGIN => {
+            let p: ChangeBegin = params(&req.params)?;
+            let source = format!("app (uid {})", session.uid);
+            crate::rollback::begin(shared, &p, &source)
+                .map(|c| Response::ok(0, c))
+                .map_err(|e| Response::err(0, ErrorCode::BadRequest, e))
+        }
+        method::CHANGES_CONFIRM | method::CHANGES_REVERT => {
+            let p: ChangeId = params(&req.params)?;
+            let source = format!("app (uid {})", session.uid);
+            let r = if req.method == method::CHANGES_CONFIRM {
+                crate::rollback::confirm(shared, &p.id, &source)
+            } else {
+                crate::rollback::revert(shared, &p.id, &source)
+            };
+            r.map(|c| Response::ok(0, c)).map_err(|e| Response::err(0, ErrorCode::BadRequest, e))
+        }
+        method::CHANGES_LIST => {
+            let st = shared.store.lock().unwrap_or_else(|e| e.into_inner());
+            Ok(Response::ok(0, crate::rollback::list(&st).map_err(internal)?))
         }
         method::HEAL_STATUS => {
             let r = shared.heal.lock().unwrap_or_else(|e| e.into_inner()).status();

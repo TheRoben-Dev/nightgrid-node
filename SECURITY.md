@@ -40,4 +40,6 @@ The node changes nothing on the host unless root lists an action type in `[actio
 
 Unit and power actions need root. `sudo nightgrid-node allow helper` installs a socket that only the service account can reach; each request starts one short-lived root process that re-reads the root-owned config, runs `systemctl` on a unit root listed in `[actions] units` or schedules `shutdown` a minute ahead, answers and exits. A compromised service can ask only for what root listed. The helper has no network, no new privileges, a read-only system and only `CAP_SYS_BOOT` (decision N-032). `sudo nightgrid-node deny helper` removes it.
 
+For rollbacks (`files.rollback`), the helper also copies and puts back files under `[rollback] paths`, keeping their owner and mode, so its unit holds `CAP_DAC_OVERRIDE`, `CAP_DAC_READ_SEARCH`, `CAP_CHOWN` and `CAP_FOWNER` as well; the system stays read-only to it except for those paths (written into the unit by `allow helper`) and its snapshot directory, `/var/lib/nightgrid-node-rollback` (0700). Keep the list narrow: whatever is listed, the service can ask to have put back to an earlier version (decision N-033).
+
 Full details: [docs/DESIGN.md §7](docs/DESIGN.md#7-security-model).

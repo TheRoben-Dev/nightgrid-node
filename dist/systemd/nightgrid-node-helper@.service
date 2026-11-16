@@ -18,9 +18,14 @@ StandardError=journal
 RuntimeMaxSec=120
 
 # Root, but it only talks to systemd and logind over their unix sockets.
-# CAP_SYS_BOOT lets logind accept a scheduled reboot without polkit.
+# CAP_SYS_BOOT lets logind accept a scheduled reboot without polkit. The
+# file capabilities let it snapshot and put back files under [rollback]
+# paths with their owner and mode; it can write only there and in its own
+# snapshot directory (rollback.conf next to this unit lists the paths).
 NoNewPrivileges=yes
-CapabilityBoundingSet=CAP_SYS_BOOT
+CapabilityBoundingSet=CAP_SYS_BOOT CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH CAP_CHOWN CAP_FOWNER
+StateDirectory=nightgrid-node-rollback
+StateDirectoryMode=0700
 RestrictAddressFamilies=AF_UNIX
 IPAddressDeny=any
 ProtectSystem=strict

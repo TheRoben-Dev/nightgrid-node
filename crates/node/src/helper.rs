@@ -26,7 +26,30 @@ use crate::config::Config;
 
 /// Where the helper's socket unit listens.
 pub const SOCKET: &str = "/run/nightgrid-node-helper.sock";
-const MAX_REQUEST: u64 = 4096;
+const MAX_REQUEST: u64 = 64 * 1024;
+/// Where file snapshots for rollbacks live (the helper unit's StateDirectory).
+pub const ROLLBACK_DIR: &str = "/var/lib/nightgrid-node-rollback";
+
+/// What the service asks the helper. Action requests fit as they are.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HelperRequest {
+    pub action: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+    /// For `files.*`: the change id.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    /// For `files.snapshot`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub paths: Vec<String>,
+}
+
+impl From<&ActionRequest> for HelperRequest {
+    fn from(r: &ActionRequest) -> Self {
+        Self { action: r.action.clone(), target: r.target.clone(), ..Default::default() }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Reply {
@@ -62,9 +85,24 @@ impl Runner for RealRunner {
 }
 
 /// Checks a request against root's config and carries it out.
-pub fn handle(config: &Config, req: &ActionRequest, run: &mut dyn Runner) -> Reply {
+pub fn handle(config: &Config, req: &HelperRequest, store: &Path, run: &mut dyn Runner) -> Reply {
     let a = req.action.as_str();
-    if !action::needs_helper(a) {
+    if let Some(op) = a.strip_prefix("files.").filter(|op| matches!(*op, "snapshot" | "restore" | "discard")) {
+        if !config.actions.allow.iter().any(|x| x == action::FILES_ROLLBACK) {
+            return Reply::no(format!("{} is not in [actions] allow", action::FILES_ROLLBACK));
+        }
+        let id = req.id.as_deref().unwrap_or("");
+        let r = match op {
+            "snapshot" => crate::rollback::snapshot(config, store, id, &req.paths),
+            "restore" => crate::rollback::restore(store, id),
+            _ => crate::rollback::discard(store, id),
+        };
+        return match r {
+            Ok(detail) => Reply { ok: true, detail },
+            Err(e) => Reply::no(e),
+        };
+    }
+    if !action::needs_helper(a) || a == action::FILES_ROLLBACK {
         return Reply::no(format!("the helper doesn't do {a:?}"));
     }
     if !config.actions.allow.iter().any(|x| x == a) {
@@ -121,16 +159,16 @@ pub fn serve(config_path: &Path) -> Result<(), String> {
         let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
         let mut line = String::new();
         let read = BufReader::new((&stream).take(MAX_REQUEST)).read_line(&mut line);
-        match (read, serde_json::from_str::<ActionRequest>(&line)) {
+        match (read, serde_json::from_str::<HelperRequest>(&line)) {
             (Ok(_), Ok(req)) => {
                 let reply = match Config::load(config_path) {
-                    Ok(config) => handle(&config, &req, &mut RealRunner),
+                    Ok(config) => handle(&config, &req, Path::new(ROLLBACK_DIR), &mut RealRunner),
                     Err(e) => Reply::no(format!("config: {e}")),
                 };
                 crate::info!(
                     "helper: {} {} for uid {uid}: {}{}",
                     req.action,
-                    req.target.as_deref().unwrap_or(""),
+                    req.target.as_deref().or(req.id.as_deref()).unwrap_or(""),
                     if reply.ok { "" } else { "refused or failed: " },
                     reply.detail
                 );
@@ -154,7 +192,7 @@ pub fn installed(socket: &Path) -> bool {
 }
 
 /// Asks the helper (from the service). `Err` is a transport problem.
-pub fn call(socket: &Path, req: &ActionRequest) -> Result<Reply, String> {
+pub fn call(socket: &Path, req: &HelperRequest) -> Result<Reply, String> {
     let mut s = UnixStream::connect(socket).map_err(|e| format!("root helper ({}): {e}", socket.display()))?;
     s.set_read_timeout(Some(Duration::from_secs(90))).map_err(|e| e.to_string())?;
     let mut line = serde_json::to_vec(req).map_err(|e| e.to_string())?;
@@ -187,29 +225,32 @@ mod tests {
         }
     }
 
-    fn req(a: &str, t: Option<&str>) -> ActionRequest {
-        ActionRequest { action: a.into(), target: t.map(Into::into), dry_run: false }
+    fn req(a: &str, t: Option<&str>) -> HelperRequest {
+        HelperRequest { action: a.into(), target: t.map(Into::into), ..Default::default() }
     }
 
     #[test]
     fn checks_roots_config_itself() {
         let mut c = Config::default();
         let mut f = Fake::default();
-        assert!(!handle(&c, &req("unit.restart", Some("nginx.service")), &mut f).ok);
+        assert!(!handle(&c, &req("unit.restart", Some("nginx.service")), Path::new("/nonexistent"), &mut f).ok);
         c.actions.allow = vec!["unit.restart".into(), "power.reboot".into()];
-        let r = handle(&c, &req("unit.restart", Some("nginx.service")), &mut f);
+        let r = handle(&c, &req("unit.restart", Some("nginx.service")), Path::new("/nonexistent"), &mut f);
         assert_eq!(r, Reply::no("\"nginx.service\" is not in [actions] units"));
         c.actions.units = vec!["nginx.service".into()];
-        let r = handle(&c, &req("unit.restart", Some("nginx.service")), &mut f);
+        let r = handle(&c, &req("unit.restart", Some("nginx.service")), Path::new("/nonexistent"), &mut f);
         assert_eq!(r, Reply { ok: true, detail: "restarted nginx.service".into() });
-        assert!(!handle(&c, &req("unit.stop", Some("nginx.service")), &mut f).ok, "stop not allowed");
-        assert!(!handle(&c, &req("container.restart", Some("web")), &mut f).ok);
-        assert!(!handle(&c, &req("power.poweroff", None), &mut f).ok);
-        let r = handle(&c, &req("power.reboot", None), &mut f);
+        assert!(
+            !handle(&c, &req("unit.stop", Some("nginx.service")), Path::new("/nonexistent"), &mut f).ok,
+            "stop not allowed"
+        );
+        assert!(!handle(&c, &req("container.restart", Some("web")), Path::new("/nonexistent"), &mut f).ok);
+        assert!(!handle(&c, &req("power.poweroff", None), Path::new("/nonexistent"), &mut f).ok);
+        let r = handle(&c, &req("power.reboot", None), Path::new("/nonexistent"), &mut f);
         assert!(r.ok && r.detail.contains("shutdown -c"), "{r:?}");
         assert_eq!(f.log, ["systemctl restart -- nginx.service", "shutdown -r +1 requested from Nightgrid Node"]);
         f.fail = true;
-        let r = handle(&c, &req("unit.restart", Some("nginx.service")), &mut f);
+        let r = handle(&c, &req("unit.restart", Some("nginx.service")), Path::new("/nonexistent"), &mut f);
         assert_eq!(r, Reply::no("Unit x.service not found."));
     }
 

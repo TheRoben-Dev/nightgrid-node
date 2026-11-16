@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.10.0 · N4c (unreleased)
+
+- Rollbacks with a dead-man timer: `changes.begin` snapshots files (through the root helper, only under root's `[rollback] paths`), and unless the app calls `changes.confirm` in time the node puts them back, with owner and mode, removes files the change added, and runs an optional `onRevert` unit or container action. The timer survives restarts and reboots of the node. `changes.revert`, `changes.list`.
+- New action type `files.rollback` (in `[actions] allow`); `[rollback] paths` in the config, which `allow helper` turns into the only places the helper may write.
+- The helper unit gains the file capabilities it needs for that and a snapshot directory, `/var/lib/nightgrid-node-rollback` (removed by `uninstall --purge`).
+
 ## 0.9.0 · N4b (unreleased)
 
 - Root helper, off until root runs `nightgrid-node allow helper`: a socket only the service account can reach, starting one short-lived root process per request. It re-reads the root-owned config and runs only what is listed there, with fixed arguments and no shell.

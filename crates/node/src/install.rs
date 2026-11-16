@@ -38,6 +38,8 @@ struct Extra {
     unit: &'static str,
     warning: &'static str,
     what: &'static str,
+    /// A drop-in written from the config next to the second file's unit.
+    dropin: Option<fn(&Layout) -> String>,
 }
 
 const NETWATCH: Extra = Extra {
@@ -48,6 +50,7 @@ const NETWATCH: Extra = Extra {
               passes it only ARP and DHCP, it sends nothing, and it keeps only addresses, MACs, DHCP settings \
               and host names.",
     what: "network watch helper",
+    dropin: None,
 };
 
 const HELPER: Extra = Extra {
@@ -61,7 +64,50 @@ const HELPER: Extra = Extra {
               [actions] units and to reboot or power off, but only for the actions you list in [actions] allow \
               in /etc/nightgrid-node/config.toml (none by default). The helper checks that file itself.",
     what: "root helper",
+    dropin: Some(helper_dropin),
 };
+
+/// Lets the helper write where root allows rollbacks.
+fn helper_dropin(layout: &Layout) -> String {
+    let paths = crate::config::Config::load(&layout.config()).map(|c| c.rollback.paths).unwrap_or_default();
+    let mut s = String::from(
+        "# Written by `nightgrid-node allow helper` from [rollback] paths in /etc/nightgrid-node/config.toml.\n\
+         # Run that command again after changing the list.\n[Service]\n",
+    );
+    for p in paths.iter().filter(|p| crate::config::rollback_path_ok(p)) {
+        s.push_str(&format!("ReadWritePaths=-{p}\n"));
+    }
+    s
+}
+
+impl Layout {
+    fn extra_dropin(&self, e: &Extra) -> PathBuf {
+        self.system_unit(&format!("{}.d", e.files[e.files.len() - 1].0)).join("rollback.conf")
+    }
+    fn write_extra(&self, e: &Extra, rep: &mut Report, verb: &str) -> Result<(), String> {
+        for (name, body) in e.files {
+            write_file(&self.system_unit(name), body, 0o644)?;
+            rep.step(format!("{verb} {}", self.system_unit(name).display()));
+        }
+        if let Some(f) = e.dropin {
+            let path = self.extra_dropin(e);
+            std::fs::create_dir_all(path.parent().unwrap_or(Path::new("/")))
+                .map_err(|err| format!("{}: {err}", path.display()))?;
+            write_file(&path, &f(self), 0o644)?;
+            rep.step(format!("{verb} {}", path.display()));
+        }
+        Ok(())
+    }
+    fn remove_extra(&self, e: &Extra, rep: &mut Report) -> Result<(), String> {
+        for (name, _) in e.files {
+            remove(&self.system_unit(name), rep)?;
+        }
+        if e.dropin.is_some() {
+            remove_dir(self.extra_dropin(e).parent().unwrap_or(Path::new("/nonexistent")), rep)?;
+        }
+        Ok(())
+    }
+}
 
 const EXTRAS: [&Extra; 2] = [&NETWATCH, &HELPER];
 pub const SYSUSERS: &str = "# Nightgrid Node service account (no login shell, no password).\n\
@@ -252,10 +298,7 @@ pub fn install(layout: &Layout, sys: &mut dyn Sys, self_exe: &Path, opts: &Insta
     rep.step(format!("wrote {}", layout.unit().display()));
     let extras: Vec<&Extra> = EXTRAS.into_iter().filter(|e| layout.has(e)).collect();
     for e in &extras {
-        for (name, body) in e.files {
-            write_file(&layout.system_unit(name), body, 0o644)?;
-            rep.step(format!("updated {}", layout.system_unit(name).display()));
-        }
+        layout.write_extra(e, &mut rep, "updated")?;
     }
 
     for u in &opts.allow_users {
@@ -309,9 +352,7 @@ pub fn uninstall(layout: &Layout, sys: &mut dyn Sys, purge: bool) -> Result<Repo
             Ok(_) => rep.step(format!("{} stopped and disabled", e.what)),
             Err(err) => rep.warnings.push(err),
         }
-        for (name, _) in e.files {
-            remove(&layout.system_unit(name), &mut rep)?;
-        }
+        layout.remove_extra(e, &mut rep)?;
     }
     match sys.run("systemctl", &["disable", "--now", SERVICE]) {
         Ok(_) => rep.step("service stopped and disabled".to_string()),
@@ -325,6 +366,7 @@ pub fn uninstall(layout: &Layout, sys: &mut dyn Sys, purge: bool) -> Result<Repo
     remove_dir(&layout.dropin_dir(), &mut rep)?;
     if purge {
         remove_dir(&layout.data_dir(), &mut rep)?;
+        remove_dir(&layout.at(crate::helper::ROLLBACK_DIR), &mut rep)?;
         remove_dir(&layout.config_dir(), &mut rep)?;
         remove(&layout.sysusers(), &mut rep)?;
         // userdel also drops the group and every membership in it.
@@ -418,10 +460,7 @@ pub fn allow(
     let mut rep = Report { action: "allow", version: env!("CARGO_PKG_VERSION"), ..Default::default() };
     if let Some(e) = grant.extra() {
         rep.warnings.push(e.warning.into());
-        for (name, body) in e.files {
-            write_file(&layout.system_unit(name), body, 0o644)?;
-            rep.step(format!("wrote {}", layout.system_unit(name).display()));
-        }
+        layout.write_extra(e, &mut rep, "wrote")?;
         sys.run("systemctl", &["daemon-reload"])?;
         if no_start {
             sys.run("systemctl", &["enable", e.unit])?;
@@ -485,9 +524,7 @@ pub fn deny(layout: &Layout, sys: &mut dyn Sys, grant: Grant, no_start: bool) ->
         if let Err(err) = sys.run("systemctl", &["disable", "--now", e.unit]) {
             rep.warnings.push(err);
         }
-        for (name, _) in e.files {
-            remove(&layout.system_unit(name), &mut rep)?;
-        }
+        layout.remove_extra(e, &mut rep)?;
         sys.run("systemctl", &["daemon-reload"])?;
         rep.step(format!("{} stopped", e.what));
         return Ok(rep);
@@ -620,7 +657,12 @@ mod tests {
         let (_d, layout, exe) = setup();
         let mut sys = FakeSys::default();
         install(&layout, &mut sys, &exe, &InstallOptions::default()).unwrap();
+        let cfg = std::fs::read_to_string(layout.config()).unwrap().replace("paths = []", "paths = [\"/srv/compose\"]");
+        std::fs::write(layout.config(), cfg).unwrap();
         let rep = allow(&layout, &mut sys, Grant::Helper, Path::new("/x"), false).unwrap();
+        let dropin =
+            std::fs::read_to_string(layout.system_unit("nightgrid-node-helper@.service.d/rollback.conf")).unwrap();
+        assert!(dropin.contains("ReadWritePaths=-/srv/compose"), "{dropin}");
         assert!(rep.warnings[0].contains("[actions] allow"));
         let sock = std::fs::read_to_string(layout.system_unit("nightgrid-node-helper.socket")).unwrap();
         assert!(
@@ -636,6 +678,7 @@ mod tests {
         deny(&layout, &mut sys, Grant::Helper, false).unwrap();
         assert!(!layout.system_unit("nightgrid-node-helper.socket").exists());
         assert!(!layout.system_unit("nightgrid-node-helper@.service").exists());
+        assert!(!layout.system_unit("nightgrid-node-helper@.service.d").exists());
         assert_eq!(deny(&layout, &mut sys, Grant::Helper, false).unwrap().steps, ["helper was not allowed"]);
         allow(&layout, &mut sys, Grant::Helper, Path::new("/x"), true).unwrap();
         uninstall(&layout, &mut sys, false).unwrap();
