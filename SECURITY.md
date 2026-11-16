@@ -16,4 +16,12 @@ Please report vulnerabilities privately through GitHub's **Report a vulnerabilit
 
 The container watcher needs the engine's socket. `sudo nightgrid-node allow docker` writes `/etc/systemd/system/nightgrid-node.service.d/docker.conf`, which adds the socket's group (normally `docker`) to the service. **Anyone who can use that socket can control the engine, and through it the host: this is root-equivalent.** The node itself only sends `GET` requests (container list and events), and the rest of the sandbox stays in place, but a flaw in the node could be used for more. Grant it on hosts where that trade-off is fine; `sudo nightgrid-node deny docker` takes it away. Sockets owned by group `root` are refused.
 
+## Journal access (`allow journal`)
+
+Login events need the system journal. `sudo nightgrid-node allow journal` writes `/etc/systemd/system/nightgrid-node.service.d/journal.conf`, adding the journal's group (normally `systemd-journal`). That group can read every log on the host, which can include secrets programs logged. The node only keeps sshd's login lines, after the same secret filter as the app. `sudo nightgrid-node deny journal` takes it away.
+
+## Watched files
+
+The file watcher only records metadata (size, owner, mode, time) and a short SHA-256 of files the service can read. It never stores or sends contents. Root chooses the list in `/etc/nightgrid-node/config.toml`.
+
 Full details: [docs/DESIGN.md §7](docs/DESIGN.md#7-security-model).

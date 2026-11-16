@@ -93,6 +93,37 @@ if [ "${WAIT_FOR_MINUTE:-0}" = 1 ] && command -v docker >/dev/null && docker inf
   q containers.list | grep -q '"access":"denied"' || fail "still has access after deny"
 fi
 
+if [ "${WAIT_FOR_MINUTE:-0}" = 1 ]; then
+  q() { as_user "/usr/local/bin/nightgrid-node query $1"; }
+  ev() { q "events.sync '{\"after\":0}'"; }
+
+  say "a watched file change is recorded"
+  cp /etc/hosts /tmp/ngn-hosts.bak
+  echo "# nightgrid-node test" >> /etc/hosts
+  i=0; until ev | grep -q '"title":"changed /etc/hosts"'; do
+    i=$((i+1)); [ $i -lt 40 ] || fail "no file change event"; sleep 1; done
+  ev | tr '}' '\n' | grep 'changed /etc/hosts' | head -1
+  ev | grep -q 'nightgrid-node test' && fail "file contents leaked into an event"
+  cat /tmp/ngn-hosts.bak > /etc/hosts
+
+  say "logins: no journal access until root allows it"
+  q node.info | grep -q '"journal":"denied"' || { q node.info; fail "expected journal denied"; }
+  /usr/local/bin/nightgrid-node allow journal --json | tee /tmp/ngn-allow-j.json
+  grep -q 'every log' /tmp/ngn-allow-j.json || fail "no journal warning"
+  sleep 2
+  q node.info | grep -q '"journal":"ok"' || { q node.info; fail "journal not ok after allow"; }
+  sleep 3
+  logger -t sshd "Failed password for invalid user ngntest from 192.0.2.10 port 4242 ssh2"
+  logger -t sshd "Accepted publickey for ngntest from 192.0.2.10 port 4243 ssh2: ED25519 SHA256:test"
+  i=0; until ev | grep -q '"title":"ngntest logged in from 192.0.2.10"'; do
+    i=$((i+1)); [ $i -lt 40 ] || { journalctl -u nightgrid-node -n 20 --no-pager; fail "no login event"; }; sleep 1; done
+  ev | grep -q '"title":"failed login for ngntest from 192.0.2.10"' || fail "no failed-login event"
+  ev | tr '}' '\n' | grep ngntest | head -2
+  /usr/local/bin/nightgrid-node deny journal >/dev/null
+  sleep 2
+  q node.info | grep -q '"journal":"denied"' || fail "journal still readable after deny"
+fi
+
 say "reinstall (upgrade in place) keeps the node id"
 before=$(as_user "/usr/local/bin/nightgrid-node query node.info" | sed 's/.*"nodeId":"\([0-9a-f]*\)".*/\1/')
 cp "$bin" /tmp/ngn-upgrade && /tmp/ngn-upgrade install --json >/dev/null

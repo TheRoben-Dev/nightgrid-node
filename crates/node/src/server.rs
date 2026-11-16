@@ -178,6 +178,18 @@ pub struct Session {
     pub streams: BTreeSet<String>,
 }
 
+/// Optional access root has or hasn't granted (`node.info`).
+fn access(shared: &Shared) -> std::collections::BTreeMap<String, String> {
+    let docker = if shared.config.docker.enabled {
+        let a = shared.containers.lock().unwrap_or_else(|e| e.into_inner()).result.access;
+        serde_json::to_value(a).ok().and_then(|v| v.as_str().map(str::to_owned)).unwrap_or_default()
+    } else {
+        "off".into()
+    };
+    let journal = if shared.config.logins.enabled { crate::logins::journal_access() } else { "off" };
+    [("docker".to_owned(), docker), ("journal".to_owned(), journal.to_owned())].into_iter().collect()
+}
+
 /// What this node offers. Every capability here is on in N0; later ones
 /// will depend on the root-owned config.
 pub fn caps() -> Caps {
@@ -190,6 +202,8 @@ pub fn caps() -> Caps {
         (cap::DISK, 1),
         (cap::ALERTS, 1),
         (cap::CONTAINERS, 1),
+        (cap::LOGINS, 1),
+        (cap::FILES, 1),
     ]
     .into_iter()
     .map(|(k, v)| (k.to_owned(), v))
@@ -254,6 +268,7 @@ fn dispatch(shared: &Shared, session: &mut Session, req: &Request) -> Result<Res
                     coverage: st.coverage().map_err(internal)?,
                     rss_bytes: rss_bytes(),
                     db_bytes: st.size(),
+                    access: access(shared),
                 },
             ))
         }

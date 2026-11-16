@@ -89,6 +89,8 @@ The node never buffers without bound for a slow client: each stream keeps a shor
 | `disk` 1 | `disk.sync` | N1 |
 | `alerts` 1 | `alerts.active`, `alerts.rules.get`, `alerts.rules.set` | N1 |
 | `containers` 1 | `containers.list`; `container` events; container-down alerts | N1b |
+| `logins` 1 | `login` events (with `allow journal`) | N2b |
+| `files` 1 | `file` events for the paths root listed | N2b |
 
 ### `node.info` (`node` 1)
 
@@ -104,9 +106,12 @@ The node never buffers without bound for a slow client: each stream keeps a shor
     {"res": 3600, "points": 336, "oldest": 1762077600, "newest": 1763287200}
   ],
   "rssBytes": 2633728,
-  "dbBytes": 3145728
+  "dbBytes": 3145728,
+  "access": {"docker": "ok", "journal": "denied"}
 }
 ```
+
+`access` (0.5.0+) says which optional access root has granted: `ok`, `denied` (root hasn't run `nightgrid-node allow <name>`), `absent` (nothing to read on this host) or `off` (disabled in the config).
 
 ### `metrics.latest` (`metrics` 1)
 
@@ -155,7 +160,9 @@ The cursor is the event's `seq`, which only grows.
            "title": "server01", "detail": "/srv is 91% full (40 GB free)", "since": 1763290000, "resolved": null}}
 ```
 
-- `kind`: `alert` (fired, worse, or changed: `level: info` when it got better), `recovered` (`level: ok`, `alert.resolved` set), `boot`, `outage`, `container` (N1b), unknown kinds read as `other`.
+- `kind`: `alert` (fired, worse, or changed: `level: info` when it got better), `recovered` (`level: ok`, `alert.resolved` set), `boot`, `outage`, `container` (N1b), `login` and `file` (N2b); unknown kinds read as `other`.
+- `login`: "alice logged in from 10.0.0.5" (`detail`: "ssh, publickey"), or failed logins summed per minute: "failed login for root from 192.0.2.7" / "12 failed logins from 3 addresses" (`detail`: users and the top addresses; `warn` from 10 failures). Needs `allow journal`.
+- `file`: "changed /etc/ssh/sshd_config", "added /etc/cron.d/backup", "removed …". `detail` lists size, a short SHA-256, mode and owner changes, never contents; "(while the node was not running)" when found at start. `warn` for SSH, sudoers, passwd, shadow and group files.
 - `level`: `info`, `ok`, `warn`, `critical`.
 - `outage` events carry `"outage": {"start", "end", "state": "down" | "asleep"}`. Titles: `Down` (the host or node went away without a clean stop), `Restarted` (clean stop, then a new boot), `Suspended` (the host slept).
 - Title and detail go through the app's secret filter and are capped (200 / 600 characters).
@@ -214,7 +221,6 @@ What the watcher last read (every 15 s by default):
 
 | Capability | Methods | Milestone |
 |---|---|---|
-| `logins`, `files` | logins and failed logins, watched file changes, as events and pushed | N2b |
 | `net` | `net.devices`, `net.events` | N3 |
 | `act.*`, `heal` | typed actions and self-healing rules, each opt-in, every run audited | N4 |
 | `logs` | `logs.rules.set`, `logs.findings` | N5 |

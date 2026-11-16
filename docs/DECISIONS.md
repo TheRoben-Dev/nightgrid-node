@@ -91,3 +91,9 @@ Protocol 2 pushes frames on the same connection as requests, told apart by havin
 ### N-023 · The node samples faster only while someone watches
 With no subscriber the sampler keeps the configured interval (10 s). While a `metrics` subscriber is connected it samples every 2 s and the container watcher reads every 3 s, and both return to normal within a second of the last subscriber leaving. Minute averages simply include more samples. Idle cost stays where it was; the app gets live tiles without running `COLLECT` over SSH.
 
+### N-024 · Logins come from the journal through one `journalctl` child, after `allow journal`
+Failed SSH logins are only in the journal (`btmp` is root-only), and reading the system journal needs its group. `nightgrid-node allow journal` adds that group with a drop-in, like `allow docker` (N-019), and warns that it exposes every log. The node runs one long-lived `journalctl --follow -o json -t sshd -t sshd-session` rather than parsing journal files itself (no libsystemd in a static binary), resumes from a saved cursor, keeps only parsed login lines, and sums failed logins per minute. The child adds a few MB of memory only on hosts where root granted it.
+
+### N-025 · Watched files are polled, and contents are never stored
+Root lists files and directories (`[files] watch`). Every 10 s the node `stat`s them (and the direct entries of directories) and hashes readable files under 4 MiB when their metadata changed. Polling instead of inotify handles editors that replace files by rename and paths that appear later, at the cost of a few dozen `stat` calls. Events carry sizes, a 16-digit SHA-256 prefix, mode and owner, never contents. Unreadable files (`/etc/shadow`) still report that they changed. The baseline is saved, so changes made while the node was stopped are reported at the next start.
+

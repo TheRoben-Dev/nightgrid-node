@@ -277,18 +277,22 @@ pub fn uninstall(layout: &Layout, sys: &mut dyn Sys, purge: bool) -> Result<Repo
 pub enum Grant {
     /// The container engine's socket group: root-equivalent.
     Docker,
+    /// The journal's group: reads every log on the host.
+    Journal,
 }
 
 impl Grant {
     pub fn parse(s: &str) -> Option<Self> {
         match s {
             "docker" => Some(Self::Docker),
+            "journal" => Some(Self::Journal),
             _ => None,
         }
     }
     fn file(self) -> &'static str {
         match self {
             Self::Docker => "docker.conf",
+            Self::Journal => "journal.conf",
         }
     }
 }
@@ -336,6 +340,23 @@ pub fn allow(
                  # Group {group} can control the engine: this is root-equivalent access.\n\
                  [Service]\nSupplementaryGroups={group}\n",
                 socket.display()
+            )
+        }
+        Grant::Journal => {
+            let dir = ["/var/log/journal", "/run/log/journal"]
+                .into_iter()
+                .map(|p| layout.at(p))
+                .find(|p| p.is_dir())
+                .ok_or("no journal directory (/var/log/journal or /run/log/journal)")?;
+            let group = socket_group(sys, &dir, layout.is_system())?;
+            rep.warnings.push(format!(
+                "members of {group} can read every log on this host, which may include secrets that \
+                 programs logged. The node only keeps sshd's login lines, through the same secret filter as the app."
+            ));
+            format!(
+                "# Written by `nightgrid-node allow journal`; removed by `nightgrid-node deny journal`.\n\
+                 # Lets the service read the system journal (for SSH logins).\n\
+                 [Service]\nSupplementaryGroups={group}\n"
             )
         }
     };

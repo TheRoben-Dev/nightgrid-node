@@ -84,6 +84,10 @@ pub mod cap {
     pub const ALERTS: &str = "alerts";
     /// `containers.list`; container events in `events`; container-down alerts.
     pub const CONTAINERS: &str = "containers";
+    /// Logins and failed logins in `events` (needs `allow journal`).
+    pub const LOGINS: &str = "logins";
+    /// Watched file changes in `events`.
+    pub const FILES: &str = "files";
 }
 
 /// Capability name → version.
@@ -209,6 +213,11 @@ pub struct NodeInfo {
     pub rss_bytes: u64,
     /// Size of the history database, bytes.
     pub db_bytes: u64,
+    /// Optional access root granted or not, by name (`docker`, `journal`):
+    /// `ok`, `denied` (root hasn't run `nightgrid-node allow <name>`),
+    /// `absent` (nothing to read on this host) or `off` (disabled in the config).
+    #[serde(default)]
+    pub access: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -468,6 +477,10 @@ pub enum EventKind {
     Outage,
     /// A container died, restarted, ran out of memory or turned unhealthy.
     Container,
+    /// A login, or failed logins (SSH), from the journal.
+    Login,
+    /// A watched file or directory changed.
+    File,
     /// Kinds added by newer nodes.
     #[serde(other)]
     Other,
