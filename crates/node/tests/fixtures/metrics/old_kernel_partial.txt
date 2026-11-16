@@ -1,0 +1,8 @@
+@@stat
+cpu 100 0 50 1000
+@@meminfo
+MemTotal: 1000 kB
+MemFree: 200 kB
+Buffers: 100 kB
+Cached: 300 kB
+@@end
