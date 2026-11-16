@@ -266,3 +266,32 @@ fn takes_netwatch_reports_from_its_own_account() {
         std::thread::sleep(Duration::from_millis(250));
     }
 }
+
+#[test]
+fn actions_need_roots_allow_and_are_logged() {
+    let svc = start_with("[actions]\nallow = [\"container.restart\"]\n[docker]\nenabled = false\n");
+    let mut c = Client::connect(&svc.socket, "e2e").unwrap();
+    assert!(c.welcome.caps.contains_key("actions") && c.welcome.caps.contains_key("heal"));
+    let p = c.call("actions.policy", Value::Null).unwrap();
+    assert_eq!(p["allowed"], json!(["container.restart"]));
+
+    // Not allowed by root, then allowed but no engine: both refused, both logged.
+    let r = c.call("actions.run", json!({"action": "container.stop", "target": "web"})).unwrap();
+    assert_eq!(r["outcome"], "refused", "{r}");
+    let r = c.call("actions.run", json!({"action": "container.restart", "target": "web", "dryRun": true})).unwrap();
+    assert_eq!(r["outcome"], "refused", "{r}");
+    let log = c.call("actions.log", json!({"after": 0})).unwrap();
+    assert_eq!(log["records"].as_array().unwrap().len(), 2, "{log}");
+    assert_eq!(log["verified"], true);
+    let ev = c.call("events.sync", json!({"after": 0})).unwrap();
+    assert!(ev["events"].as_array().unwrap().iter().any(|e| e["kind"] == "action"), "{ev}");
+
+    // Self-healing rules: validated, stored, off by default.
+    let bad = c.call("heal.rules.set", json!({"rules": [{"id": "x", "action": "rm"}]}));
+    assert!(bad.is_err());
+    let rules = json!({"rules": [{"id": "web-unhealthy", "target": "web"}]});
+    let set = c.call("heal.rules.set", rules).unwrap();
+    assert_eq!((set["rules"][0]["enabled"].as_bool(), set["rules"][0]["dryRun"].as_bool()), (Some(false), Some(true)));
+    assert_eq!(c.call("heal.rules.get", Value::Null).unwrap(), set);
+    assert_eq!(c.call("heal.status", Value::Null).unwrap(), json!({"enabled": 0, "tracking": []}));
+}

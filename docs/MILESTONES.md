@@ -53,13 +53,20 @@ Roben's expanded brief sets the order after N1: **real-time push, then network w
 - Feeds the app's network map and device inventory (`net.devices`, `net.events`); MAC vendor lookup from a bundled OUI table, nothing online.
 - App spec 0005.
 
-## N4 · Actions and self-healing
+## N4 · Actions and self-healing — **N4a done (0.8.0)**
+
+- **N4a (0.8.0):** typed container actions and image prune, root's allow-list, audit log, self-healing rules. App spec 0007.
+- **N4b:** unit restart and power through the root helper (N-010).
+- **N4c:** rollbacks with a dead-man timer.
+
+Scope:
+
 
 - Typed actions, each opt-in by root: container start/stop/restart and image prune (through the engine socket, which `allow docker` already grants), unit restart and power through the root helper (N-010). Never shell strings.
 - Append-only, hash-chained audit log of every action, synced as events.
 - Self-healing rules pushed by the app: condition (an alert kind and key, held for N minutes) → action, e.g. container unhealthy 5 min → restart, disk > 95 % → prune images. Each rule off by default, with a rate limit (max runs per hour/day, backoff), dry-run mode that only logs what it would do, and a stop when the condition doesn't clear.
 - Safe rollbacks run node-side: snapshot compose/.env/config before a change, dead-man timer that reverts unless the app confirms.
-- App spec 0006.
+- App spec 0007.
 
 ## N5 · Health that needs root, and logs
 

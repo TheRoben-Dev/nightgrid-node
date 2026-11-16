@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.8.0 · N4a (unreleased)
+
+- Typed actions, each off until root lists it in `[actions] allow`: `container.restart`, `container.start`, `container.stop` and `images.prune` (dangling images), through the engine socket. `actions.policy`, `actions.run` (with dry run), and a global `max_per_hour`.
+- Hash-chained audit log of every action, dry or real, refused or done (`actions.log`, with chain verification), and `action` events in the timeline.
+- Self-healing rules pushed by the app (`heal.rules.set`, `heal.status`): unhealthy or down container, or full disk, held for N minutes → action. Off and dry-run by default, capped per hour and day, waiting between runs, and giving up with a warning when the condition doesn't clear.
+- Slow requests run off the socket thread, so a container restart doesn't hold up other clients.
+
 ## 0.7.0 · N3b (unreleased)
 
 - Network watch helper, off until root runs `nightgrid-node allow netwatch`: a separate unit (`nightgrid-node-netwatch.service`) whose only privilege is `CAP_NET_RAW`. It listens for ARP and DHCP through a kernel filter, sends nothing, and reports to the service over the unix socket.

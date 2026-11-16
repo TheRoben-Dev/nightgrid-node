@@ -1,7 +1,9 @@
-//! A tiny read-only client for the Docker Engine API (also Podman's
-//! compatible socket): HTTP/1.0 `GET`s over the unix socket, so the engine
-//! closes the connection after one response and never chunks it. Only
-//! `/containers/json` and `/events` (with `until`, so it returns) are used.
+//! A tiny client for the Docker Engine API (also Podman's compatible
+//! socket): HTTP/1.0 over the unix socket, so the engine closes the
+//! connection after one response. Reads use `/containers/json` and
+//! `/events` (with `until`, so it returns). Writes are only the typed
+//! actions root allowed (N4): start, stop, restart a container, and prune
+//! dangling images.
 
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
@@ -35,6 +37,17 @@ impl std::fmt::Display for DockerError {
 
 /// `GET path` and the body of a 200 response.
 pub fn get(socket: &Path, path: &str) -> Result<Vec<u8>, DockerError> {
+    request(socket, "GET", path)
+}
+
+/// `POST path` with no body. A 2xx or 304 ("already in that state") is success.
+pub fn post(socket: &Path, path: &str) -> Result<Vec<u8>, DockerError> {
+    request(socket, "POST", path)
+}
+
+fn request(socket: &Path, method: &str, path: &str) -> Result<Vec<u8>, DockerError> {
+    // Actions such as a restart wait for the container to stop (up to 10 s).
+    let timeout = if method == "GET" { TIMEOUT } else { TIMEOUT * 3 };
     let mut s = UnixStream::connect(socket).map_err(|e| {
         let access = match e.kind() {
             std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused => ContainerAccess::Absent,
@@ -43,9 +56,10 @@ pub fn get(socket: &Path, path: &str) -> Result<Vec<u8>, DockerError> {
         };
         DockerError { access, message: format!("{}: {e}", socket.display()) }
     })?;
-    s.set_read_timeout(Some(TIMEOUT)).ok();
+    s.set_read_timeout(Some(timeout)).ok();
     s.set_write_timeout(Some(TIMEOUT)).ok();
-    write!(s, "GET {path} HTTP/1.0\r\nHost: docker\r\nUser-Agent: nightgrid-node\r\n\r\n")
+    let len = if method == "GET" { "" } else { "Content-Length: 0\r\n" };
+    write!(s, "{method} {path} HTTP/1.0\r\nHost: docker\r\nUser-Agent: nightgrid-node\r\n{len}\r\n")
         .map_err(|e| DockerError::error(format!("write: {e}")))?;
     let mut buf = Vec::new();
     s.take(MAX_BODY).read_to_end(&mut buf).map_err(|e| DockerError::error(format!("read: {e}")))?;
@@ -68,7 +82,7 @@ pub fn parse_response(buf: &[u8]) -> Result<Vec<u8>, DockerError> {
         l.starts_with("transfer-encoding:") && l.contains("chunked")
     });
     let body = if chunked { dechunk(body)? } else { body.to_vec() };
-    if status != 200 {
+    if !(200..300).contains(&status) && status != 304 {
         let msg = serde_json::from_slice::<serde_json::Value>(&body)
             .ok()
             .and_then(|v| v["message"].as_str().map(str::to_owned))

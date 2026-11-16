@@ -4,6 +4,7 @@
 
 pub mod log;
 
+pub mod actions;
 pub mod alerts;
 pub mod bus;
 pub mod client;
@@ -16,6 +17,7 @@ pub mod docker;
 pub mod engine;
 pub mod events;
 pub mod files;
+pub mod heal;
 pub mod install;
 pub mod logins;
 pub mod metrics;

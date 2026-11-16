@@ -45,6 +45,8 @@ pub struct Shared {
     pub net_inbox: Mutex<crate::netwatch::Inbox>,
     /// DHCP servers seen by the helper.
     pub dhcp: Mutex<crate::dhcp::Dhcp>,
+    /// Self-healing rules and what they are tracking.
+    pub heal: Mutex<crate::heal::Heal>,
 }
 
 impl Shared {
@@ -57,6 +59,7 @@ impl Shared {
         };
         let rules = crate::engine::load_rules(&store);
         let dhcp = crate::dhcp::Dhcp::load(&store, &config.network.dhcp_servers);
+        let heal = crate::heal::Heal::load(&store);
         let docker_access = if config.docker.enabled {
             nightgrid_node_proto::ContainerAccess::Absent
         } else {
@@ -75,6 +78,7 @@ impl Shared {
             net: Mutex::new(nightgrid_node_proto::NetDevicesResult { at: 0, gateway: None, devices: Vec::new() }),
             net_inbox: Mutex::new(crate::netwatch::Inbox::default()),
             dhcp: Mutex::new(dhcp),
+            heal: Mutex::new(heal),
         })
     }
 }
@@ -250,6 +254,7 @@ pub fn run(config: Config, paths: Paths) -> Result<(), String> {
     } else {
         None
     };
+    let healer = crate::heal::Healer::start(shared.clone()).map_err(|e| format!("self-healing: {e}"))?;
     let watcher = if config.docker.enabled {
         Some(crate::containers::Watcher::start(shared.clone()).map_err(|e| format!("container watcher: {e}"))?)
     } else {
@@ -272,6 +277,7 @@ pub fn run(config: Config, paths: Paths) -> Result<(), String> {
     });
     sd_notify("STOPPING=1");
     sampler.stop();
+    healer.stop();
     if let Some(w) = watcher {
         w.stop();
     }

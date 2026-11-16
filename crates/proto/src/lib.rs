@@ -53,6 +53,16 @@ pub mod method {
     /// Internal: the network watch helper's reports. Only the node's own
     /// service account may call it.
     pub const NET_REPORT: &str = "net.report";
+    /// Which action types root allows, and the limits.
+    pub const ACTIONS_POLICY: &str = "actions.policy";
+    /// Run one typed action now (or dry-run it).
+    pub const ACTIONS_RUN: &str = "actions.run";
+    /// The hash-chained audit log of every action, by `seq`.
+    pub const ACTIONS_LOG: &str = "actions.log";
+    pub const HEAL_RULES_GET: &str = "heal.rules.get";
+    pub const HEAL_RULES_SET: &str = "heal.rules.set";
+    /// What each self-healing rule is doing right now.
+    pub const HEAL_STATUS: &str = "heal.status";
     /// Protocol 2: start pushing frames for streams.
     pub const SUBSCRIBE: &str = "subscribe";
     /// Protocol 2: stop pushing frames for streams.
@@ -99,6 +109,26 @@ pub mod cap {
     pub const NET: &str = "net";
     /// `net.dhcp`; DHCP events and device names (needs `allow netwatch`).
     pub const NET_DHCP: &str = "net.dhcp";
+    /// `actions.policy`, `actions.run`, `actions.log`; `action` events.
+    pub const ACTIONS: &str = "actions";
+    /// `heal.rules.get`, `heal.rules.set`, `heal.status`.
+    pub const HEAL: &str = "heal";
+}
+
+/// Typed actions (N4). Root lists the ones the node may run in
+/// `[actions] allow`; nothing else ever runs.
+pub mod action {
+    /// Restart a container (engine socket; needs `allow docker`).
+    pub const CONTAINER_RESTART: &str = "container.restart";
+    pub const CONTAINER_START: &str = "container.start";
+    pub const CONTAINER_STOP: &str = "container.stop";
+    /// Remove dangling images (engine socket; needs `allow docker`).
+    pub const IMAGES_PRUNE: &str = "images.prune";
+    pub const ALL: [&str; 4] = [CONTAINER_RESTART, CONTAINER_START, CONTAINER_STOP, IMAGES_PRUNE];
+    /// Whether the action works on one named container.
+    pub fn takes_container(a: &str) -> bool {
+        matches!(a, CONTAINER_RESTART | CONTAINER_START | CONTAINER_STOP)
+    }
 }
 
 /// Capability name → version.
@@ -611,6 +641,8 @@ pub enum EventKind {
     /// The LAN changed: a new device, a device on a new address, an
     /// address answering from a new MAC, an IP conflict.
     Network,
+    /// An action ran, was dry-run, failed or was refused (N4).
+    Action,
     /// Kinds added by newer nodes.
     #[serde(other)]
     Other,
@@ -888,4 +920,210 @@ mod tests {
         assert_eq!(resolution(0, 7 * 86400), ROLLUP);
         assert_eq!(resolution(0, 90 * 86400), HOURLY);
     }
+}
+
+/// `actions.run` params.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActionRequest {
+    /// One of [`action::ALL`].
+    pub action: String,
+    /// The container, for container actions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+    /// Only record what would happen.
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ActionOutcome {
+    /// It ran and the engine (or helper) said it worked.
+    Ok,
+    /// Dry run: recorded, not done.
+    DryRun,
+    /// It ran and failed.
+    Failed,
+    /// Not run: not allowed by root, over the rate limit, or a bad target.
+    Refused,
+}
+
+/// One entry of the audit log (also the `actions.run` result).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActionRecord {
+    pub seq: i64,
+    pub at: i64,
+    /// Who asked: `app (uid 1000)`, or `rule <id>`.
+    pub source: String,
+    pub action: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+    pub dry_run: bool,
+    pub outcome: ActionOutcome,
+    pub detail: String,
+    /// SHA-256 over this entry and the previous entry's hash.
+    pub hash: String,
+}
+
+/// `actions.log` result.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActionsLogResult {
+    pub records: Vec<ActionRecord>,
+    pub next: i64,
+    pub more: bool,
+    /// Every returned entry's hash checks out and links to the one before.
+    pub verified: bool,
+}
+
+/// `actions.policy` result.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActionsPolicy {
+    /// Action types root allows (`[actions] allow`). Empty: none.
+    pub allowed: Vec<String>,
+    /// Every action type this node knows.
+    pub known: Vec<String>,
+    /// Real (not dry) runs allowed per hour, all sources together.
+    pub max_per_hour: u32,
+}
+
+/// What a self-healing rule waits for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum HealWhen {
+    /// A container's health check says unhealthy.
+    ContainerUnhealthy,
+    /// The container-down alert is active (it was running and stopped).
+    ContainerDown,
+    /// The disk-full alert is active for a mount.
+    DiskFull,
+}
+
+/// One self-healing rule, pushed by the app. Off and dry-run by default.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct HealRule {
+    /// Short id: letters, digits, `-`, `_`.
+    pub id: String,
+    pub enabled: bool,
+    /// Only record what it would do.
+    pub dry_run: bool,
+    pub when: HealWhen,
+    /// Container name or mount the condition applies to; `*` for any.
+    pub target: String,
+    /// How long the condition must hold before acting, 1-1440.
+    pub for_minutes: u32,
+    /// What to do. Container actions act on the matching container.
+    pub action: String,
+    /// Most runs per hour (1-60) and per day (1-500) for one target.
+    pub max_per_hour: u32,
+    pub max_per_day: u32,
+    /// Runs without the condition clearing before the rule gives up on a
+    /// target (and raises a warning), 1-20.
+    pub give_up_after: u32,
+}
+
+impl Default for HealRule {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            enabled: false,
+            dry_run: true,
+            when: HealWhen::ContainerUnhealthy,
+            target: "*".into(),
+            for_minutes: 5,
+            action: action::CONTAINER_RESTART.into(),
+            max_per_hour: 3,
+            max_per_day: 10,
+            give_up_after: 3,
+        }
+    }
+}
+
+impl HealRule {
+    pub fn validate(&self) -> Result<(), String> {
+        let id_ok = !self.id.is_empty()
+            && self.id.len() <= 40
+            && self.id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+        if !id_ok {
+            return Err(format!("rule id {:?}: 1-40 letters, digits, - or _", self.id));
+        }
+        if !action::ALL.contains(&self.action.as_str()) {
+            return Err(format!("rule {}: unknown action {:?}", self.id, self.action));
+        }
+        let container_rule = matches!(self.when, HealWhen::ContainerUnhealthy | HealWhen::ContainerDown);
+        if action::takes_container(&self.action) && !container_rule {
+            return Err(format!("rule {}: {} needs a container condition", self.id, self.action));
+        }
+        if self.target.is_empty() || self.target.len() > 255 {
+            return Err(format!("rule {}: target must be `*` or a name", self.id));
+        }
+        let ranges = [
+            ("forMinutes", self.for_minutes, 1, 1440),
+            ("maxPerHour", self.max_per_hour, 1, 60),
+            ("maxPerDay", self.max_per_day, 1, 500),
+            ("giveUpAfter", self.give_up_after, 1, 20),
+        ];
+        for (name, v, lo, hi) in ranges {
+            if !(lo..=hi).contains(&v) {
+                return Err(format!("rule {}: {name} must be {lo}-{hi}", self.id));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// `heal.status`: one line per rule and target it is tracking.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HealStatus {
+    pub rule: String,
+    pub target: String,
+    /// When the condition was first seen (it still holds).
+    pub since: i64,
+    /// Runs since the condition started.
+    pub attempts: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_run: Option<i64>,
+    /// No more runs until the condition clears.
+    pub gave_up: bool,
+}
+
+/// Most self-healing rules a node keeps.
+pub const MAX_HEAL_RULES: usize = 32;
+
+/// `heal.rules.get` / `heal.rules.set`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct HealRules {
+    pub rules: Vec<HealRule>,
+}
+
+impl HealRules {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.rules.len() > MAX_HEAL_RULES {
+            return Err(format!("at most {MAX_HEAL_RULES} rules"));
+        }
+        let mut ids = std::collections::BTreeSet::new();
+        for r in &self.rules {
+            r.validate()?;
+            if !ids.insert(r.id.as_str()) {
+                return Err(format!("rule id {:?} is used twice", r.id));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// `heal.status`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HealStatusResult {
+    /// Rules that are on (not counting dry-run ones separately).
+    pub enabled: u32,
+    /// Conditions the rules are tracking now.
+    pub tracking: Vec<HealStatus>,
 }

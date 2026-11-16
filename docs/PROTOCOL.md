@@ -94,6 +94,8 @@ The node never buffers without bound for a slow client: each stream keeps a shor
 | `files` 1 | `file` events for the paths root listed | N2b |
 | `net` 1 | `net.devices`; `network` events | N3a |
 | `net.dhcp` 1 | `net.dhcp`; DHCP `network` events; device `name` (with `allow netwatch`) | N3b |
+| `actions` 1 | `actions.policy`, `actions.run`, `actions.log`; `action` events | N4a |
+| `heal` 1 | `heal.rules.get`, `heal.rules.set`, `heal.status` | N4a |
 
 ### `node.info` (`node` 1)
 
@@ -258,10 +260,57 @@ DHCP servers the network watch helper has seen (needs `sudo nightgrid-node allow
 
 How the helper hands over what it saw: `{"arp": [{ip, mac, iface}], "dhcp": [DhcpSeen]}`. Only a connection from the service's own account may call it; anyone else gets `forbidden`. Apps never call it.
 
+### `actions.policy` (`actions` 1)
+
+What root allows in `[actions]`, so the app can grey out the rest:
+
+```json
+{"allowed": ["container.restart"], "known": ["container.restart", "container.start", "container.stop", "images.prune"], "maxPerHour": 20}
+```
+
+### `actions.run` (`actions` 1)
+
+Params: `{"action": "container.restart", "target": "web", "dryRun": false}`. `target` is the container name for `container.*` and absent for `images.prune`. Answers with the logged record (see `actions.log`); a refusal is a normal answer with `outcome: "refused"` and the reason in `detail`, not an error. The node refuses an action root didn't allow, an unknown container, any action without engine access, and real runs past `max_per_hour` (all sources together; dry runs and refusals don't count). Container actions can take up to ~10 s; the node answers other clients meanwhile.
+
+Outcomes: `ok`, `dryRun`, `failed` (the engine said no), `refused`. Every call also adds an `action` event: "restarted web" (`info`), "dry run: would restart web" (`info`), "could not restart web" / "refused to restart web" (`warn`). The event detail starts with who asked: `app (uid 1000)` or `rule <id>`.
+
+### `actions.log` (`actions` 1)
+
+The audit log, by cursor like `events.sync` (`after`, `limit` up to 500):
+
+```json
+{"records": [{"seq": 7, "at": 1763300000, "source": "rule web-unhealthy", "action": "container.restart",
+  "target": "web", "dryRun": false, "outcome": "ok", "detail": "restarted web", "hash": "9f2c…"}],
+ "next": 7, "more": false, "verified": true}
+```
+
+Each record's `hash` is SHA-256 over the previous record's hash and its own fields, so an edited or deleted row breaks the chain. `verified` says the returned page chains correctly (and onto the record before it). The node keeps the last 100 000 records.
+
+### `heal.rules.get` / `heal.rules.set` (`heal` 1)
+
+`{"rules": [HealRule]}`, at most 32. Set replaces all rules and answers with them as stored (defaults filled in).
+
+```json
+{"id": "web-unhealthy", "enabled": false, "dryRun": true, "when": "containerUnhealthy", "target": "web",
+ "forMinutes": 5, "action": "container.restart", "maxPerHour": 3, "maxPerDay": 10, "giveUpAfter": 3}
+```
+
+- `when`: `containerUnhealthy` (health check says unhealthy), `containerDown` (the container-down alert is active and it isn't running), `diskFull` (the disk-full alert is active for the mount). `target` is a container name or mount, or `*`.
+- `container.*` actions need a container condition and act on the matching container; `images.prune` fits any condition.
+- Defaults: **off and dry-run**. Ranges: `forMinutes` 1-1440, `maxPerHour` 1-60, `maxPerDay` 1-500, `giveUpAfter` 1-20. Ids are 1-40 letters, digits, `-`, `_`, unique.
+
+Per rule and target, the node runs the action once the condition has held `forMinutes`, waits `forMinutes` again after each run, keeps to the hour and day caps (which survive the condition flapping), and after `giveUpAfter` runs without the condition clearing it stops and adds a `warn` `action` event "self-healing gave up on <target>". When the condition clears, its count starts over. Runs go through `actions.run`'s checks, so a rule can never do more than root allowed.
+
+### `heal.status` (`heal` 1)
+
+```json
+{"enabled": 1, "tracking": [{"rule": "web-unhealthy", "target": "web", "since": 1763300000, "attempts": 1, "lastRun": 1763300300, "gaveUp": false}]}
+```
+
 ## Planned (not in version 1 yet)
 
 | Capability | Methods | Milestone |
 |---|---|---|
-| `act.*`, `heal` | typed actions and self-healing rules, each opt-in, every run audited | N4 |
+| `actions` 2 | unit restart and power through the root helper; rollbacks | N4b/N4c |
 | `logs` | `logs.rules.set`, `logs.findings` | N5 |
 | `checks` | `checks.set`, `checks.latest` | N7 |

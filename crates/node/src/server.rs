@@ -13,10 +13,10 @@ use std::path::Path;
 use std::sync::Arc;
 
 use nightgrid_node_proto::{
-    cap, method, negotiate, resolution, stream, AlertRules, Caps, ContainersResult, CursorParams, DiskResult,
-    ErrorCode, Event, EventsResult, Frame, Hello, HistoryParams, HistoryResult, Lagged, NodeInfo, Request, Response,
-    Retention, Sample, StreamsParams, StreamsResult, SyncParams, SyncResult, UptimeResult, Welcome, MAX_LINE,
-    MAX_POINTS, MAX_ROWS, PROTO_MIN, PROTO_VERSION,
+    cap, method, negotiate, resolution, stream, ActionRequest, AlertRules, Caps, ContainersResult, CursorParams,
+    DiskResult, ErrorCode, Event, EventsResult, Frame, HealRules, Hello, HistoryParams, HistoryResult, Lagged,
+    NodeInfo, Request, Response, Retention, Sample, StreamsParams, StreamsResult, SyncParams, SyncResult, UptimeResult,
+    Welcome, MAX_LINE, MAX_POINTS, MAX_ROWS, PROTO_MIN, PROTO_VERSION,
 };
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -120,7 +120,7 @@ fn pushed<T: Serialize>(name: &str, r: Result<T, broadcast::error::RecvError>) -
     }
 }
 
-async fn connection(stream: UnixStream, shared: &Shared, uid: String) -> std::io::Result<()> {
+async fn connection(stream: UnixStream, shared: &Arc<Shared>, uid: String) -> std::io::Result<()> {
     let (r, mut w) = stream.into_split();
     let mut r = BufReader::with_capacity(16 * 1024, r);
     let mut session = Session { uid, ..Default::default() };
@@ -142,7 +142,21 @@ async fn connection(stream: UnixStream, shared: &Shared, uid: String) -> std::io
                     return Ok(());
                 }
                 drop(line);
-                let resp = handle_line(shared, &mut session, &buf);
+                let resp = if slow(&buf) {
+                    // Off the (single) async thread, so other clients and
+                    // this connection's pushes don't wait on the engine.
+                    let (sh, mut ses, line) = (shared.clone(), session.clone(), buf.clone());
+                    let (resp, ses) = tokio::task::spawn_blocking(move || {
+                        let r = handle_line(&sh, &mut ses, &line);
+                        (r, ses)
+                    })
+                    .await
+                    .map_err(std::io::Error::other)?;
+                    session = ses;
+                    resp
+                } else {
+                    handle_line(shared, &mut session, &buf)
+                };
                 buf.clear();
                 subs.sync(shared, &session.streams);
                 send(&mut w, &resp).await?;
@@ -167,8 +181,18 @@ async fn send(w: &mut tokio::net::unix::OwnedWriteHalf, r: &impl Serialize) -> s
     w.write_all(&line).await
 }
 
+/// Requests that may block for seconds (they talk to the container engine).
+fn slow(line: &[u8]) -> bool {
+    #[derive(serde::Deserialize)]
+    struct M<'a> {
+        #[serde(borrow, default)]
+        method: std::borrow::Cow<'a, str>,
+    }
+    serde_json::from_slice::<M>(line).is_ok_and(|m| m.method == method::ACTIONS_RUN)
+}
+
 /// Per-connection protocol state.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct Session {
     /// The negotiated version, once `hello` succeeded.
     pub proto: Option<u32>,
@@ -265,6 +289,8 @@ pub fn caps() -> Caps {
         (cap::FILES, 1),
         (cap::NET, 1),
         (cap::NET_DHCP, 1),
+        (cap::ACTIONS, 1),
+        (cap::HEAL, 1),
     ]
     .into_iter()
     .map(|(k, v)| (k.to_owned(), v))
@@ -445,6 +471,37 @@ fn dispatch(shared: &Shared, session: &mut Session, req: &Request) -> Result<Res
         }
         method::NET_DEVICES => {
             let r = shared.net.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            Ok(Response::ok(0, r))
+        }
+        method::ACTIONS_POLICY => Ok(Response::ok(0, crate::actions::policy(&shared.config))),
+        method::ACTIONS_RUN => {
+            let r: ActionRequest = params(&req.params)?;
+            let source = format!("app (uid {})", session.uid);
+            Ok(Response::ok(0, crate::actions::run(shared, &r, &source)))
+        }
+        method::ACTIONS_LOG => {
+            let p: CursorParams = params(&req.params)?;
+            let limit = p.limit.unwrap_or(crate::actions::MAX_LOG).clamp(1, crate::actions::MAX_LOG);
+            let st = shared.store.lock().unwrap_or_else(|e| e.into_inner());
+            Ok(Response::ok(0, crate::actions::log(&st, p.after, limit).map_err(internal)?))
+        }
+        method::HEAL_RULES_GET => {
+            let r = shared.heal.lock().unwrap_or_else(|e| e.into_inner()).rules();
+            Ok(Response::ok(0, r))
+        }
+        method::HEAL_RULES_SET => {
+            let rules: HealRules = params(&req.params)?;
+            rules.validate().map_err(|e| Response::err(0, ErrorCode::BadRequest, e))?;
+            let st = shared.store.lock().unwrap_or_else(|e| e.into_inner());
+            st.set_meta(crate::heal::META_RULES, &serde_json::to_string(&rules).unwrap_or_default())
+                .map_err(internal)?;
+            let on = rules.rules.iter().filter(|r| r.enabled).count();
+            crate::info!("self-healing rules updated by uid {} ({} rules, {on} on)", session.uid, rules.rules.len());
+            shared.heal.lock().unwrap_or_else(|e| e.into_inner()).set_rules(rules.clone());
+            Ok(Response::ok(0, rules))
+        }
+        method::HEAL_STATUS => {
+            let r = shared.heal.lock().unwrap_or_else(|e| e.into_inner()).status();
             Ok(Response::ok(0, r))
         }
         method::ALERTS_ACTIVE => {

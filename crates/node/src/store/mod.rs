@@ -30,6 +30,7 @@ fn migrations() -> Migrations<'static> {
         M::up(include_str!("migrations/0002_events_uptime_disk.sql")),
         M::up(include_str!("migrations/0003_net_devices.sql")),
         M::up(include_str!("migrations/0004_net_names.sql")),
+        M::up(include_str!("migrations/0005_action_log.sql")),
     ])
 }
 

@@ -18,6 +18,23 @@ pub struct Config {
     pub logins: LoginsConfig,
     pub files: FilesConfig,
     pub network: NetworkConfig,
+    pub actions: ActionsConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ActionsConfig {
+    /// Action types the node may run (manually from the app, or from
+    /// self-healing rules). Empty: none, the default.
+    pub allow: Vec<String>,
+    /// Real (not dry) runs per hour, all sources together (1-1000).
+    pub max_per_hour: u32,
+}
+
+impl Default for ActionsConfig {
+    fn default() -> Self {
+        Self { allow: Vec::new(), max_per_hour: 20 }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -186,6 +203,15 @@ impl Config {
         {
             return Err("network.dhcp_servers takes at most 32 IPv4 addresses".into());
         }
+        if let Some(a) = self.actions.allow.iter().find(|a| !nightgrid_node_proto::action::ALL.contains(&a.as_str())) {
+            return Err(format!(
+                "actions.allow: unknown action {a:?} (known: {})",
+                nightgrid_node_proto::action::ALL.join(", ")
+            ));
+        }
+        if !(1..=1000).contains(&self.actions.max_per_hour) {
+            return Err("actions.max_per_hour must be 1-1000".into());
+        }
         if !(1..=64).contains(&self.server.max_connections) {
             return Err("server.max_connections must be 1-64".into());
         }
@@ -265,6 +291,16 @@ ignore_ifaces = []
 # DHCP servers you expect, by address. A server not listed here that shows
 # up next to another one is reported as a possible rogue DHCP server.
 dhcp_servers = []
+
+[actions]
+# Actions the node may carry out, from the app or from self-healing rules.
+# None by default. Each one is typed (never a shell command) and every run,
+# dry or real, goes into a tamper-evident audit log. Known actions:
+#   container.restart, container.start, container.stop  (need allow docker)
+#   images.prune                                         (dangling images)
+allow = []
+# Most real runs per hour, all rules and the app together (1-1000).
+max_per_hour = 20
 "#;
 
 #[cfg(test)]

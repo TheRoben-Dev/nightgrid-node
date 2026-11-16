@@ -67,6 +67,10 @@ if [ "${WAIT_FOR_MINUTE:-0}" = 1 ] && command -v docker >/dev/null && docker inf
   q containers.list | tee /tmp/ngn-ct.json
   grep -q '"access":"denied"' /tmp/ngn-ct.json || fail "expected denied before allow"
 
+  say "root allows container actions (before the restart that allow docker does)"
+  sed -i 's/^allow = \[\]$/allow = ["container.restart", "container.start"]/' /etc/nightgrid-node/config.toml
+  grep -q '^allow = \["container.restart"' /etc/nightgrid-node/config.toml || fail "could not edit [actions] allow"
+
   say "allow docker"
   /usr/local/bin/nightgrid-node allow docker --json | tee /tmp/ngn-allow.json
   grep -q 'root-equivalent' /tmp/ngn-allow.json || fail "no warning"
@@ -85,6 +89,39 @@ if [ "${WAIT_FOR_MINUTE:-0}" = 1 ] && command -v docker >/dev/null && docker inf
     i=$((i+1)); [ $i -lt 300 ] || fail "no container event"; sleep 1; done
   q "events.sync '{\"after\":0}'" | tr '}' '\n' | grep ngn-crash | head -3
   docker rm -f ngn-crash >/dev/null
+
+  say "actions: policy, dry run, a real restart, a refusal, the audit log"
+  q actions.policy | grep -q '"allowed":\["container.restart","container.start"\]' || { q actions.policy; fail "policy"; }
+  docker rm -f ngn-web >/dev/null 2>&1 || true
+  docker run -d --init --name ngn-web alpine:3.20 sleep 3600 >/dev/null
+  i=0; until q containers.list | grep -q '"name":"ngn-web","state":"running"'; do
+    i=$((i+1)); [ $i -lt 60 ] || fail "watcher never saw ngn-web"; sleep 1; done
+  started=$(docker inspect -f '{{.State.StartedAt}}' ngn-web)
+  q "actions.run '{\"action\":\"container.restart\",\"target\":\"ngn-web\",\"dryRun\":true}'" | tee /tmp/ngn-act.json
+  grep -q '"outcome":"dryRun"' /tmp/ngn-act.json || fail "dry run"
+  [ "$(docker inspect -f '{{.State.StartedAt}}' ngn-web)" = "$started" ] || fail "dry run restarted it"
+  q "actions.run '{\"action\":\"container.restart\",\"target\":\"ngn-web\"}'" | tee /tmp/ngn-act.json
+  grep -q '"outcome":"ok"' /tmp/ngn-act.json || fail "restart"
+  [ "$(docker inspect -f '{{.State.StartedAt}}' ngn-web)" != "$started" ] || fail "not restarted"
+  q "actions.run '{\"action\":\"container.stop\",\"target\":\"ngn-web\"}'" | grep -q '"outcome":"refused"' || fail "stop not refused"
+  docker inspect -f '{{.State.Running}}' ngn-web | grep -q true || fail "stopped anyway"
+  q "actions.log '{\"after\":0}'" | tee /tmp/ngn-log.json
+  grep -q '"verified":true' /tmp/ngn-log.json || fail "log chain not verified"
+
+  say "self-healing starts a container that was killed"
+  q "heal.rules.set '{\"rules\":[{\"id\":\"web-down\",\"enabled\":true,\"dryRun\":false,\"when\":\"containerDown\",\"target\":\"ngn-web\",\"forMinutes\":1,\"action\":\"container.start\"}]}'" >/dev/null
+  i=0; until q containers.list | grep -q '"name":"ngn-web","state":"running"'; do
+    i=$((i+1)); [ $i -lt 60 ] || fail "ngn-web not running after restart"; sleep 1; done
+  sleep 5
+  docker kill ngn-web >/dev/null
+  i=0; until q "actions.log '{\"after\":0}'" | grep -q '"source":"rule web-down"'; do
+    i=$((i+1)); [ $i -lt 300 ] || { q heal.status; q alerts.active; fail "rule never ran"; }; sleep 1; done
+  q "actions.log '{\"after\":0}'" | tr '}' '\n' | grep 'rule web-down'
+  q "actions.log '{\"after\":0}'" | tr '}' '\n' | grep 'rule web-down' | grep -q '"outcome":"ok"' || fail "rule run failed"
+  i=0; until docker inspect -f '{{.State.Running}}' ngn-web | grep -q true; do
+    i=$((i+1)); [ $i -lt 30 ] || fail "not running after the rule"; sleep 1; done
+  docker rm -f ngn-web >/dev/null
+  q "heal.rules.set '{\"rules\":[]}'" >/dev/null
 
   say "deny docker"
   /usr/local/bin/nightgrid-node deny docker >/dev/null
