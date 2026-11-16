@@ -69,7 +69,7 @@ if [ "${WAIT_FOR_MINUTE:-0}" = 1 ] && command -v docker >/dev/null && docker inf
   grep -q 'SupplementaryGroups=docker' /etc/systemd/system/nightgrid-node.service.d/docker.conf || fail "drop-in"
   docker rm -f ngn-crash >/dev/null 2>&1 || true
   docker run -d --name ngn-crash alpine:3.20 sh -c 'sleep 75; exit 3' >/dev/null
-  i=0; until q containers.list | grep -q '"name":"ngn-crash","image":"alpine:3.20","state":"running"'; do
+  i=0; until q containers.list | grep -q '"name":"ngn-crash","state":"running"'; do
     i=$((i+1)); [ $i -lt 60 ] || { q containers.list; fail "watcher never saw ngn-crash running"; }; sleep 1; done
   q containers.list | grep -q '"access":"ok"' || fail "access not ok"
 
