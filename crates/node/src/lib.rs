@@ -4,10 +4,16 @@
 
 pub mod log;
 
+pub mod alerts;
 pub mod client;
 pub mod config;
 pub mod daemon;
+pub mod diskusage;
+pub mod engine;
+pub mod events;
 pub mod install;
 pub mod metrics;
+pub mod redact;
 pub mod server;
 pub mod store;
+pub mod uptime;

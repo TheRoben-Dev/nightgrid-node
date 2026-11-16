@@ -58,6 +58,10 @@ Result (`Welcome`):
 | `node` 1 | `node.info` | N0 |
 | `metrics` 1 | `metrics.latest`, `metrics.history` | N0 |
 | `metrics.sync` 1 | `metrics.sync` | N0 |
+| `events` 1 | `events.sync` | N1 |
+| `uptime` 1 | `uptime.sync` | N1 |
+| `disk` 1 | `disk.sync` | N1 |
+| `alerts` 1 | `alerts.active`, `alerts.rules.get`, `alerts.rules.set` | N1 |
 
 ### `node.info` (`node` 1)
 
@@ -103,14 +107,73 @@ Result:
 - Call again with `after = next` while `more` is true.
 - `oldest` is the oldest bucket this tier still holds. If it is newer than the client's cursor, the span in between has aged out of this tier; fill it from a coarser one.
 
+### Cursor syncs (`events`, `uptime`, `disk`)
+
+`events.sync`, `uptime.sync` and `disk.sync` take `{"after": cursor, "limit"?: n}` (limit 1–2000, default 2000) and return rows oldest first plus `next` (pass it as `after` next time) and `more`. Like `metrics.sync`, the cursor lives in the app and repeated calls are harmless.
+
+### `events.sync` (`events` 1)
+
+The cursor is the event's `seq`, which only grows.
+
+```json
+{"events": [Event…], "next": 42, "more": false, "oldest": 3}
+```
+
+`oldest` is the oldest `seq` still kept (90 days, at most 20 000 events). If it is above `after + 1`, events in between were pruned.
+
+```json
+{"seq": 41, "at": 1763290000, "kind": "alert", "level": "warn",
+ "title": "DISK FULL · server01", "detail": "/srv is 91% full (40 GB free)",
+ "alert": {"id": 3, "key": "disk:/srv", "kind": "diskFull", "severity": "warn",
+           "title": "server01", "detail": "/srv is 91% full (40 GB free)", "since": 1763290000, "resolved": null}}
+```
+
+- `kind`: `alert` (fired, worse, or changed: `level: info` when it got better), `recovered` (`level: ok`, `alert.resolved` set), `boot`, `outage`, `container` (N1b), unknown kinds read as `other`.
+- `level`: `info`, `ok`, `warn`, `critical`.
+- `outage` events carry `"outage": {"start", "end", "state": "down" | "asleep"}`. Titles: `Down` (the host or node went away without a clean stop), `Restarted` (clean stop, then a new boot), `Suspended` (the host slept).
+- Title and detail go through the app's secret filter and are capped (200 / 600 characters).
+- Alert keys have no host segment: node `disk:/srv` is app `disk:<hostId>:/srv`, `fill:/srv` is `fill:<hostId>:/srv`.
+
+### `uptime.sync` (`uptime` 1)
+
+Cursor: hour start (unix seconds). Rows are closed hours only, kept 400 days.
+
+```json
+{"hours": [{"hour": 1763287200, "up": 3540, "down": 0, "asleep": 60}], "next": 1763287200, "more": false}
+```
+
+Seconds the node saw the host up, down (no clean stop) or asleep (suspended, or cleanly restarted). Time the node itself was stopped while the host stayed up is not counted at all, so `up + down + asleep` can be under 3600; the app fills the rest from what it saw itself.
+
+### `disk.sync` (`disk` 1)
+
+Cursor: hour start. The last usage per mount in each closed hour, kept 90 days, same as the app's disk-usage table.
+
+```json
+{"rows": [{"mount": "/srv", "ts": 1763287200, "used": 412000000000, "size": 960000000000}], "next": 1763287200, "more": false}
+```
+
+A page never splits an hour, so it can hold a few rows over `limit`.
+
+### `alerts.active` (`alerts` 1)
+
+The alerts active right now, worst and newest first: `[Alert…]`.
+
+### `alerts.rules.get` / `alerts.rules.set` (`alerts` 1)
+
+The node evaluates the rules it has implemented with the app's field names. `set` takes the whole object (missing fields reset to defaults, unknown fields are ignored, so the app can send its full `AlertSettings`) and returns the stored rules.
+
+```json
+{"enabled": true, "diskFull": true, "diskPercent": 90, "diskForecast": true, "forecastDays": 14}
+```
+
+`diskPercent` must be 50–99 and `forecastDays` 1–90, else `bad_request`. Rules are stored in the node's state directory and survive restarts and upgrades.
+
 ## Planned (not in version 1 yet)
 
 | Capability | Methods | Milestone |
 |---|---|---|
-| `events` | `events.sync {after: seq}` → `{events, next, more}` | N1 |
-| `uptime` | `uptime.sync {after}` → hours and outages | N1 |
-| `alerts` | `alerts.rules.get/set`, `alerts.active` | N1 |
-| `checks` | `checks.set`, `checks.latest` | N1 |
+| `containers` | container events into `events` (needs the opt-in docker group) | N1b |
+| `checks` | `checks.set`, `checks.latest` | N1b |
 | `logs` | `logs.rules.set`, `logs.findings` | N2 |
 | protocol 2 | `subscribe {stream}` / `unsubscribe`, pushed `{"stream": …, "data": …}` frames | N4 |
 | `act.*` | typed actions, each opt-in by root, every call audited | N5 |

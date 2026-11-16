@@ -50,6 +50,13 @@ if [ "${WAIT_FOR_MINUTE:-0}" = 1 ]; then
   grep -q '"cpu":' /tmp/ngn-sync.json || fail "no minute point"
 fi
 
+say "events, uptime, disk usage and alert rules answer"
+for m in events.sync uptime.sync disk.sync; do
+  as_user "/usr/local/bin/nightgrid-node query $m '{\"after\":0}'" >/dev/null || fail "$m"
+done
+as_user "/usr/local/bin/nightgrid-node query alerts.active" >/dev/null || fail "alerts.active"
+as_user "/usr/local/bin/nightgrid-node query alerts.rules.get" | grep -q '"diskPercent":90' || fail "default rules"
+
 say "reinstall (upgrade in place) keeps the node id"
 before=$(as_user "/usr/local/bin/nightgrid-node query node.info" | sed 's/.*"nodeId":"\([0-9a-f]*\)".*/\1/')
 cp "$bin" /tmp/ngn-upgrade && /tmp/ngn-upgrade install --json >/dev/null

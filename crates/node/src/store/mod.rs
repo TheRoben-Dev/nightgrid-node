@@ -25,7 +25,10 @@ pub struct Store {
 }
 
 fn migrations() -> Migrations<'static> {
-    Migrations::new(vec![M::up(include_str!("migrations/0001_init.sql"))])
+    Migrations::new(vec![
+        M::up(include_str!("migrations/0001_init.sql")),
+        M::up(include_str!("migrations/0002_events_uptime_disk.sql")),
+    ])
 }
 
 impl Store {
@@ -67,6 +70,18 @@ impl Store {
 
     pub fn meta(&self, key: &str) -> Result<Option<String>> {
         self.conn.query_row("SELECT value FROM meta WHERE key = ?1", [key], |r| r.get(0)).optional()
+    }
+
+    pub fn set_meta(&self, key: &str, value: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO meta (key, value) VALUES (?1, ?2) ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+            [key, value],
+        )?;
+        Ok(())
+    }
+
+    pub fn conn_mut(&mut self) -> &mut Connection {
+        &mut self.conn
     }
 
     pub fn node_id(&self) -> String {

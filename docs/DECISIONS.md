@@ -50,3 +50,25 @@ The app keeps 7 days of minutes by default, but the node is the copy that bridge
 
 ### N-014 · Checksums and provenance now, signatures later (2026-11-16)
 Roben decided checksums are enough for now. Releases ship `SHA256SUMS` and GitHub build provenance (`gh attestation verify`). The release workflow signs with minisign only if a `NODE_MINISIGN_KEY` secret is ever added; nothing else changes when it is.
+
+## N1
+
+### N-015 · Outages are classified from boot id, a clean-stop flag and the suspend clock
+Once a minute the node writes `last_alive`, the boot id and the suspended-seconds counter (`CLOCK_BOOTTIME − CLOCK_MONOTONIC`). On start it compares:
+
+- new boot id, no clean stop → **down** from the last heartbeat to boot time ("Down", critical);
+- new boot id after a clean stop → **asleep** ("Restarted", info), so planned reboots don't read as downtime;
+- same boot, suspend counter grew → that much **asleep** ("Suspended");
+- same boot otherwise → the node was stopped while the host ran: nothing is recorded, since the node can't know. The app fills those hours from its own observations.
+
+Gaps under 60 s are ignored. The app's "host offline" alert stays app-side: a host can't watch itself go offline.
+
+### N-016 · Alert keys drop the host segment; the app adds it back
+Node keys are `disk:/srv`, `fill:/srv`. The app's are `disk:<hostId>:/srv`. The node doesn't know the app's host ids, so the app maps them when it imports, which also keeps several app installs consistent.
+
+### N-017 · Alert rules are app-owned preferences in the state directory
+Per N-011, rules are pushed by the app (`alerts.rules.set`) and stored in SQLite meta, not in the root-owned config. The field names are the app's `AlertSettings`, unknown fields are ignored, so the app can send its whole settings object and older nodes evaluate what they know. A rule can never enable a capability the policy disallows.
+
+### N-018 · Writes happen once a minute
+The heartbeat, disk usage and alert evaluation run once per minute on the sampler thread, not per 10 s sample. Disk-full alerts therefore fire up to a minute later than the app would; in exchange the SD card on a Pi sees one small transaction per minute. Forecasts are recomputed and old rows pruned once an hour.
+

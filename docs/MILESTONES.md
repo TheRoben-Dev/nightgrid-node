@@ -13,13 +13,21 @@ Each milestone is shippable on its own: a tagged release, tests and CI green, an
 
 Done when: the app can install the node on a host, close, come back a day later and show the day's graphs without a gap.
 
-## N1 · Watchers, events, uptime and offline alerts
+## N1 · Events, uptime, disk usage and offline alerts — **done (0.2.0)**
 
-- `events` table with `seq`, `events.sync`. Sources: boots and shutdowns, OOM kills, failed units, package transactions (journal); container create/die/restart/OOM/health via the Docker events API (only if root adds the service account to the `docker` group: `nightgrid-node allow docker`, with the "this is root-equivalent" warning).
-- Service checks from the node (HTTP(S), TCP, TLS expiry), configured by the app (`checks.set`); outbound network for this capability only, through a systemd drop-in that allows exactly the configured addresses.
-- Uptime hours and outages for the host and node-side checks (`uptime.sync`).
-- Alert tracker vendored from `core/src/alerts.rs` (grace periods, clear holds, scopes), rules pushed by the app, fired/resolved alerts into `events`.
-- App spec 0002: event and uptime sync, "while you were away" in the alerts panel, node-side checks.
+- `events` stream with a growing `seq` (`events.sync`), 90 days / 20 000 events, secret filter on every title and detail.
+- Uptime from a once-a-minute heartbeat: hourly up/down/asleep seconds (`uptime.sync`, 400 days) and outage events. A new boot without a clean stop is "Down", with one "Restarted"; growth of `CLOCK_BOOTTIME − CLOCK_MONOTONIC` is "Suspended". Time the node alone was stopped is not guessed at.
+- Disk usage per mount per hour (`disk.sync`, 90 days) and fill-up forecasts (vendored least-squares trend).
+- Alert tracker vendored from the app (grace periods, clear holds), active alerts survive restarts, rules pushed by the app (`alerts.rules.get/set`). Rules evaluated so far: disk full and disk filling. Fired, changed and resolved alerts go into `events`.
+- App spec: [0002 events, uptime and disk sync](app-integration/0002-events-uptime-disk.md).
+
+Done when: the app can be closed for a day, and on reconnect shows the outages, disk alerts and forecasts it missed.
+
+## N1b · Containers and service checks
+
+- Container create/die/restart/OOM/health via the Docker events API, only if root adds the service account to the `docker` group (`nightgrid-node allow docker`, with the "this is root-equivalent" warning). Container-down alerts.
+- Service checks from the node (HTTP(S), TCP, TLS expiry), configured by the app (`checks.set`); outbound network for this capability only, through a systemd drop-in that allows exactly the configured addresses. Service-down and cert-expiring alerts, check uptime.
+- App spec 0003.
 
 ## N2 · Logs and logins
 
