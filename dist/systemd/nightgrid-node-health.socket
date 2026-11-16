@@ -1,0 +1,21 @@
+# Nightgrid Node health helper socket (optional, off by default).
+# Installed by `nightgrid-node allow health`; removed by `nightgrid-node deny health`.
+# Only the node's service account (and root) can connect. Each connection
+# starts one short-lived nightgrid-node-health@.service that answers one
+# read: disk SMART, storage pools, pending updates or a UPS root listed.
+
+[Unit]
+Description=Nightgrid Node health helper socket
+Documentation=https://github.com/TheRoben-Dev/nightgrid-node
+
+[Socket]
+ListenStream=/run/nightgrid-node-health.sock
+SocketUser=nightgrid-node
+SocketGroup=nightgrid-node
+SocketMode=0600
+Accept=yes
+MaxConnections=4
+RemoveOnStop=yes
+
+[Install]
+WantedBy=sockets.target

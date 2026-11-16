@@ -228,9 +228,20 @@ fn access(shared: &Shared) -> std::collections::BTreeMap<String, String> {
         ("journal".to_owned(), journal.to_owned()),
         ("netwatch".to_owned(), netwatch.to_owned()),
         ("helper".to_owned(), if crate::helper::installed(&shared.helper_socket) { "ok" } else { "denied" }.to_owned()),
+        ("health".to_owned(), health_access(shared).to_owned()),
     ]
     .into_iter()
     .collect()
+}
+
+fn health_access(shared: &Shared) -> &'static str {
+    if !shared.config.health.enabled {
+        "off"
+    } else if crate::helper::installed(&shared.health_socket) {
+        "ok"
+    } else {
+        "denied"
+    }
 }
 
 /// Takes a report from the network watch helper.
@@ -298,6 +309,7 @@ pub fn caps() -> Caps {
         (cap::ACTIONS, 2),
         (cap::HEAL, 1),
         (cap::CHANGES, 1),
+        (cap::HEALTH, 1),
     ]
     .into_iter()
     .map(|(k, v)| (k.to_owned(), v))
@@ -527,6 +539,11 @@ fn dispatch(shared: &Shared, session: &mut Session, req: &Request) -> Result<Res
         method::CHANGES_LIST => {
             let st = shared.store.lock().unwrap_or_else(|e| e.into_inner());
             Ok(Response::ok(0, crate::rollback::list(&st).map_err(internal)?))
+        }
+        method::HEALTH_LATEST => {
+            let mut r = shared.health.lock().unwrap_or_else(|e| e.into_inner()).result.clone();
+            r.access = health_access(shared).to_owned();
+            Ok(Response::ok(0, r))
         }
         method::HEAL_STATUS => {
             let r = shared.heal.lock().unwrap_or_else(|e| e.into_inner()).status();

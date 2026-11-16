@@ -18,6 +18,7 @@ pub mod engine;
 pub mod events;
 pub mod files;
 pub mod heal;
+pub mod health;
 pub mod helper;
 pub mod install;
 pub mod logins;

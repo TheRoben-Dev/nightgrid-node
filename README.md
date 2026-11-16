@@ -25,6 +25,7 @@ While the app is closed, the node:
 | 📄 | **Watches important files**: `sshd_config`, sudoers, `passwd`/`shadow`, cron, `hosts`, `fstab`, systemd units. It records what changed (size, hash, owner, mode), never the contents. | 0.5 |
 | 🌐 | **Watches the LAN**: keeps an inventory of devices from the kernel's neighbour table and notes new devices, address changes, IP conflicts and a gateway that suddenly answers from another MAC (possible ARP spoofing). No privileges, nothing sent. With `allow netwatch`, a listen-only helper also spots DHCP servers, a rogue one, and devices' names. | 0.6 / 0.7 |
 | 🩹 | **Heals** (opt-in): typed actions root allows (restart, start or stop a container or a listed systemd unit, prune dangling images, reboot or power off) from the app or from self-healing rules such as "unhealthy for 5 minutes → restart". Rules are off and dry-run by default, rate-limited, give up when the problem doesn't clear, and every run lands in a tamper-evident audit log. Risky edits can be wrapped in a rollback that puts the files back unless the app confirms it still reaches the host. | 0.8–0.10 |
+| 🩺 | **Checks host health** (opt-in): disk SMART, ZFS/mdadm/Btrfs pools, pending updates and reboot-required, and UPS status through NUT, with the app's own checks and verdicts, through a read-only helper. Alerts for failing disks, degraded pools and power cuts while the app is closed. | 0.11 |
 | ⚡ | **Pushes live**: while the app is connected, new events, alerts, container changes and metrics every 2 s are pushed as they happen, instead of the app polling over SSH. | 0.4 |
 
 When the app reconnects, it asks for everything after its last cursor and merges it in. The node keeps no per-app state, so several computers running Nightgrid can sync from the same node.
@@ -33,7 +34,7 @@ When the app reconnects, it asks for everything after its last cursor and merges
 
 See [docs/MILESTONES.md](docs/MILESTONES.md) for detail. The order is:
 
-1. **Root-only health and logs**: SMART, pools, updates, backups and UPS through the root helper; log anomalies using the app's rules.
+1. **Logs**: journal and container log anomalies using the app's rules.
 2. **Fine-grained stats and host security**: 1 s per-process and per-container stats, power draw, file integrity, new listening ports, failed-login bursts.
 3. **Node-to-node and service checks, scheduled jobs, group actions**: from inside the LAN, with the app closed.
 4. **Upgrades with automatic revert, an optional tailnet transport and a status page.**
@@ -89,7 +90,8 @@ nightgrid-node allow docker        let it read containers (root; root-equivalent
 nightgrid-node allow journal       let it read the journal for SSH logins (root)
 nightgrid-node allow netwatch      start the listen-only ARP/DHCP helper (root; CAP_NET_RAW)
 nightgrid-node allow helper        install the root helper for unit and power actions (root)
-nightgrid-node deny docker|journal|netwatch|helper   take that away again
+nightgrid-node allow health        install the read-only SMART/pools/updates/UPS helper (root)
+nightgrid-node deny docker|journal|netwatch|helper|health   take that away again
 nightgrid-node netwatch            the helper (its unit starts it)
 nightgrid-node status              what the running node reports
 nightgrid-node query METHOD [JSON] one protocol request, e.g. query alerts.active

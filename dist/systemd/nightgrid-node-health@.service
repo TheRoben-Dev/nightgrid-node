@@ -1,0 +1,49 @@
+# Nightgrid Node health helper (one process per read; see the .socket).
+# Installed by `nightgrid-node allow health`; removed by `nightgrid-node deny health`.
+# It runs the same fixed, read-only checks as the Nightgrid app (smartctl,
+# zpool/mdstat/btrfs, the package manager's local cache, upsc for the UPS
+# targets listed in [health] ups), answers and exits. It changes nothing.
+
+[Unit]
+Description=Nightgrid Node health helper (one read)
+Documentation=https://github.com/TheRoben-Dev/nightgrid-node
+CollectMode=inactive-or-failed
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/nightgrid-node health-helper
+StandardInput=socket
+StandardOutput=socket
+StandardError=journal
+RuntimeMaxSec=300
+
+# Root, so smartctl can send SMART commands to disks (CAP_SYS_RAWIO for
+# SATA/SAS, CAP_SYS_ADMIN for NVMe) and zpool can read pool status. The
+# whole file system is read-only to it. Network: only to the local host and
+# private LAN ranges, for upsc to reach a NUT server; never the internet.
+NoNewPrivileges=yes
+CapabilityBoundingSet=CAP_SYS_RAWIO CAP_SYS_ADMIN CAP_DAC_READ_SEARCH
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+IPAddressDeny=any
+IPAddressAllow=localhost 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 fc00::/7 fe80::/10
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+UMask=0077
+
+MemoryMax=256M
+TasksMax=32
+
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service

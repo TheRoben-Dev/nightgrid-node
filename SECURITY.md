@@ -42,4 +42,8 @@ Unit and power actions need root. `sudo nightgrid-node allow helper` installs a 
 
 For rollbacks (`files.rollback`), the helper also copies and puts back files under `[rollback] paths`, keeping their owner and mode, so its unit holds `CAP_DAC_OVERRIDE`, `CAP_DAC_READ_SEARCH`, `CAP_CHOWN` and `CAP_FOWNER` as well; the system stays read-only to it except for those paths (written into the unit by `allow helper`) and its snapshot directory, `/var/lib/nightgrid-node-rollback` (0700). Keep the list narrow: whatever is listed, the service can ask to have put back to an earlier version (decision N-033).
 
+## Health helper (`allow health`)
+
+Disk SMART needs raw device commands, so `sudo nightgrid-node allow health` installs a second, read-only helper the same way: a socket only the service account can reach, one short-lived root process per read. It runs fixed scripts (smartctl, zpool, `/proc/mdstat`, Btrfs sysfs, the package manager's local cache, and `upsc` only for targets in `[health] ups`), never a command from the service. Its unit has only `CAP_SYS_RAWIO`, `CAP_SYS_ADMIN` and `CAP_DAC_READ_SEARCH`, a read-only file system, no new privileges, and network only to localhost and private LAN ranges (for a NUT server), never the internet (decision N-034). `sudo nightgrid-node deny health` removes it.
+
 Full details: [docs/DESIGN.md §7](docs/DESIGN.md#7-security-model).

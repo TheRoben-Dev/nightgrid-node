@@ -5,12 +5,16 @@
 #   sh uninstall.sh --purge    remove everything, including the account
 set -u
 [ "$(id -u)" = 0 ] || { echo "run as root" >&2; exit 1; }
-systemctl disable --now nightgrid-node 2>/dev/null || true
-rm -f /etc/systemd/system/nightgrid-node.service
+systemctl disable --now nightgrid-node nightgrid-node-netwatch nightgrid-node-helper.socket \
+  nightgrid-node-health.socket 2>/dev/null || true
+rm -f /etc/systemd/system/nightgrid-node.service /etc/systemd/system/nightgrid-node-netwatch.service \
+  /etc/systemd/system/nightgrid-node-helper.socket /etc/systemd/system/nightgrid-node-helper@.service \
+  /etc/systemd/system/nightgrid-node-health.socket /etc/systemd/system/nightgrid-node-health@.service
+rm -rf /etc/systemd/system/nightgrid-node.service.d /etc/systemd/system/nightgrid-node-helper@.service.d
 systemctl daemon-reload 2>/dev/null || true
 rm -f /usr/local/bin/nightgrid-node
 if [ "${1:-}" = "--purge" ]; then
-  rm -rf /var/lib/nightgrid-node /etc/nightgrid-node /run/nightgrid-node
+  rm -rf /var/lib/nightgrid-node /var/lib/nightgrid-node-rollback /etc/nightgrid-node /run/nightgrid-node
   rm -f /etc/sysusers.d/nightgrid-node.conf
   if id nightgrid-node >/dev/null 2>&1; then userdel nightgrid-node; fi
   if getent group nightgrid-node >/dev/null 2>&1; then groupdel nightgrid-node; fi

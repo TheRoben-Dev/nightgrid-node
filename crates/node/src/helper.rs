@@ -131,7 +131,7 @@ pub fn handle(config: &Config, req: &HelperRequest, store: &Path, run: &mut dyn 
 }
 
 /// uid of the service account, or `None` if it doesn't exist.
-fn service_uid() -> Option<u32> {
+pub fn service_uid() -> Option<u32> {
     let name = std::ffi::CString::new(crate::install::USER).ok()?;
     // SAFETY: getpwnam takes a valid C string; the result is read at once.
     let pw = unsafe { libc::getpwnam(name.as_ptr()) };
@@ -139,7 +139,7 @@ fn service_uid() -> Option<u32> {
     (!pw.is_null()).then(|| unsafe { (*pw).pw_uid })
 }
 
-fn peer_uid(fd: i32) -> Option<u32> {
+pub fn peer_uid(fd: i32) -> Option<u32> {
     let mut cred = libc::ucred { pid: 0, uid: 0, gid: 0 };
     let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
     // SAFETY: `cred` and `len` are valid for getsockopt to write.

@@ -98,6 +98,7 @@ The node never buffers without bound for a slow client: each stream keeps a shor
 | `actions` 2 | `unit.*` and `power.*` actions through the root helper; `units`, `helper` in the policy | N4b |
 | `heal` 1 | `heal.rules.get`, `heal.rules.set`, `heal.status` | N4a |
 | `changes` 1 | `changes.begin`, `changes.confirm`, `changes.revert`, `changes.list` | N4c |
+| `health` 1 | `health.latest`; SMART, pool and UPS alerts; update events (with `allow health`) | N5a |
 
 ### `node.info` (`node` 1)
 
@@ -114,11 +115,11 @@ The node never buffers without bound for a slow client: each stream keeps a shor
   ],
   "rssBytes": 2633728,
   "dbBytes": 3145728,
-  "access": {"docker": "ok", "journal": "denied", "netwatch": "denied", "helper": "denied"}
+  "access": {"docker": "ok", "journal": "denied", "netwatch": "denied", "helper": "denied", "health": "ok"}
 }
 ```
 
-`access` (0.5.0+; `netwatch` 0.7.0+; `helper` 0.9.0+, `ok` when the root helper's socket is installed; `ok` while the helper has reported in the last 2½ minutes) says which optional access root has granted: `ok`, `denied` (root hasn't run `nightgrid-node allow <name>`), `absent` (nothing to read on this host) or `off` (disabled in the config).
+`access` (0.5.0+; `netwatch` 0.7.0+; `helper` 0.9.0+, `ok` when the root helper's socket is installed; `health` 0.11.0+, `ok` when the health helper's socket is installed; `ok` while the helper has reported in the last 2½ minutes) says which optional access root has granted: `ok`, `denied` (root hasn't run `nightgrid-node allow <name>`), `absent` (nothing to read on this host) or `off` (disabled in the config).
 
 ### `metrics.latest` (`metrics` 1)
 
@@ -346,6 +347,35 @@ Params `{"id": "..."}`. Confirm keeps the change and drops the snapshot; revert 
 ### `changes.list` (`changes` 1)
 
 `{"changes": [Change]}`: pending ones first, then the latest 50 others.
+
+### `health.latest` (`health` 1)
+
+What the health helper last read. Each reading is `{"at": <unix s>, "report": {...}}` or `{"at": ..., "error": "..."}`; a kind not read yet is left out.
+
+```json
+{
+  "access": "ok",
+  "smart": {"at": 1763290060, "report": {"disks": [Disk], "health": "ok"}},
+  "pools": {"at": 1763290000, "report": {"pools": [Pool], "health": "warn"}},
+  "updates": {"at": 1763290030, "report": {"manager": "apt", "updates": [PackageUpdate], "rebootRequired": false, "rebootReasons": [], "note": null}},
+  "ups": [{"target": "ups@localhost", "at": 1763290080, "reading": UpsReading}]
+}
+```
+
+`Disk`, `Pool`, `PackageUpdate` and `UpsReading` are the app's own types (`core::system::smart`, `core::system::pools`, `core::system::packages`, `core::ups`, vendored from app commit 8eedcf2), so the app can render them with its existing views. `access` is `ok`, `denied` (root hasn't run `allow health`) or `off` (`[health] enabled = false`).
+
+Schedule: pools every 5 minutes, SMART every hour (first 60 s after start, so a start doesn't spin every disk up at once), updates every 6 hours (first after 30 s), UPS every 30 s. Update checks only read the package manager's local cache (`apt list --upgradable`, `dnf -C check-update`, `pacman -Qu`, rpm-ostree's staged deployment); `note` says when the lists are stale.
+
+Alerts (`alerts.active`, `alert` events), with the app's keys and switches:
+
+| Kind | Key | When | Switch |
+|---|---|---|---|
+| `smartWarning` | `smart:<device>` | a disk's health is `warn` (`warn`) or `bad` (`critical`) | `smartWarning` |
+| `poolDegraded` | `pool:<Kind>:<name>` | a pool is `warn` or `bad` | `poolDegraded` |
+| `upsOnBattery` | `ups:<target>:power` | on battery (`warn`); low battery or under 5 minutes left (`critical`) | always (with `enabled`) |
+| `upsOnBattery` | `ups:<target>:rb` | the UPS asks for a new battery (`warn`) | always |
+
+Info events (`other`): "N package update(s) available" when the count goes from zero to some, and "reboot required" when it becomes required.
 
 ## Planned (not in version 1 yet)
 

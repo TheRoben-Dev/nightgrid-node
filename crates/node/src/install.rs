@@ -28,6 +28,10 @@ pub const NETWATCH_SERVICE: &str = "nightgrid-node-netwatch";
 pub const HELPER_SOCKET_UNIT: &str = include_str!("../../../dist/systemd/nightgrid-node-helper.socket");
 pub const HELPER_SERVICE_UNIT: &str = include_str!("../../../dist/systemd/nightgrid-node-helper@.service");
 pub const HELPER_SOCKET: &str = "nightgrid-node-helper.socket";
+/// The opt-in read-only health helper (`allow health`).
+pub const HEALTH_SOCKET_UNIT: &str = include_str!("../../../dist/systemd/nightgrid-node-health.socket");
+pub const HEALTH_SERVICE_UNIT: &str = include_str!("../../../dist/systemd/nightgrid-node-health@.service");
+pub const HEALTH_SOCKET: &str = "nightgrid-node-health.socket";
 
 /// An opt-in grant that installs units of its own rather than a drop-in.
 struct Extra {
@@ -65,6 +69,20 @@ const HELPER: Extra = Extra {
               in /etc/nightgrid-node/config.toml (none by default). The helper checks that file itself.",
     what: "root helper",
     dropin: Some(helper_dropin),
+};
+
+const HEALTH: Extra = Extra {
+    name: "health",
+    files: &[
+        ("nightgrid-node-health.socket", HEALTH_SOCKET_UNIT),
+        ("nightgrid-node-health@.service", HEALTH_SERVICE_UNIT),
+    ],
+    unit: HEALTH_SOCKET,
+    warning: "the service can now ask a read-only root helper for disk SMART data, storage pool status, pending \
+              updates (from the package manager's local cache) and the UPS targets in [health] ups. The helper \
+              runs fixed commands only and changes nothing.",
+    what: "health helper",
+    dropin: None,
 };
 
 /// Lets the helper write where root allows rollbacks.
@@ -109,7 +127,7 @@ impl Layout {
     }
 }
 
-const EXTRAS: [&Extra; 2] = [&NETWATCH, &HELPER];
+const EXTRAS: [&Extra; 3] = [&NETWATCH, &HELPER, &HEALTH];
 pub const SYSUSERS: &str = "# Nightgrid Node service account (no login shell, no password).\n\
                             u nightgrid-node - \"Nightgrid Node\" /var/lib/nightgrid-node\n";
 
@@ -399,6 +417,8 @@ pub enum Grant {
     Netwatch,
     /// The root helper for unit and power actions.
     Helper,
+    /// The read-only health helper (SMART, pools, updates, UPS).
+    Health,
 }
 
 impl Grant {
@@ -408,6 +428,7 @@ impl Grant {
             "journal" => Some(Self::Journal),
             "netwatch" => Some(Self::Netwatch),
             "helper" => Some(Self::Helper),
+            "health" => Some(Self::Health),
             _ => None,
         }
     }
@@ -417,12 +438,14 @@ impl Grant {
             Self::Journal => "journal.conf",
             Self::Netwatch => "netwatch",
             Self::Helper => "helper",
+            Self::Health => "health",
         }
     }
     fn extra(self) -> Option<&'static Extra> {
         match self {
             Self::Netwatch => Some(&NETWATCH),
             Self::Helper => Some(&HELPER),
+            Self::Health => Some(&HEALTH),
             _ => None,
         }
     }
@@ -472,7 +495,7 @@ pub fn allow(
         return Ok(rep);
     }
     let body = match grant {
-        Grant::Netwatch | Grant::Helper => unreachable!("handled above"),
+        Grant::Netwatch | Grant::Helper | Grant::Health => unreachable!("handled above"),
         Grant::Docker => {
             let group = socket_group(sys, socket, layout.is_system())?;
             rep.warnings.push(format!(
@@ -683,6 +706,29 @@ mod tests {
         allow(&layout, &mut sys, Grant::Helper, Path::new("/x"), true).unwrap();
         uninstall(&layout, &mut sys, false).unwrap();
         assert!(!layout.system_unit("nightgrid-node-helper.socket").exists());
+    }
+
+    #[test]
+    fn allow_and_deny_health() {
+        let (_d, layout, exe) = setup();
+        let mut sys = FakeSys::default();
+        install(&layout, &mut sys, &exe, &InstallOptions::default()).unwrap();
+        let rep = allow(&layout, &mut sys, Grant::Health, Path::new("/x"), false).unwrap();
+        assert!(rep.warnings[0].contains("read-only"));
+        let sock = std::fs::read_to_string(layout.system_unit("nightgrid-node-health.socket")).unwrap();
+        assert!(sock.contains("SocketMode=0600") && sock.contains("SocketUser=nightgrid-node"));
+        let svc = std::fs::read_to_string(layout.system_unit("nightgrid-node-health@.service")).unwrap();
+        assert!(
+            svc.contains("ExecStart=/usr/local/bin/nightgrid-node health-helper")
+                && svc.contains("ProtectSystem=strict")
+        );
+        assert!(sys.log.ends_with(&["systemctl enable --now nightgrid-node-health.socket".to_string()]));
+        deny(&layout, &mut sys, Grant::Health, false).unwrap();
+        assert!(!layout.system_unit("nightgrid-node-health.socket").exists());
+        assert!(!layout.system_unit("nightgrid-node-health@.service").exists());
+        allow(&layout, &mut sys, Grant::Health, Path::new("/x"), true).unwrap();
+        uninstall(&layout, &mut sys, false).unwrap();
+        assert!(!layout.system_unit("nightgrid-node-health.socket").exists());
     }
 
     #[test]

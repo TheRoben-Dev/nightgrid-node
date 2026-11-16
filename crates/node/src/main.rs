@@ -24,10 +24,13 @@ COMMANDS:
     allow journal           Let the service read the journal for SSH logins (root)
     allow netwatch          Start the listen-only helper for ARP and DHCP (root; CAP_NET_RAW)
     allow helper            Install the root helper for unit and power actions (root)
-    deny docker|journal|netwatch|helper
+    allow health            Install the read-only helper for SMART, pools, updates
+                            and UPS status (root)
+    deny docker|journal|netwatch|helper|health
                             Take that access away again (root)
     netwatch                Run the network watch helper (its unit starts this)
     helper                  Serve one root helper request (its socket unit starts this)
+    health-helper           Serve one health read (its socket unit starts this)
     status                  Show what the running node reports
     query METHOD [JSON]     Send one request and print the answer
     watch STREAM... [--count N]
@@ -142,9 +145,9 @@ fn real_main() -> Result<(), String> {
             Ok(())
         }
         "allow" | "deny" => {
-            let what = a.rest.first().ok_or("allow/deny what? (docker, journal, netwatch, helper)")?;
+            let what = a.rest.first().ok_or("allow/deny what? (docker, journal, netwatch, helper, health)")?;
             let grant = install::Grant::parse(what)
-                .ok_or_else(|| format!("unknown access {what:?} (docker, journal, netwatch, helper)"))?;
+                .ok_or_else(|| format!("unknown access {what:?} (docker, journal, netwatch, helper, health)"))?;
             let layout = install::Layout::system();
             let r = if a.cmd == "allow" {
                 let config = Config::load(&a.config)?;
@@ -156,6 +159,7 @@ fn real_main() -> Result<(), String> {
             Ok(())
         }
         "helper" => nightgrid_node::helper::serve(&a.config),
+        "health-helper" => nightgrid_node::health::watch::serve(&a.config),
         "netwatch" => {
             let mut config = Config::load(&a.config)?;
             if let Some(s) = &a.socket {

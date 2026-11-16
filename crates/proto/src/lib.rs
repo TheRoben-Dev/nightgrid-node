@@ -71,6 +71,9 @@ pub mod method {
     pub const CHANGES_REVERT: &str = "changes.revert";
     /// Pending and recent changes.
     pub const CHANGES_LIST: &str = "changes.list";
+    /// Disk SMART, storage pools, pending updates and UPS status, as the
+    /// health helper last read them.
+    pub const HEALTH_LATEST: &str = "health.latest";
     /// Protocol 2: start pushing frames for streams.
     pub const SUBSCRIBE: &str = "subscribe";
     /// Protocol 2: stop pushing frames for streams.
@@ -123,6 +126,8 @@ pub mod cap {
     pub const HEAL: &str = "heal";
     /// `changes.begin`, `changes.confirm`, `changes.revert`, `changes.list`.
     pub const CHANGES: &str = "changes";
+    /// `health.latest`; SMART, pool and UPS alerts (needs `allow health`).
+    pub const HEALTH: &str = "health";
 }
 
 /// Typed actions (N4). Root lists the ones the node may run in
@@ -821,6 +826,10 @@ pub struct AlertRules {
     /// 1-90.
     pub forecast_days: u16,
     pub container_down: bool,
+    /// SMART health worse than OK (needs `allow health`).
+    pub smart_warning: bool,
+    /// ZFS, mdraid or btrfs not healthy (needs `allow health`).
+    pub pool_degraded: bool,
 }
 
 impl Default for AlertRules {
@@ -832,6 +841,8 @@ impl Default for AlertRules {
             disk_forecast: true,
             forecast_days: 14,
             container_down: true,
+            smart_warning: true,
+            pool_degraded: true,
         }
     }
 }

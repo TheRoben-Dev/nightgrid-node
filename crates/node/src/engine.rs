@@ -85,6 +85,14 @@ impl Engine {
                 let c = shared.containers.lock().unwrap_or_else(|e| e.into_inner());
                 conds.extend(c.conditions.iter().flatten().cloned());
             }
+            let h = shared.health.lock().unwrap_or_else(|e| e.into_inner());
+            if rules.smart_warning {
+                conds.extend(h.smart.iter().cloned());
+            }
+            if rules.pool_degraded {
+                conds.extend(h.pools.iter().cloned());
+            }
+            conds.extend(h.ups.iter().cloned());
         }
         let changes = self.tracker.report(conds, now);
         if !changes.is_empty() {
