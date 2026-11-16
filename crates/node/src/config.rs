@@ -29,11 +29,13 @@ pub struct ActionsConfig {
     pub allow: Vec<String>,
     /// Real (not dry) runs per hour, all sources together (1-1000).
     pub max_per_hour: u32,
+    /// systemd units `unit.restart`/`start`/`stop` may act on, by full name.
+    pub units: Vec<String>,
 }
 
 impl Default for ActionsConfig {
     fn default() -> Self {
-        Self { allow: Vec::new(), max_per_hour: 20 }
+        Self { allow: Vec::new(), max_per_hour: 20, units: Vec::new() }
     }
 }
 
@@ -212,6 +214,14 @@ impl Config {
         if !(1..=1000).contains(&self.actions.max_per_hour) {
             return Err("actions.max_per_hour must be 1-1000".into());
         }
+        if self.actions.units.len() > 64 {
+            return Err("actions.units takes at most 64 units".into());
+        }
+        if let Some(u) = self.actions.units.iter().find(|u| !nightgrid_node_proto::action::valid_unit(u)) {
+            return Err(format!(
+                "actions.units: {u:?} is not a full unit name like nginx.service (the node's own units can't be listed)"
+            ));
+        }
         if !(1..=64).contains(&self.server.max_connections) {
             return Err("server.max_connections must be 1-64".into());
         }
@@ -298,9 +308,15 @@ dhcp_servers = []
 # dry or real, goes into a tamper-evident audit log. Known actions:
 #   container.restart, container.start, container.stop  (need allow docker)
 #   images.prune                                         (dangling images)
+#   unit.restart, unit.start, unit.stop      (need allow helper, and units)
+#   power.reboot, power.poweroff             (need allow helper; one minute
+#                                             later, cancel with shutdown -c)
 allow = []
 # Most real runs per hour, all rules and the app together (1-1000).
 max_per_hour = 20
+# systemd units the unit.* actions may act on, by full name, e.g.
+#   units = ["nginx.service", "smbd.service"]
+units = []
 "#;
 
 #[cfg(test)]

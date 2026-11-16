@@ -204,6 +204,55 @@ if [ "${WAIT_FOR_MINUTE:-0}" = 1 ]; then
   else
     echo "skipped: no python3 or no veth here"
   fi
+
+  say "root helper: unit actions only on units root listed"
+  cat > /etc/systemd/system/ngn-dummy.service <<'UNIT'
+[Service]
+ExecStart=/bin/sleep 3600
+UNIT
+  systemctl daemon-reload && systemctl start ngn-dummy
+  sed -i 's/^allow = .*/allow = ["container.restart", "container.start", "unit.restart", "power.reboot"]/; s/^units = .*/units = ["ngn-dummy.service"]/' /etc/nightgrid-node/config.toml
+  systemctl restart nightgrid-node
+  i=0; until q node.info >/dev/null 2>&1; do i=$((i+1)); [ $i -lt 30 ] || fail "not back after restart"; sleep 1; done
+  q node.info | grep -q '"helper":"denied"' || { q node.info; fail "helper should be denied"; }
+  q "actions.run '{\"action\":\"unit.restart\",\"target\":\"ngn-dummy.service\"}'" | grep -q 'allow helper' || fail "ran without the helper"
+  /usr/local/bin/nightgrid-node allow helper --json | tee /tmp/ngn-allow-h.json
+  grep -q 'actions\] allow' /tmp/ngn-allow-h.json || fail "no helper warning"
+  [ "$(stat -c '%a %U' /run/nightgrid-node-helper.sock)" = "600 nightgrid-node" ] || { stat /run/nightgrid-node-helper.sock; fail "helper socket mode"; }
+  as_user "python3 -c 'import socket; socket.socket(socket.AF_UNIX).connect(\"/run/nightgrid-node-helper.sock\")'" 2>/dev/null && fail "a login user reached the root helper"
+  q node.info | grep -q '"helper":"ok"' || { q node.info; fail "helper not ok after allow"; }
+  pid=$(systemctl show -p MainPID --value ngn-dummy)
+  q "actions.run '{\"action\":\"unit.restart\",\"target\":\"ngn-dummy.service\"}'" | tee /tmp/ngn-unit.json
+  grep -q '"outcome":"ok"' /tmp/ngn-unit.json || { journalctl -u 'nightgrid-node-helper@*' --no-pager -n 20; fail "unit restart"; }
+  [ "$(systemctl show -p MainPID --value ngn-dummy)" != "$pid" ] || fail "ngn-dummy not restarted"
+  q "actions.run '{\"action\":\"unit.restart\",\"target\":\"cron.service\"}'" | grep -q '"outcome":"refused"' || fail "unlisted unit not refused"
+  say "the helper checks root's config itself, whoever asks"
+  python3 - <<'PY' | tee /tmp/ngn-direct.json
+import socket
+s = socket.socket(socket.AF_UNIX)
+s.connect("/run/nightgrid-node-helper.sock")
+s.sendall(b'{"action":"unit.stop","target":"cron.service"}\n')
+print(s.recv(4096).decode())
+PY
+  grep -q '"ok":false' /tmp/ngn-direct.json || fail "helper ran something root did not list"
+  systemctl is-active --quiet ngn-dummy || fail "ngn-dummy went down"
+
+  say "power: a reboot is scheduled a minute ahead, then cancelled"
+  q "actions.run '{\"action\":\"power.reboot\"}'" | tee /tmp/ngn-power.json
+  if grep -q '"outcome":"ok"' /tmp/ngn-power.json; then
+    shutdown -c || fail "could not cancel the reboot"
+    grep -q 'shutdown -c' /tmp/ngn-power.json || fail "no cancel hint"
+  else
+    shutdown -c 2>/dev/null || true
+    journalctl -u 'nightgrid-node-helper@*' --no-pager -n 20
+    fail "reboot not scheduled"
+  fi
+  q "actions.log '{\"after\":0}'" | grep -q '"verified":true' || fail "log chain"
+
+  /usr/local/bin/nightgrid-node deny helper >/dev/null
+  test ! -e /run/nightgrid-node-helper.sock || fail "helper socket left after deny"
+  q node.info | grep -q '"helper":"denied"' || fail "helper still ok after deny"
+  systemctl stop ngn-dummy; rm -f /etc/systemd/system/ngn-dummy.service; systemctl daemon-reload
 fi
 
 say "reinstall (upgrade in place) keeps the node id"

@@ -124,10 +124,51 @@ pub mod action {
     pub const CONTAINER_STOP: &str = "container.stop";
     /// Remove dangling images (engine socket; needs `allow docker`).
     pub const IMAGES_PRUNE: &str = "images.prune";
-    pub const ALL: [&str; 4] = [CONTAINER_RESTART, CONTAINER_START, CONTAINER_STOP, IMAGES_PRUNE];
+    /// Restart, start or stop a systemd unit that root listed in
+    /// `[actions] units` (root helper; needs `allow helper`).
+    pub const UNIT_RESTART: &str = "unit.restart";
+    pub const UNIT_START: &str = "unit.start";
+    pub const UNIT_STOP: &str = "unit.stop";
+    /// Reboot or power off, one minute after the request (root helper).
+    pub const POWER_REBOOT: &str = "power.reboot";
+    pub const POWER_POWEROFF: &str = "power.poweroff";
+    pub const ALL: [&str; 9] = [
+        CONTAINER_RESTART,
+        CONTAINER_START,
+        CONTAINER_STOP,
+        IMAGES_PRUNE,
+        UNIT_RESTART,
+        UNIT_START,
+        UNIT_STOP,
+        POWER_REBOOT,
+        POWER_POWEROFF,
+    ];
     /// Whether the action works on one named container.
     pub fn takes_container(a: &str) -> bool {
         matches!(a, CONTAINER_RESTART | CONTAINER_START | CONTAINER_STOP)
+    }
+    /// Whether the action works on one named systemd unit.
+    pub fn takes_unit(a: &str) -> bool {
+        matches!(a, UNIT_RESTART | UNIT_START | UNIT_STOP)
+    }
+    /// Whether the root helper carries the action out.
+    pub fn needs_helper(a: &str) -> bool {
+        takes_unit(a) || matches!(a, POWER_REBOOT | POWER_POWEROFF)
+    }
+    /// Whether self-healing rules may run it (not units or power, for now).
+    pub fn for_rules(a: &str) -> bool {
+        takes_container(a) || a == IMAGES_PRUNE
+    }
+    /// A full systemd unit name such as `nginx.service`, and not one of the
+    /// node's own units.
+    pub fn valid_unit(name: &str) -> bool {
+        const SUFFIXES: [&str; 3] = [".service", ".socket", ".timer"];
+        let mut c = name.chars();
+        c.next().is_some_and(|f| f.is_ascii_alphanumeric())
+            && name.len() <= 255
+            && name.chars().all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, ':' | '_' | '.' | '@' | '-' | '\\'))
+            && SUFFIXES.iter().any(|s| name.ends_with(s) && name.len() > s.len())
+            && !name.starts_with("nightgrid-node")
     }
 }
 
@@ -988,6 +1029,13 @@ pub struct ActionsPolicy {
     pub known: Vec<String>,
     /// Real (not dry) runs allowed per hour, all sources together.
     pub max_per_hour: u32,
+    /// Units root lets `unit.*` act on (`[actions] units`).
+    #[serde(default)]
+    pub units: Vec<String>,
+    /// Whether the root helper is installed (`allow helper`); unit and
+    /// power actions need it.
+    #[serde(default)]
+    pub helper: bool,
 }
 
 /// What a self-healing rule waits for.
@@ -1053,6 +1101,9 @@ impl HealRule {
         }
         if !action::ALL.contains(&self.action.as_str()) {
             return Err(format!("rule {}: unknown action {:?}", self.id, self.action));
+        }
+        if !action::for_rules(&self.action) {
+            return Err(format!("rule {}: self-healing can't run {}", self.id, self.action));
         }
         let container_rule = matches!(self.when, HealWhen::ContainerUnhealthy | HealWhen::ContainerDown);
         if action::takes_container(&self.action) && !container_rule {

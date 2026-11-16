@@ -10,7 +10,7 @@ The Nightgrid app repository is developed elsewhere and is read-only from here. 
 | [0004 · Live streams (protocol 2)](0004-live-streams.md) | N2a | proposed |
 | [0005 · Logins and file changes](0005-logins-and-files.md) | N2b | proposed |
 | [0006 · Network watch](0006-network-watch.md) | N3a, N3b | proposed |
-| [0007 · Actions and self-healing](0007-actions-and-self-healing.md) | N4a | proposed |
+| [0007 · Actions and self-healing](0007-actions-and-self-healing.md) | N4a, N4b | proposed |
 
 Rules every spec follows:
 

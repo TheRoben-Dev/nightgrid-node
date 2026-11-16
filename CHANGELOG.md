@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.9.0 · N4b (unreleased)
+
+- Root helper, off until root runs `nightgrid-node allow helper`: a socket only the service account can reach, starting one short-lived root process per request. It re-reads the root-owned config and runs only what is listed there, with fixed arguments and no shell.
+- New actions: `unit.restart`, `unit.start`, `unit.stop` on units root lists in `[actions] units`, and `power.reboot` / `power.poweroff`, scheduled a minute ahead (cancel with `shutdown -c`). Each still needs `[actions] allow`; all are logged like the rest.
+- `actions` capability 2; `actions.policy` gains `units` and `helper`; `node.info.access.helper`.
+
 ## 0.8.0 · N4a (unreleased)
 
 - Typed actions, each off until root lists it in `[actions] allow`: `container.restart`, `container.start`, `container.stop` and `images.prune` (dangling images), through the engine socket. `actions.policy`, `actions.run` (with dry run), and a global `max_per_hour`.

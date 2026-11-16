@@ -222,6 +222,7 @@ fn access(shared: &Shared) -> std::collections::BTreeMap<String, String> {
         ("docker".to_owned(), docker),
         ("journal".to_owned(), journal.to_owned()),
         ("netwatch".to_owned(), netwatch.to_owned()),
+        ("helper".to_owned(), if crate::helper::installed(&shared.helper_socket) { "ok" } else { "denied" }.to_owned()),
     ]
     .into_iter()
     .collect()
@@ -289,7 +290,7 @@ pub fn caps() -> Caps {
         (cap::FILES, 1),
         (cap::NET, 1),
         (cap::NET_DHCP, 1),
-        (cap::ACTIONS, 1),
+        (cap::ACTIONS, 2),
         (cap::HEAL, 1),
     ]
     .into_iter()

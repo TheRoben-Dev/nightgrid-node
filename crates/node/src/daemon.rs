@@ -47,6 +47,8 @@ pub struct Shared {
     pub dhcp: Mutex<crate::dhcp::Dhcp>,
     /// Self-healing rules and what they are tracking.
     pub heal: Mutex<crate::heal::Heal>,
+    /// The root helper's socket (tests point it elsewhere).
+    pub helper_socket: PathBuf,
 }
 
 impl Shared {
@@ -79,6 +81,7 @@ impl Shared {
             net_inbox: Mutex::new(crate::netwatch::Inbox::default()),
             dhcp: Mutex::new(dhcp),
             heal: Mutex::new(heal),
+            helper_socket: PathBuf::from(crate::helper::SOCKET),
         })
     }
 }

@@ -109,7 +109,7 @@ Self-healing rules, auto-block, scheduled jobs and power schedules, and group ac
 - **Dry-run first.** A rule can run in dry-run mode, which records what it would have done without doing it.
 - **Audited.** Every run, dry or real, goes into the hash-chained action log and the events stream, so the app shows it on reconnect.
 
-Status: N4a (0.8.0) implements this for container actions and image prune (decisions N-029 to N-031, [PROTOCOL](PROTOCOL.md#actionsrun-actions-1)). Unit restart and power need the root helper (N4b).
+Status: N4a (0.8.0) implements this for container actions and image prune (decisions N-029 to N-031, [PROTOCOL](PROTOCOL.md#actionsrun-actions-1)). N4b (0.9.0) adds unit and power actions through the root helper (N-032).
 
 ## 8. Install, upgrade, uninstall
 

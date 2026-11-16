@@ -53,10 +53,10 @@ Roben's expanded brief sets the order after N1: **real-time push, then network w
 - Feeds the app's network map and device inventory (`net.devices`, `net.events`); MAC vendor lookup from a bundled OUI table, nothing online.
 - App spec 0005.
 
-## N4 · Actions and self-healing — **N4a done (0.8.0)**
+## N4 · Actions and self-healing — **N4a done (0.8.0), N4b done (0.9.0)**
 
 - **N4a (0.8.0):** typed container actions and image prune, root's allow-list, audit log, self-healing rules. App spec 0007.
-- **N4b:** unit restart and power through the root helper (N-010).
+- **N4b (0.9.0):** unit restart/start/stop and reboot/power-off through the root helper (N-010, N-032).
 - **N4c:** rollbacks with a dead-man timer.
 
 Scope:
