@@ -30,6 +30,8 @@ pub fn policy(config: &Config) -> ActionsPolicy {
         allowed: config.actions.allow.clone(),
         known: action::ALL.iter().map(|s| (*s).to_owned()).collect(),
         max_per_hour: config.actions.max_per_hour,
+        units: config.actions.units.clone(),
+        helper: crate::helper::installed(std::path::Path::new(crate::helper::SOCKET)),
     }
 }
 
@@ -47,6 +49,11 @@ fn verb(a: &str) -> (&'static str, &'static str) {
         action::CONTAINER_START => ("start", "started"),
         action::CONTAINER_STOP => ("stop", "stopped"),
         action::IMAGES_PRUNE => ("prune images", "pruned images"),
+        action::UNIT_RESTART => ("restart", "restarted"),
+        action::UNIT_START => ("start", "started"),
+        action::UNIT_STOP => ("stop", "stopped"),
+        action::POWER_REBOOT => ("reboot", "rebooting"),
+        action::POWER_POWEROFF => ("power off", "powering off"),
         _ => ("run", "ran"),
     }
 }
@@ -204,6 +211,21 @@ fn check(shared: &Shared, req: &ActionRequest, now: i64) -> std::result::Result<
             req.action
         ));
     }
+    if action::needs_helper(&req.action) {
+        if action::takes_unit(&req.action) {
+            let unit = req.target.as_deref().unwrap_or("");
+            if !shared.config.actions.units.iter().any(|u| u == unit) {
+                return Err(format!(
+                    "{unit:?} is not a unit root listed (root can add it to [actions] units in \
+                     /etc/nightgrid-node/config.toml)"
+                ));
+            }
+        }
+        if !crate::helper::installed(&shared.helper_socket) {
+            return Err("the root helper isn't installed (root can run: nightgrid-node allow helper)".into());
+        }
+        return rate_limit(shared, req, now);
+    }
     let containers = shared.containers.lock().unwrap_or_else(|e| e.into_inner()).result.clone();
     if containers.access != ContainerAccess::Ok {
         return Err("no access to the container engine (root can run: nightgrid-node allow docker)".into());
@@ -217,6 +239,10 @@ fn check(shared: &Shared, req: &ActionRequest, now: i64) -> std::result::Result<
             return Err(format!("no container named {name}"));
         }
     }
+    rate_limit(shared, req, now)
+}
+
+fn rate_limit(shared: &Shared, req: &ActionRequest, now: i64) -> std::result::Result<(), String> {
     if !req.dry_run {
         let st = shared.store.lock().unwrap_or_else(|e| e.into_inner());
         let n = runs_last_hour(&st, now).map_err(|e| e.to_string())?;
@@ -233,6 +259,10 @@ fn human_bytes(b: u64) -> String {
 
 /// Carries out an allowed, checked action through the engine.
 fn execute(shared: &Shared, req: &ActionRequest) -> std::result::Result<String, String> {
+    if action::needs_helper(&req.action) {
+        let r = crate::helper::call(&shared.helper_socket, req)?;
+        return if r.ok { Ok(r.detail) } else { Err(r.detail) };
+    }
     let sock = &shared.config.docker.socket;
     let name = req.target.as_deref().unwrap_or("");
     let (_, done) = verb(&req.action);
@@ -259,7 +289,7 @@ pub fn run(shared: &Shared, req: &ActionRequest, source: &str) -> ActionRecord {
     let now = now_secs();
     let (word, _) = verb(&req.action);
     let what = match req.target.as_deref() {
-        Some(t) if action::takes_container(&req.action) => format!("{word} {t}"),
+        Some(t) if action::takes_container(&req.action) || action::takes_unit(&req.action) => format!("{word} {t}"),
         _ => word.to_owned(),
     };
     let (outcome, detail) = match check(shared, req, now) {
@@ -388,5 +418,35 @@ mod tests {
         assert_eq!(r.detail, "no container named db");
         let r = run(&shared, &req("container.restart", Some("web"), true), "rule r1");
         assert_eq!((r.outcome, r.detail.as_str()), (ActionOutcome::DryRun, "would restart web"));
+    }
+
+    #[test]
+    fn unit_actions_go_through_the_helper() {
+        use std::io::{BufRead, BufReader, Write};
+        let d = tempfile::tempdir().unwrap();
+        let mut c = Config::default();
+        c.actions.allow = vec!["unit.restart".into()];
+        c.actions.units = vec!["nginx.service".into()];
+        let mut shared = crate::daemon::Shared::new(c, Store::open_in_memory().unwrap());
+        std::sync::Arc::get_mut(&mut shared).unwrap().helper_socket = d.path().join("h.sock");
+        let r = run(&shared, &req("unit.restart", Some("sshd.service"), false), "app (uid 1000)");
+        assert!(r.outcome == ActionOutcome::Refused && r.detail.contains("[actions] units"), "{}", r.detail);
+        let r = run(&shared, &req("unit.restart", Some("nginx.service"), false), "app (uid 1000)");
+        assert!(r.detail.contains("allow helper"), "{}", r.detail);
+
+        let l = std::os::unix::net::UnixListener::bind(d.path().join("h.sock")).unwrap();
+        let t = std::thread::spawn(move || {
+            let (s, _) = l.accept().unwrap();
+            let mut line = String::new();
+            BufReader::new(&s).read_line(&mut line).unwrap();
+            assert!(line.contains("nginx.service"));
+            (&s).write_all(b"{\"ok\":true,\"detail\":\"restarted nginx.service\"}\n").unwrap();
+        });
+        let r = run(&shared, &req("unit.restart", Some("nginx.service"), true), "app (uid 1000)");
+        assert_eq!((r.outcome, r.detail.as_str()), (ActionOutcome::DryRun, "would restart nginx.service"));
+        let r = run(&shared, &req("unit.restart", Some("nginx.service"), false), "rule r");
+        assert_eq!((r.outcome, r.detail.as_str()), (ActionOutcome::Ok, "restarted nginx.service"));
+        t.join().unwrap();
+        assert!(policy(&shared.config).units == ["nginx.service"]);
     }
 }

@@ -1,0 +1,20 @@
+# Nightgrid Node root helper socket (optional, off by default).
+# Installed by `nightgrid-node allow helper`; removed by `nightgrid-node deny helper`.
+# Only the node's service account (and root) can connect. Each connection
+# starts one short-lived nightgrid-node-helper@.service that answers one
+# typed request that root allowed in /etc/nightgrid-node/config.toml.
+
+[Unit]
+Description=Nightgrid Node root helper socket
+Documentation=https://github.com/TheRoben-Dev/nightgrid-node
+
+[Socket]
+ListenStream=/run/nightgrid-node-helper.sock
+SocketUser=nightgrid-node
+SocketGroup=nightgrid-node
+SocketMode=0600
+Accept=yes
+MaxConnections=4
+
+[Install]
+WantedBy=sockets.target

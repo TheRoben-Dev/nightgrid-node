@@ -95,6 +95,7 @@ The node never buffers without bound for a slow client: each stream keeps a shor
 | `net` 1 | `net.devices`; `network` events | N3a |
 | `net.dhcp` 1 | `net.dhcp`; DHCP `network` events; device `name` (with `allow netwatch`) | N3b |
 | `actions` 1 | `actions.policy`, `actions.run`, `actions.log`; `action` events | N4a |
+| `actions` 2 | `unit.*` and `power.*` actions through the root helper; `units`, `helper` in the policy | N4b |
 | `heal` 1 | `heal.rules.get`, `heal.rules.set`, `heal.status` | N4a |
 
 ### `node.info` (`node` 1)
@@ -112,11 +113,11 @@ The node never buffers without bound for a slow client: each stream keeps a shor
   ],
   "rssBytes": 2633728,
   "dbBytes": 3145728,
-  "access": {"docker": "ok", "journal": "denied", "netwatch": "denied"}
+  "access": {"docker": "ok", "journal": "denied", "netwatch": "denied", "helper": "denied"}
 }
 ```
 
-`access` (0.5.0+; `netwatch` 0.7.0+, `ok` while the helper has reported in the last 2½ minutes) says which optional access root has granted: `ok`, `denied` (root hasn't run `nightgrid-node allow <name>`), `absent` (nothing to read on this host) or `off` (disabled in the config).
+`access` (0.5.0+; `netwatch` 0.7.0+; `helper` 0.9.0+, `ok` when the root helper's socket is installed; `ok` while the helper has reported in the last 2½ minutes) says which optional access root has granted: `ok`, `denied` (root hasn't run `nightgrid-node allow <name>`), `absent` (nothing to read on this host) or `off` (disabled in the config).
 
 ### `metrics.latest` (`metrics` 1)
 
@@ -265,12 +266,18 @@ How the helper hands over what it saw: `{"arp": [{ip, mac, iface}], "dhcp": [Dhc
 What root allows in `[actions]`, so the app can grey out the rest:
 
 ```json
-{"allowed": ["container.restart"], "known": ["container.restart", "container.start", "container.stop", "images.prune"], "maxPerHour": 20}
+{"allowed": ["container.restart", "unit.restart"], "known": ["container.restart", "container.start", "container.stop", "images.prune",
+ "unit.restart", "unit.start", "unit.stop", "power.reboot", "power.poweroff"], "maxPerHour": 20,
+ "units": ["nginx.service"], "helper": true}
 ```
+
+`units` (0.9.0+) are the systemd units root listed in `[actions] units`; `helper` says the root helper is installed (`allow helper`). Unit and power actions need both the action in `allowed` and the helper.
 
 ### `actions.run` (`actions` 1)
 
-Params: `{"action": "container.restart", "target": "web", "dryRun": false}`. `target` is the container name for `container.*` and absent for `images.prune`. Answers with the logged record (see `actions.log`); a refusal is a normal answer with `outcome: "refused"` and the reason in `detail`, not an error. The node refuses an action root didn't allow, an unknown container, any action without engine access, and real runs past `max_per_hour` (all sources together; dry runs and refusals don't count). Container actions can take up to ~10 s; the node answers other clients meanwhile.
+Params: `{"action": "container.restart", "target": "web", "dryRun": false}`. `target` is the container name for `container.*`, the full unit name (from the policy's `units`) for `unit.*`, and absent for `images.prune` and `power.*`. Answers with the logged record (see `actions.log`); a refusal is a normal answer with `outcome: "refused"` and the reason in `detail`, not an error. The node refuses an action root didn't allow, an unknown container, any action without engine access, and real runs past `max_per_hour` (all sources together; dry runs and refusals don't count). Container actions can take up to ~10 s; the node answers other clients meanwhile.
+
+Unit and power actions (`actions` 2) are carried out by the root helper, which re-checks root's config itself. `power.reboot` and `power.poweroff` are scheduled one minute ahead with `shutdown`, so the record and its event reach the app first; root can cancel with `shutdown -c`. Self-healing rules can't use unit or power actions.
 
 Outcomes: `ok`, `dryRun`, `failed` (the engine said no), `refused`. Every call also adds an `action` event: "restarted web" (`info`), "dry run: would restart web" (`info`), "could not restart web" / "refused to restart web" (`warn`). The event detail starts with who asked: `app (uid 1000)` or `rule <id>`.
 

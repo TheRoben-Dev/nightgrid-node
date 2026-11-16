@@ -1,0 +1,47 @@
+# Nightgrid Node root helper (one process per request; see the .socket).
+# Installed by `nightgrid-node allow helper`; removed by `nightgrid-node deny helper`.
+# It re-reads the root-owned config, accepts only unit.* on the units root
+# listed and power.* if allowed, runs systemctl or shutdown with fixed
+# arguments (no shell), answers and exits.
+
+[Unit]
+Description=Nightgrid Node root helper (one request)
+Documentation=https://github.com/TheRoben-Dev/nightgrid-node
+CollectMode=inactive-or-failed
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/nightgrid-node helper
+StandardInput=socket
+StandardOutput=socket
+StandardError=journal
+RuntimeMaxSec=120
+
+# Root, but it only talks to systemd and logind over their unix sockets.
+# CAP_SYS_BOOT lets logind accept a scheduled reboot without polkit.
+NoNewPrivileges=yes
+CapabilityBoundingSet=CAP_SYS_BOOT
+RestrictAddressFamilies=AF_UNIX
+IPAddressDeny=any
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+UMask=0077
+
+MemoryMax=32M
+TasksMax=8
+
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service

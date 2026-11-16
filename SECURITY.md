@@ -36,4 +36,8 @@ DHCP and ARP from other devices can only be seen with a packet socket. `sudo nig
 
 The node changes nothing on the host unless root lists an action type in `[actions] allow` in `/etc/nightgrid-node/config.toml` (empty by default). Actions are typed (`container.restart` and so on, with the container name checked against the engine's list), never shell strings, and container actions go through the engine socket that `allow docker` already grants. Self-healing rules come from the app, are off and dry-run by default, and can only run allowed actions within a global hourly cap and their own caps. Every request, including dry runs and refusals, is written to a hash-chained audit log (`actions.log`) and the timeline.
 
+## Root helper (`allow helper`)
+
+Unit and power actions need root. `sudo nightgrid-node allow helper` installs a socket that only the service account can reach; each request starts one short-lived root process that re-reads the root-owned config, runs `systemctl` on a unit root listed in `[actions] units` or schedules `shutdown` a minute ahead, answers and exits. A compromised service can ask only for what root listed. The helper has no network, no new privileges, a read-only system and only `CAP_SYS_BOOT` (decision N-032). `sudo nightgrid-node deny helper` removes it.
+
 Full details: [docs/DESIGN.md §7](docs/DESIGN.md#7-security-model).
