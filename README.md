@@ -23,6 +23,7 @@ While the app is closed, the node:
 | 🗒 | **Keeps a timeline**: alerts firing and clearing, outages, boots and container events, numbered so the app pulls only what's new. | 0.2 |
 | 🔑 | **Records logins** (opt-in): SSH logins and failed logins (summed per minute), from the journal. | 0.5 |
 | 📄 | **Watches important files**: `sshd_config`, sudoers, `passwd`/`shadow`, cron, `hosts`, `fstab`, systemd units. It records what changed (size, hash, owner, mode), never the contents. | 0.5 |
+| 🌐 | **Watches the LAN**: keeps an inventory of devices from the kernel's neighbour table and notes new devices, address changes, IP conflicts and a gateway that suddenly answers from another MAC (possible ARP spoofing). No privileges, nothing sent. | 0.6 |
 | ⚡ | **Pushes live**: while the app is connected, new events, alerts, container changes and metrics every 2 s are pushed as they happen, instead of the app polling over SSH. | 0.4 |
 
 When the app reconnects, it asks for everything after its last cursor and merges it in. The node keeps no per-app state, so several computers running Nightgrid can sync from the same node.
@@ -31,7 +32,7 @@ When the app reconnects, it asks for everything after its last cursor and merges
 
 See [docs/MILESTONES.md](docs/MILESTONES.md) for detail. The order is:
 
-1. **Network watch**: new or unknown devices, IP conflicts, DHCP changes and rogue DHCP on the LAN, feeding the app's network map.
+1. **DHCP watch**: DHCP changes and rogue DHCP servers, from a separate opt-in unit that holds only the right to read raw packets.
 2. **Actions and self-healing**: rules such as "container unhealthy for 5 minutes → restart". Off by default per rule, with rate limits, dry-run and an audit log.
 3. **Root-only health and logs**: SMART, pools, updates, backups and UPS through a small root helper; log anomalies using the app's rules.
 4. **Fine-grained stats and host security**: 1 s per-process and per-container stats, power draw, file integrity, new listening ports, failed-login bursts.

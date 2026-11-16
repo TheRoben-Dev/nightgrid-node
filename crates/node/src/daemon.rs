@@ -39,6 +39,8 @@ pub struct Shared {
     pub containers: Mutex<crate::containers::ContainerState>,
     /// Live streams for protocol 2 subscribers.
     pub bus: crate::bus::Bus,
+    /// The LAN inventory, as the network watcher last saw it.
+    pub net: Mutex<nightgrid_node_proto::NetDevicesResult>,
 }
 
 impl Shared {
@@ -65,6 +67,7 @@ impl Shared {
             active: Mutex::new(Vec::new()),
             containers: Mutex::new(crate::containers::ContainerState::new(docker_access)),
             bus: crate::bus::Bus::default(),
+            net: Mutex::new(nightgrid_node_proto::NetDevicesResult { at: 0, gateway: None, devices: Vec::new() }),
         })
     }
 }
@@ -232,6 +235,14 @@ pub fn run(config: Config, paths: Paths) -> Result<(), String> {
     } else {
         None
     };
+    let network = if config.network.enabled {
+        Some(
+            crate::netwatch::NetWatcher::start(shared.clone(), crate::netwatch::Sources::default())
+                .map_err(|e| format!("network watcher: {e}"))?,
+        )
+    } else {
+        None
+    };
     let watcher = if config.docker.enabled {
         Some(crate::containers::Watcher::start(shared.clone()).map_err(|e| format!("container watcher: {e}"))?)
     } else {
@@ -261,6 +272,9 @@ pub fn run(config: Config, paths: Paths) -> Result<(), String> {
         w.stop();
     }
     if let Some(w) = logins {
+        w.stop();
+    }
+    if let Some(w) = network {
         w.stop();
     }
     let _ = std::fs::remove_file(&config.server.socket);

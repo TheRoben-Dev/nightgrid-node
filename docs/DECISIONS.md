@@ -80,8 +80,8 @@ The heartbeat, disk usage and alert evaluation run once per minute on the sample
 ### N-020 · Order after N1 follows the expanded brief (2026-11-16)
 Roben's expanded brief puts real-time push first, then network watch, then self-healing, then the rest (root-only health and logs, fine-grained stats and host security, node-to-node and service checks with jobs and group actions, upgrades/tailnet/status page). Service checks moved from N1b to N7 so that outbound network is introduced once, for both service checks and node-to-node probes.
 
-### N-021 · Open: how network watch sees DHCP (decide before N3)
-New devices and IP conflicts come from the kernel's neighbour table over netlink, which needs no privileges. Seeing DHCP offers (to spot DHCP changes and rogue DHCP servers) needs raw packets: `CAP_NET_RAW`, which the daemon must not have. Options: a separate tiny unit holding only `CAP_NET_RAW` and a BPF filter for UDP 67/68; asking the root helper for periodic DHCP discovery; or neighbour table only. To be put to Roben when N3 starts.
+### N-021 · DHCP is watched by a separate unit holding only `CAP_NET_RAW` (decided 2026-11-16)
+New devices and IP conflicts come from the kernel's neighbour table over netlink, which needs no privileges. Seeing DHCP offers (to spot DHCP changes and rogue DHCP servers) needs raw packets: `CAP_NET_RAW`, which the daemon must not have. Options: a separate tiny unit holding only `CAP_NET_RAW` and a BPF filter for UDP 67/68; asking the root helper for periodic DHCP discovery; or neighbour table only. **Decision (Roben, 2026-11-16): a separate tiny unit with only `CAP_NET_RAW`**, opt-in through `nightgrid-node allow netwatch`, that passes what it sees to the main service over the socket. The main service never gains a capability or a network address family, and root never parses LAN packets. Built in N3b.
 
 ## N2
 
@@ -97,3 +97,10 @@ Failed SSH logins are only in the journal (`btmp` is root-only), and reading the
 ### N-025 · Watched files are polled, and contents are never stored
 Root lists files and directories (`[files] watch`). Every 10 s the node `stat`s them (and the direct entries of directories) and hashes readable files under 4 MiB when their metadata changed. Polling instead of inotify handles editors that replace files by rename and paths that appear later, at the cost of a few dozen `stat` calls. Events carry sizes, a 16-digit SHA-256 prefix, mode and owner, never contents. Unreadable files (`/etc/shadow`) still report that they changed. The baseline is saved, so changes made while the node was stopped are reported at the next start.
 
+## N3
+
+### N-026 · The device inventory reads `/proc/net/arp`, not netlink, and ships no vendor table
+The kernel's IPv4 neighbour table and default route are in `/proc/net/arp` and `/proc/net/route`, readable by any user. Netlink would add IPv6 neighbours but needs `AF_NETLINK` in the unit's `RestrictAddressFamilies`, which is `AF_UNIX` only today; IPv4 covers the devices that matter for a homelab map, so the unit stays as tight as it was. Devices are keyed by MAC with their latest address. The app already bundles the IEEE OUI list (about 1 MB) and `mac_vendor`, so the node reports MACs and the app names the maker; the node binary stays about 2 MB.
+
+### N-027 · IP conflicts are an address that keeps switching MACs
+An ARP table holds one MAC per address, so two devices on one address show up as the address switching back and forth. One switch while the old owner still claims the address is logged ("answers from a new MAC"); a second within ten minutes is an IP conflict (`warn`, at most hourly per address). If the old owner has since been seen at another address, the switch is a reused lease and stays quiet. Any switch on the default gateway is a `warn` at once, because that is what ARP spoofing looks like. The first read on a fresh install is the baseline, and more than 20 new devices in one read (the host moved to another network) become one summary event.

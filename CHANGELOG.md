@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.0 · N3a (unreleased)
+
+- Network watch: an inventory of LAN devices from the kernel's neighbour table (`net.devices`), read every 30 s with no privileges and nothing sent. `network` events for new devices, devices on a new address, addresses answering from a new MAC, IP conflicts (an address switching between MACs) and a gateway answering from a new MAC (possible ARP spoofing). The first read on a fresh install is the baseline.
+- `[network]` in the config: `enabled`, `interval_secs`, `ignore_ifaces`.
+- CI: jobs time out instead of hanging; the journal is followed from the start time, so the first SSH line after a start isn't skipped.
+
 ## 0.5.0 · N2b (unreleased)
 
 - SSH logins and failed logins (summed per minute) as `login` events, from the journal, after root runs `nightgrid-node allow journal`. Resumes from a saved cursor, so logins while the node was stopped are kept.

@@ -43,7 +43,10 @@ Roben's expanded brief sets the order after N1: **real-time push, then network w
 - Backpressure: bounded per-subscriber queues, coalescing for metrics, a `lagged` frame instead of unbounded memory.
 - App spec 0004.
 
-## N3 · Network watch
+## N3 · Network watch — **N3a done (0.6.0)**
+
+**N3a (0.6.0):** device inventory from `/proc/net/arp` (`net.devices`), `network` events for new devices, moves, MAC changes, IP conflicts and gateway MAC changes; `[network]` config; app spec 0006. **N3b:** the `CAP_NET_RAW` unit for DHCP and rogue DHCP (N-021 decided).
+
 
 - 24/7 passive watch of the node's LAN: new or unknown devices, IP conflicts (one IP, two MACs), MAC changes, devices gone, from the kernel's neighbour table over netlink (no privileges).
 - DHCP changes and rogue DHCP servers need to see DHCP broadcasts, which takes `CAP_NET_RAW` or a raw socket. This is a security choice to make before N3 (open question N-021): a separate tiny unit with only that capability, or the root helper, or neighbour-table only.

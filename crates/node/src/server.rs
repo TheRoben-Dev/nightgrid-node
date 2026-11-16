@@ -204,6 +204,7 @@ pub fn caps() -> Caps {
         (cap::CONTAINERS, 1),
         (cap::LOGINS, 1),
         (cap::FILES, 1),
+        (cap::NET, 1),
     ]
     .into_iter()
     .map(|(k, v)| (k.to_owned(), v))
@@ -365,6 +366,10 @@ fn dispatch(shared: &Shared, session: &mut Session, req: &Request) -> Result<Res
         }
         method::CONTAINERS_LIST => {
             let r = shared.containers.lock().unwrap_or_else(|e| e.into_inner()).result.clone();
+            Ok(Response::ok(0, r))
+        }
+        method::NET_DEVICES => {
+            let r = shared.net.lock().unwrap_or_else(|e| e.into_inner()).clone();
             Ok(Response::ok(0, r))
         }
         method::ALERTS_ACTIVE => {

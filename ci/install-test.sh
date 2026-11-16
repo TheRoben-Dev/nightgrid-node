@@ -122,6 +122,24 @@ if [ "${WAIT_FOR_MINUTE:-0}" = 1 ]; then
   /usr/local/bin/nightgrid-node deny journal >/dev/null
   sleep 2
   q node.info | grep -q '"journal":"denied"' || fail "journal still readable after deny"
+
+  say "network watch: new device, a new MAC for its address, then an IP conflict"
+  dev=$(ip route show default 2>/dev/null | awk '{print $5; exit}')
+  if [ -n "$dev" ] && ip neigh replace 198.51.100.77 lladdr 02:00:5e:00:00:77 dev "$dev" nud permanent 2>/dev/null; then
+    wait_ev() {
+      i=0; until ev | grep -q "\"title\":\"$1\""; do
+        i=$((i+1)); [ $i -lt 50 ] || fail "no network event: $1"; sleep 1; done
+    }
+    wait_ev "new device 198.51.100.77"
+    q net.devices | grep -q '"ip":"198.51.100.77","lastSeen"' || { q net.devices; fail "not in net.devices"; }
+    ip neigh replace 198.51.100.77 lladdr 02:00:5e:00:00:78 dev "$dev" nud permanent
+    wait_ev "address 198.51.100.77 answers from a new MAC"
+    ip neigh replace 198.51.100.77 lladdr 02:00:5e:00:00:77 dev "$dev" nud permanent
+    wait_ev "IP conflict on 198.51.100.77"
+    ip neigh del 198.51.100.77 dev "$dev"
+  else
+    echo "skipped: cannot add a neighbour entry here"
+  fi
 fi
 
 say "reinstall (upgrade in place) keeps the node id"
