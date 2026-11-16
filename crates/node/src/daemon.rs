@@ -1,0 +1,215 @@
+//! The service: a sampling thread that writes history, and the socket server.
+
+use std::path::PathBuf;
+use std::sync::mpsc::{self, RecvTimeoutError};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use nightgrid_node_proto::{NodeIdentity, Sample};
+
+use crate::config::Config;
+use crate::metrics::{collect::Reader, point_from_sample, Collector, MinuteAverager};
+use crate::store::Store;
+
+/// How often old history is pruned.
+const PRUNE_EVERY: Duration = Duration::from_secs(3600);
+
+pub fn now_secs() -> i64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
+}
+
+pub fn now_millis() -> f64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as f64).unwrap_or(0.0)
+}
+
+/// What the sampler and the server share.
+pub struct Shared {
+    pub config: Config,
+    pub identity: NodeIdentity,
+    pub started: i64,
+    pub store: Mutex<Store>,
+    pub latest: Mutex<Option<Sample>>,
+}
+
+impl Shared {
+    pub fn new(config: Config, store: Store) -> Arc<Self> {
+        let identity = NodeIdentity {
+            node_id: store.node_id(),
+            version: env!("CARGO_PKG_VERSION").to_owned(),
+            hostname: std::fs::read_to_string("/proc/sys/kernel/hostname").unwrap_or_default().trim().to_owned(),
+            arch: std::env::consts::ARCH.to_owned(),
+        };
+        Arc::new(Self { config, identity, started: now_secs(), store: Mutex::new(store), latest: Mutex::new(None) })
+    }
+}
+
+/// Where the service keeps its files.
+#[derive(Debug, Clone)]
+pub struct Paths {
+    pub data_dir: PathBuf,
+}
+
+impl Paths {
+    /// systemd's `StateDirectory`, else the default.
+    pub fn from_env() -> Self {
+        let data_dir = std::env::var_os("STATE_DIRECTORY")
+            .map(|v| PathBuf::from(v.to_string_lossy().split(':').next().unwrap_or_default().to_owned()))
+            .filter(|p| p.is_absolute())
+            .unwrap_or_else(|| PathBuf::from(crate::config::DEFAULT_DATA_DIR));
+        Self { data_dir }
+    }
+
+    pub fn db(&self) -> PathBuf {
+        self.data_dir.join("node.db")
+    }
+}
+
+/// Handle to the sampling thread.
+pub struct Sampler {
+    stop: mpsc::Sender<()>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Sampler {
+    /// Starts sampling with `reader` every `interval`.
+    pub fn start(shared: Arc<Shared>, mut reader: Reader, interval: Duration) -> std::io::Result<Self> {
+        let (stop, rx) = mpsc::channel::<()>();
+        let minute_days = shared.config.metrics.minute_retention_days;
+        let thread = std::thread::Builder::new().name("sampler".into()).spawn(move || {
+            let mut collector = Collector::new();
+            let mut minutes = MinuteAverager::default();
+            let mut last_prune: Option<std::time::Instant> = None;
+            loop {
+                let started = std::time::Instant::now();
+                let raw = crate::metrics::parse(&reader.read());
+                let sample = collector.sample(raw, now_millis());
+                // The first sample has no CPU % or rates; don't let it into history.
+                if sample.cpu.is_some() {
+                    if let Some(done) = minutes.push(&point_from_sample(&sample)) {
+                        store_minute(&shared, &done);
+                    }
+                }
+                *shared.latest.lock().unwrap_or_else(|e| e.into_inner()) = Some(sample);
+                if last_prune.map_or(true, |t| t.elapsed() >= PRUNE_EVERY) {
+                    last_prune = Some(std::time::Instant::now());
+                    let mut st = shared.store.lock().unwrap_or_else(|e| e.into_inner());
+                    match st.prune(now_secs(), minute_days) {
+                        Ok(0) => {}
+                        Ok(n) => crate::debug!("pruned {n} old history rows"),
+                        Err(e) => crate::warn!("prune failed: {e}"),
+                    }
+                }
+                let wait = interval.saturating_sub(started.elapsed());
+                match rx.recv_timeout(wait) {
+                    Err(RecvTimeoutError::Timeout) => continue,
+                    _ => break,
+                }
+            }
+            if let Some(p) = minutes.flush() {
+                store_minute(&shared, &p);
+            }
+        })?;
+        Ok(Self { stop, thread: Some(thread) })
+    }
+
+    /// Stops sampling and writes the partial minute.
+    pub fn stop(mut self) {
+        let _ = self.stop.send(());
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+    }
+}
+
+fn store_minute(shared: &Shared, p: &nightgrid_node_proto::Point) {
+    let mut st = shared.store.lock().unwrap_or_else(|e| e.into_inner());
+    if let Err(e) = st.insert_minute(p) {
+        crate::warn!("could not store the minute at {}: {e}", p.ts);
+    }
+}
+
+/// Resident set size of this process, bytes.
+pub fn rss_bytes() -> u64 {
+    let statm = std::fs::read_to_string("/proc/self/statm").unwrap_or_default();
+    let pages: u64 = statm.split_whitespace().nth(1).and_then(|v| v.parse().ok()).unwrap_or(0);
+    // SAFETY: sysconf has no preconditions.
+    let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+    pages * u64::try_from(page).unwrap_or(4096)
+}
+
+/// Tells systemd (`Type=notify`) something, if it's listening.
+pub fn sd_notify(state: &str) {
+    let Some(path) = std::env::var_os("NOTIFY_SOCKET") else { return };
+    let path = path.to_string_lossy().into_owned();
+    let Ok(sock) = std::os::unix::net::UnixDatagram::unbound() else { return };
+    let r = if let Some(name) = path.strip_prefix('@') {
+        use std::os::linux::net::SocketAddrExt;
+        std::os::unix::net::SocketAddr::from_abstract_name(name.as_bytes())
+            .and_then(|addr| sock.send_to_addr(state.as_bytes(), &addr))
+    } else {
+        sock.send_to(state.as_bytes(), &path)
+    };
+    if let Err(e) = r {
+        crate::debug!("sd_notify: {e}");
+    }
+}
+
+/// Runs the service until SIGTERM/SIGINT.
+pub fn run(config: Config, paths: Paths) -> Result<(), String> {
+    std::fs::create_dir_all(&paths.data_dir).map_err(|e| format!("{}: {e}", paths.data_dir.display()))?;
+    let store = Store::open(&paths.db())?;
+    let shared = Shared::new(config.clone(), store);
+    crate::info!(
+        "nightgrid-node {} starting (node {}, every {} s, socket {})",
+        shared.identity.version,
+        shared.identity.node_id,
+        config.metrics.interval_secs,
+        config.server.socket.display()
+    );
+    let sampler =
+        Sampler::start(shared.clone(), Reader::system(), Duration::from_secs(config.metrics.interval_secs.into()))
+            .map_err(|e| format!("sampler: {e}"))?;
+
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| e.to_string())?;
+    let result = rt.block_on(async {
+        let listener = crate::server::bind(&config.server.socket)?;
+        sd_notify("READY=1");
+        let shutdown = async {
+            use tokio::signal::unix::{signal, SignalKind};
+            let (Ok(mut term), Ok(mut int)) = (signal(SignalKind::terminate()), signal(SignalKind::interrupt())) else {
+                return std::future::pending::<()>().await;
+            };
+            tokio::select! { _ = term.recv() => {}, _ = int.recv() => {} }
+        };
+        crate::server::serve(listener, shared.clone(), shutdown).await;
+        Ok::<(), String>(())
+    });
+    sd_notify("STOPPING=1");
+    sampler.stop();
+    let _ = std::fs::remove_file(&config.server.socket);
+    crate::info!("stopped");
+    result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sampler_writes_minutes_and_latest() {
+        let shared = Shared::new(Config::default(), Store::open_in_memory().unwrap());
+        let s = Sampler::start(shared.clone(), Reader::system(), Duration::from_millis(80)).unwrap();
+        std::thread::sleep(Duration::from_millis(400));
+        s.stop();
+        let latest = shared.latest.lock().unwrap().clone().expect("a sample");
+        assert!(latest.mem_total > 0);
+        // The partial minute was flushed on stop.
+        let cov = shared.store.lock().unwrap().coverage().unwrap();
+        assert!((1..=2).contains(&cov[0].points), "{cov:?}");
+    }
+
+    #[test]
+    fn rss_is_measured() {
+        assert!(rss_bytes() > 0);
+    }
+}

@@ -1,0 +1,47 @@
+@@stat
+cpu  52000 120 14000 900000 3000 0 800 0 0 0
+cpu0 13000 30 3500 225000 750 0 200 0 0 0
+cpu1 13000 30 3500 225000 750 0 200 0 0 0
+cpu2 13000 30 3500 225000 750 0 200 0 0 0
+cpu3 13000 30 3500 225000 750 0 200 0 0 0
+@@meminfo
+MemTotal:        3884000 kB
+MemFree:          900000 kB
+MemAvailable:    2700000 kB
+SwapTotal:        102396 kB
+SwapFree:         102396 kB
+@@loadavg
+0.08 0.12 0.10 1/180 2211
+@@uptime
+3600.50 13800.00
+@@kernel
+Linux 6.6.51+rpt-rpi-v8
+@@hostname
+pi
+@@netdev
+Inter-|   Receive                                                |  Transmit
+ face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed
+    lo:    1200      12    0    0    0     0          0         0     1200      12    0    0    0     0       0          0
+ wlan0: 88000000   70000    0    0    0     0          0       300 12000000   40000    0    0    0     0       0          0
+@@diskstats
+ 179       0 mmcblk0 12000 3000 900000 40000 8000 6000 300000 90000 0 50000 130000 0 0 0 0
+ 179       1 mmcblk0p1 200 0 9000 300 1 0 8 1 0 300 301 0 0 0 0
+ 179       2 mmcblk0p2 11700 3000 890000 39600 7999 6000 299992 89999 0 49600 129599 0 0 0 0
+@@blocks
+mmcblk0
+ram0
+@@mounts
+/dev/root / ext4 rw,noatime 0 0
+devtmpfs /dev devtmpfs rw 0 0
+/dev/mmcblk0p1 /boot/firmware vfat rw 0 0
+tmpfs /run tmpfs rw 0 0
+@@df
+Filesystem           1K-blocks      Used Available Use% Mounted on
+/dev/root             30000000   6000000  22700000  21% /
+devtmpfs               1800000         0   1800000   0% /dev
+/dev/mmcblk0p1          522230     60000    462230  11% /boot/firmware
+tmpfs                   776000      1200    774800   0% /run
+@@hwmon
+@@thermal
+cpu-thermal|51634
+@@end

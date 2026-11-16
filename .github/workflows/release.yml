@@ -1,0 +1,83 @@
+name: Release
+
+# Push a tag like v0.1.0 to publish. Builds both static binaries, checksums
+# them, signs them with minisign when the NODE_MINISIGN_KEY secret exists,
+# and records GitHub build provenance (keyless, no secret needed).
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            arch: x86_64
+          - target: aarch64-unknown-linux-musl
+            arch: aarch64
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Install zig and cargo-zigbuild
+        run: |
+          pip3 install --user ziglang==0.17.1
+          cargo install --locked cargo-zigbuild@0.24.1
+      - name: Check the tag matches the crate version
+        run: |
+          v=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          test "v$v" = "${GITHUB_REF_NAME}" || { echo "tag ${GITHUB_REF_NAME} but Cargo.toml says $v"; exit 1; }
+      - run: cargo zigbuild --release --locked --target ${{ matrix.target }}
+      - run: |
+          mkdir out
+          cp target/${{ matrix.target }}/release/nightgrid-node "out/nightgrid-node-${GITHUB_REF_NAME}-${{ matrix.arch }}-linux"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bin-${{ matrix.arch }}
+          path: out/*
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: bin-*
+          merge-multiple: true
+          path: out
+      - name: Checksums
+        working-directory: out
+        run: sha256sum nightgrid-node-* > SHA256SUMS && cat SHA256SUMS
+      - name: Sign with minisign (if the key is configured)
+        env:
+          KEY: ${{ secrets.NODE_MINISIGN_KEY }}
+        run: |
+          if [ -z "$KEY" ]; then echo "NODE_MINISIGN_KEY not set: skipping signatures"; exit 0; fi
+          sudo apt-get -qq update && sudo apt-get -qq install -y minisign
+          umask 077
+          printf '%s\n' "$KEY" > "$RUNNER_TEMP/node.key"
+          for f in out/nightgrid-node-* out/SHA256SUMS; do
+            minisign -S -s "$RUNNER_TEMP/node.key" -m "$f" -t "nightgrid-node ${GITHUB_REF_NAME} $(basename "$f")" </dev/null
+          done
+          rm -f "$RUNNER_TEMP/node.key"
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: out/nightgrid-node-*
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          pre=""
+          case "$GITHUB_REF_NAME" in *-*) pre="--prerelease" ;; esac
+          gh release create "$GITHUB_REF_NAME" out/* --repo "$GITHUB_REPOSITORY" --title "Nightgrid Node $GITHUB_REF_NAME" --generate-notes $pre
