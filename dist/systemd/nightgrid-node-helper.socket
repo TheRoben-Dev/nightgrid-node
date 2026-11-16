@@ -15,6 +15,7 @@ SocketGroup=nightgrid-node
 SocketMode=0600
 Accept=yes
 MaxConnections=4
+RemoveOnStop=yes
 
 [Install]
 WantedBy=sockets.target
