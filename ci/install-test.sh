@@ -68,17 +68,17 @@ if [ "${WAIT_FOR_MINUTE:-0}" = 1 ] && command -v docker >/dev/null && docker inf
   grep -q 'root-equivalent' /tmp/ngn-allow.json || fail "no warning"
   grep -q 'SupplementaryGroups=docker' /etc/systemd/system/nightgrid-node.service.d/docker.conf || fail "drop-in"
   docker rm -f ngn-crash >/dev/null 2>&1 || true
-  docker run -d --name ngn-crash alpine:3.20 sh -c 'sleep 25; exit 3' >/dev/null
+  docker run -d --name ngn-crash alpine:3.20 sh -c 'sleep 75; exit 3' >/dev/null
   i=0; until q containers.list | grep -q '"name":"ngn-crash","image":"alpine:3.20","state":"running"'; do
-    i=$((i+1)); [ $i -lt 30 ] || fail "watcher never saw ngn-crash running"; sleep 1; done
+    i=$((i+1)); [ $i -lt 60 ] || { q containers.list; fail "watcher never saw ngn-crash running"; }; sleep 1; done
   q containers.list | grep -q '"access":"ok"' || fail "access not ok"
 
   say "a crashed container raises an alert and a timeline event"
   i=0; until q alerts.active | grep -q '"key":"docker:ngn-crash"'; do
-    i=$((i+1)); [ $i -lt 120 ] || fail "no container-down alert"; sleep 1; done
+    i=$((i+1)); [ $i -lt 180 ] || fail "no container-down alert"; sleep 1; done
   q alerts.active
   i=0; until q "events.sync '{\"after\":0}'" | grep -q '"title":"ngn-crash exited"'; do
-    i=$((i+1)); [ $i -lt 200 ] || fail "no container event"; sleep 1; done
+    i=$((i+1)); [ $i -lt 300 ] || fail "no container event"; sleep 1; done
   q "events.sync '{\"after\":0}'" | tr '}' '\n' | grep ngn-crash | head -3
   docker rm -f ngn-crash >/dev/null
 

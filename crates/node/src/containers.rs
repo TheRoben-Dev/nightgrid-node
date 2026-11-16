@@ -301,7 +301,7 @@ pub fn round(
                     }
                 }
             }
-            Err(e) => crate::debug!("container events: {e}"),
+            Err(e) => crate::warn!("container events: {e}"),
         }
     }
 }
