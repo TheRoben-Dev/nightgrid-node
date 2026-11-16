@@ -6,7 +6,7 @@ Version **1**. Rust types: [`crates/proto`](../crates/proto/src/lib.rs) (`nightg
 
 - A byte stream: the node's unix socket, reached through SSH streamlocal forwarding or through `nightgrid-node bridge` on an exec channel.
 - UTF-8 JSON, one object per line, `\n`-terminated. A line over 4 MiB gets a `too_large` error and the connection is closed.
-- The client sends requests; the node answers each with exactly one response carrying the request's `id`. In version 1 answers come in order; clients should still match on `id` (version 2 adds pushed stream frames between answers).
+- The client sends requests; the node answers each with exactly one response carrying the request's `id`, in order. In version 2 the node also pushes **frames** (lines with `stream` and no `id`) for streams the client subscribed to; they can arrive between a request and its response, so clients tell them apart by the missing `id`.
 
 ```json
 {"id": 1, "method": "hello", "params": {"protoMin": 1, "protoMax": 1, "client": "nightgrid/0.10.50"}}
@@ -50,6 +50,32 @@ Result (`Welcome`):
 ```
 
 `nodeId` is random and made when the node's database is created. It survives upgrades and plain uninstalls and changes only after `uninstall --purge`: a new id means the history started over, so the app resets its sync cursors for that host.
+
+## Streams (protocol 2)
+
+Versions: the node speaks 1–2 (0.4.0 and later). A client offering `protoMax: 2` gets streams; a client offering only 1 gets exactly the version 1 behaviour.
+
+### `subscribe` / `unsubscribe`
+
+Params: `{"streams": ["events", "metrics", "containers"]}`. Result: the streams now subscribed, `{"streams": [...]}`. Unknown stream names are `bad_request`; on protocol 1 both methods are `unknown_method`. Subscriptions end with the connection.
+
+Frames:
+
+```json
+{"stream": "events", "data": {"seq": 42, "at": 1763290000, "kind": "container", "level": "warn", "title": "web restarted", "detail": "after exit 1"}}
+{"stream": "metrics", "data": {"ts": 1763290000123.0, "cpu": 4.2, "memTotal": 8000000000, ...}}
+{"stream": "containers", "data": {"access": "ok", "at": 1763290000, "containers": [...]}}
+{"stream": "lagged", "data": {"stream": "metrics", "missed": 3}}
+```
+
+| Stream | `data` | When |
+|---|---|---|
+| `events` | an `Event`, as `events.sync` returns it (same `seq`) | as soon as it is recorded |
+| `metrics` | a `Sample`, as `metrics.latest` returns it | every 2 s while anyone subscribes (the node samples faster then; back to the configured interval when nobody does) |
+| `containers` | `ContainersResult`, as `containers.list` returns it | when a container's state or health, or access, changes; read every 3 s while anyone subscribes |
+| `lagged` | `{stream, missed}` | the client read too slowly and `missed` frames of `stream` were dropped |
+
+The node never buffers without bound for a slow client: each stream keeps a short queue per connection (256 events, 16 samples, 16 container lists) and drops the oldest. After `lagged` on `events`, call `events.sync` from the last `seq` seen to fill the gap. Events written while the app wasn't subscribed are not replayed by `subscribe`; sync first, then subscribe, then sync once more from the last `seq` to close the race.
 
 ## Capabilities
 
@@ -188,7 +214,7 @@ What the watcher last read (every 15 s by default):
 
 | Capability | Methods | Milestone |
 |---|---|---|
-| protocol 2 | `subscribe {stream}` / `unsubscribe`, pushed `{"stream": …, "data": …}` frames: `events`, `metrics`, `containers`, logins, file changes | N2 |
+| `logins`, `files` | logins and failed logins, watched file changes, as events and pushed | N2b |
 | `net` | `net.devices`, `net.events` | N3 |
 | `act.*`, `heal` | typed actions and self-healing rules, each opt-in, every run audited | N4 |
 | `logs` | `logs.rules.set`, `logs.findings` | N5 |

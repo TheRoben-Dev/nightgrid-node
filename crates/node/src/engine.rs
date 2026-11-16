@@ -89,7 +89,7 @@ impl Engine {
         let changes = self.tracker.report(conds, now);
         if !changes.is_empty() {
             for c in &changes {
-                st.event_add(&event_for(c, now))?;
+                shared.bus.record(&st, &event_for(c, now))?;
             }
             st.set_meta(META_ALERTS, &serde_json::to_string(&self.tracker.save()).unwrap_or_default())?;
             *shared.active.lock().unwrap_or_else(|e| e.into_inner()) = self.tracker.active();

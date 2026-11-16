@@ -83,3 +83,11 @@ Roben's expanded brief puts real-time push first, then network watch, then self-
 ### N-021 · Open: how network watch sees DHCP (decide before N3)
 New devices and IP conflicts come from the kernel's neighbour table over netlink, which needs no privileges. Seeing DHCP offers (to spot DHCP changes and rogue DHCP servers) needs raw packets: `CAP_NET_RAW`, which the daemon must not have. Options: a separate tiny unit holding only `CAP_NET_RAW` and a BPF filter for UDP 67/68; asking the root helper for periodic DHCP discovery; or neighbour table only. To be put to Roben when N3 starts.
 
+## N2
+
+### N-022 · Streams share the request connection and drop rather than buffer
+Protocol 2 pushes frames on the same connection as requests, told apart by having `stream` and no `id`, so the app needs one channel per host and the bridge stays a byte pipe. Each stream is a bounded broadcast queue per connection; a slow reader loses the oldest frames and gets a `lagged` frame, so a stalled SSH channel can't grow the node's memory. Events are durable anyway (`events.sync` refills a gap); metrics and container lists are snapshots, so dropping old ones is harmless.
+
+### N-023 · The node samples faster only while someone watches
+With no subscriber the sampler keeps the configured interval (10 s). While a `metrics` subscriber is connected it samples every 2 s and the container watcher reads every 3 s, and both return to normal within a second of the last subscriber leaving. Minute averages simply include more samples. Idle cost stays where it was; the app gets live tiles without running `COLLECT` over SSH.
+

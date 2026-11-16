@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// Newest protocol version this crate speaks.
-pub const PROTO_VERSION: u32 = 1;
+pub const PROTO_VERSION: u32 = 2;
 /// Oldest protocol version this crate still speaks.
 pub const PROTO_MIN: u32 = 1;
 /// Longest accepted line, in bytes (requests and responses).
@@ -46,6 +46,23 @@ pub mod method {
     pub const ALERTS_RULES_GET: &str = "alerts.rules.get";
     pub const ALERTS_RULES_SET: &str = "alerts.rules.set";
     pub const CONTAINERS_LIST: &str = "containers.list";
+    /// Protocol 2: start pushing frames for streams.
+    pub const SUBSCRIBE: &str = "subscribe";
+    /// Protocol 2: stop pushing frames for streams.
+    pub const UNSUBSCRIBE: &str = "unsubscribe";
+}
+
+/// Protocol 2 stream names (see [`Frame`]).
+pub mod stream {
+    /// Every new event as it is recorded: `data` is an [`super::Event`].
+    pub const EVENTS: &str = "events";
+    /// Samples, every couple of seconds while anyone subscribes: [`super::Sample`].
+    pub const METRICS: &str = "metrics";
+    /// The container list when a state or health changes: [`super::ContainersResult`].
+    pub const CONTAINERS: &str = "containers";
+    /// Not subscribable: the node dropped frames for a slow client: [`super::Lagged`].
+    pub const LAGGED: &str = "lagged";
+    pub const ALL: [&str; 3] = [EVENTS, METRICS, CONTAINERS];
 }
 
 /// Capability names. A capability's version bumps when its methods gain
@@ -599,6 +616,34 @@ impl AlertRules {
         }
         Ok(())
     }
+}
+
+/// `subscribe` / `unsubscribe` params.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StreamsParams {
+    pub streams: Vec<String>,
+}
+
+/// `subscribe` / `unsubscribe` result: the streams now subscribed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StreamsResult {
+    pub streams: Vec<String>,
+}
+
+/// A pushed line (protocol 2). It has no `id`, which is how a client tells
+/// it from a response; frames can arrive between a request and its response.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Frame {
+    pub stream: String,
+    pub data: Value,
+}
+
+/// `data` of a `lagged` frame: this many frames of `stream` were dropped
+/// because the client read too slowly. Re-sync with the `*.sync` methods.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Lagged {
+    pub stream: String,
+    pub missed: u64,
 }
 
 /// Whether the node can read the container engine.

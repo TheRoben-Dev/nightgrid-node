@@ -5,6 +5,7 @@
 pub mod log;
 
 pub mod alerts;
+pub mod bus;
 pub mod client;
 pub mod config;
 pub mod containers;
