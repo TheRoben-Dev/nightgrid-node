@@ -62,6 +62,7 @@ Result (`Welcome`):
 | `uptime` 1 | `uptime.sync` | N1 |
 | `disk` 1 | `disk.sync` | N1 |
 | `alerts` 1 | `alerts.active`, `alerts.rules.get`, `alerts.rules.set` | N1 |
+| `containers` 1 | `containers.list`; `container` events; container-down alerts | N1b |
 
 ### `node.info` (`node` 1)
 
@@ -168,12 +169,27 @@ The node evaluates the rules it has implemented with the app's field names. `set
 
 `diskPercent` must be 50–99 and `forecastDays` 1–90, else `bad_request`. Rules are stored in the node's state directory and survive restarts and upgrades.
 
+### `containers.list` (`containers` 1)
+
+What the watcher last read (every 15 s by default):
+
+```json
+{"access": "ok", "at": 1763290000, "containers": [
+  {"id": "0123456789ab", "name": "web", "image": "nginx:1.27", "state": "running",
+   "status": "Up 2 hours (healthy)", "health": "healthy", "project": "site"}
+]}
+```
+
+- `access`: `ok`; `off` (disabled in the config); `absent` (no engine socket); `denied` (root has not run `nightgrid-node allow docker`); `error` (with `message`). The app uses its own Docker-over-SSH path whenever it isn't `ok`.
+- Container events reach `events.sync` with `kind: container`, the app's titles and levels ("web restarted", "db exited", "big ran out of memory", "api unhealthy"). They are written about two minutes after they happen, so a crash followed by a restart is one entry.
+- Container-down alerts use keys `docker:<name>` (app: `docker:<hostId>:<name>`) and the `containerDown` rule. Only containers seen running alert when they stop; a clean exit (0 or 143) forgets them.
+
 ## Planned (not in version 1 yet)
 
 | Capability | Methods | Milestone |
 |---|---|---|
-| `containers` | container events into `events` (needs the opt-in docker group) | N1b |
-| `checks` | `checks.set`, `checks.latest` | N1b |
-| `logs` | `logs.rules.set`, `logs.findings` | N2 |
-| protocol 2 | `subscribe {stream}` / `unsubscribe`, pushed `{"stream": …, "data": …}` frames | N4 |
-| `act.*` | typed actions, each opt-in by root, every call audited | N5 |
+| protocol 2 | `subscribe {stream}` / `unsubscribe`, pushed `{"stream": …, "data": …}` frames: `events`, `metrics`, `containers`, logins, file changes | N2 |
+| `net` | `net.devices`, `net.events` | N3 |
+| `act.*`, `heal` | typed actions and self-healing rules, each opt-in, every run audited | N4 |
+| `logs` | `logs.rules.set`, `logs.findings` | N5 |
+| `checks` | `checks.set`, `checks.latest` | N7 |

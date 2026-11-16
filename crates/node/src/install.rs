@@ -52,6 +52,10 @@ impl Layout {
     pub fn config(&self) -> PathBuf {
         self.config_dir().join("config.toml")
     }
+    /// systemd drop-ins written by `allow`.
+    pub fn dropin_dir(&self) -> PathBuf {
+        self.at("/etc/systemd/system/nightgrid-node.service.d")
+    }
     pub fn data_dir(&self) -> PathBuf {
         self.at(crate::config::DEFAULT_DATA_DIR)
     }
@@ -244,6 +248,7 @@ pub fn uninstall(layout: &Layout, sys: &mut dyn Sys, purge: bool) -> Result<Repo
         rep.warnings.push(e);
     }
     remove(&layout.bin(), &mut rep)?;
+    remove_dir(&layout.dropin_dir(), &mut rep)?;
     if purge {
         remove_dir(&layout.data_dir(), &mut rep)?;
         remove_dir(&layout.config_dir(), &mut rep)?;
@@ -265,6 +270,105 @@ pub fn uninstall(layout: &Layout, sys: &mut dyn Sys, purge: bool) -> Result<Repo
         ));
     }
     Ok(rep)
+}
+
+/// Extra access root can give the service, one drop-in each.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Grant {
+    /// The container engine's socket group: root-equivalent.
+    Docker,
+}
+
+impl Grant {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "docker" => Some(Self::Docker),
+            _ => None,
+        }
+    }
+    fn file(self) -> &'static str {
+        match self {
+            Self::Docker => "docker.conf",
+        }
+    }
+}
+
+/// Group that owns `path`, by name.
+fn socket_group(sys: &mut dyn Sys, path: &Path, system: bool) -> Result<String, String> {
+    use std::os::unix::fs::MetadataExt;
+    let md = std::fs::metadata(path)
+        .map_err(|e| format!("{}: {e} (is the engine installed and running?)", path.display()))?;
+    if md.gid() == 0 && system {
+        return Err(format!(
+            "{} belongs to group root; giving the service the root group is not supported. \
+             Use an engine socket with its own group (Docker's default is `docker`).",
+            path.display()
+        ));
+    }
+    let line = sys.run("getent", &["group", &md.gid().to_string()])?;
+    let name = line.split(':').next().unwrap_or("").trim().to_owned();
+    if name.is_empty() || !valid_user(&name) {
+        return Err(format!("no usable group name for gid {}", md.gid()));
+    }
+    Ok(name)
+}
+
+/// `allow docker`: let the service read the container engine.
+pub fn allow(
+    layout: &Layout,
+    sys: &mut dyn Sys,
+    grant: Grant,
+    socket: &Path,
+    no_start: bool,
+) -> Result<Report, String> {
+    preflight(layout)?;
+    let mut rep = Report { action: "allow", version: env!("CARGO_PKG_VERSION"), ..Default::default() };
+    let body = match grant {
+        Grant::Docker => {
+            let group = socket_group(sys, socket, layout.is_system())?;
+            rep.warnings.push(format!(
+                "members of {group} can control the container engine, which is root-equivalent. \
+                 The node only reads container lists and events, but a flaw in it could be used for more."
+            ));
+            format!(
+                "# Written by `nightgrid-node allow docker`; removed by `nightgrid-node deny docker`.\n\
+                 # Lets the service read containers and events through {}.\n\
+                 # Group {group} can control the engine: this is root-equivalent access.\n\
+                 [Service]\nSupplementaryGroups={group}\n",
+                socket.display()
+            )
+        }
+    };
+    let path = layout.dropin_dir().join(grant.file());
+    write_file(&path, &body, 0o644)?;
+    rep.step(format!("wrote {}", path.display()));
+    restart(sys, &mut rep, no_start)?;
+    Ok(rep)
+}
+
+/// `deny docker`: take the access away again.
+pub fn deny(layout: &Layout, sys: &mut dyn Sys, grant: Grant, no_start: bool) -> Result<Report, String> {
+    preflight(layout)?;
+    let mut rep = Report { action: "deny", version: env!("CARGO_PKG_VERSION"), ..Default::default() };
+    let path = layout.dropin_dir().join(grant.file());
+    if !path.exists() {
+        rep.step(format!("{} was not allowed", grant.file().trim_end_matches(".conf")));
+        return Ok(rep);
+    }
+    remove(&path, &mut rep)?;
+    restart(sys, &mut rep, no_start)?;
+    Ok(rep)
+}
+
+fn restart(sys: &mut dyn Sys, rep: &mut Report, no_start: bool) -> Result<(), String> {
+    sys.run("systemctl", &["daemon-reload"])?;
+    if no_start {
+        rep.step("takes effect at the next service start".to_string());
+    } else if sys.run("systemctl", &["is-active", "--quiet", SERVICE]).is_ok() {
+        sys.run("systemctl", &["restart", SERVICE])?;
+        rep.step("service restarted".to_string());
+    }
+    Ok(())
 }
 
 fn remove(p: &Path, rep: &mut Report) -> Result<(), String> {
@@ -298,6 +402,7 @@ mod tests {
         log: Vec<String>,
         users: Vec<&'static str>,
         account: bool,
+        groups: bool,
     }
 
     impl Sys for FakeSys {
@@ -318,6 +423,7 @@ mod tests {
                         Err("no".into())
                     }
                 }
+                ("getent", ["group", g]) if self.groups && g.parse::<u32>().is_ok() => Ok(format!("docker:x:{g}:")),
                 ("getent", _) => Err("no".into()),
                 ("systemd-sysusers", _) => {
                     self.account = true;
@@ -394,6 +500,29 @@ mod tests {
         assert!(install(&layout, &mut sys, &exe, &opts).unwrap_err().contains("no such user"));
         std::fs::write(layout.config(), "listen = 1\n").unwrap();
         assert!(install(&layout, &mut sys, &exe, &InstallOptions::default()).is_err());
+    }
+
+    #[test]
+    fn allow_and_deny_docker() {
+        let (d, layout, exe) = setup();
+        let mut sys = FakeSys::default();
+        install(&layout, &mut sys, &exe, &InstallOptions::default()).unwrap();
+        let sock = d.path().join("docker.sock");
+        assert!(allow(&layout, &mut sys, Grant::Docker, &sock, false).unwrap_err().contains("docker.sock"));
+        std::fs::write(&sock, b"").unwrap();
+        // The fake getent knows no groups.
+        assert!(allow(&layout, &mut sys, Grant::Docker, &sock, false).is_err());
+        sys.groups = true;
+        let r = allow(&layout, &mut sys, Grant::Docker, &sock, false).unwrap();
+        assert!(r.warnings[0].contains("root-equivalent"));
+        let body = std::fs::read_to_string(layout.dropin_dir().join("docker.conf")).unwrap();
+        assert!(body.contains("SupplementaryGroups=docker\n"), "{body}");
+        assert!(sys.log.iter().any(|l| l == "systemctl restart nightgrid-node"));
+        deny(&layout, &mut sys, Grant::Docker, false).unwrap();
+        assert!(!layout.dropin_dir().join("docker.conf").exists());
+        assert!(deny(&layout, &mut sys, Grant::Docker, false).unwrap().steps[0].contains("not allowed"));
+        uninstall(&layout, &mut sys, false).unwrap();
+        assert!(!layout.dropin_dir().exists());
     }
 
     #[test]

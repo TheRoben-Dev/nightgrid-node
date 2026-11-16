@@ -81,6 +81,10 @@ impl Engine {
             if rules.disk_forecast {
                 conds.extend(diskusage::conditions(host, &self.forecasts, rules.forecast_days, now));
             }
+            if rules.container_down {
+                let c = shared.containers.lock().unwrap_or_else(|e| e.into_inner());
+                conds.extend(c.conditions.iter().flatten().cloned());
+            }
         }
         let changes = self.tracker.report(conds, now);
         if !changes.is_empty() {

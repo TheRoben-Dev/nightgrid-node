@@ -2,7 +2,7 @@
 
 Nightgrid is agentless: the app does everything over SSH while it is open. Nightgrid Node is an **optional** agent for Linux servers that keeps collecting while the app is closed or the computer is offline, and hands everything over when the app reconnects. It is an accelerator, never a requirement: every app feature keeps working over plain SSH on hosts without it.
 
-Status: N0 (this document describes the whole plan; what exists today is marked **N0**). Milestones are in [MILESTONES.md](MILESTONES.md), the wire format in [PROTOCOL.md](PROTOCOL.md), choices and their reasons in [DECISIONS.md](DECISIONS.md), and the app-side work in [app-integration/](app-integration/).
+Status: N0, N1 and N1b are built (metrics, events, uptime, disk usage, offline alerts, containers); this document describes the whole plan and marks what exists with its milestone in bold. The order after N1 follows the expanded brief of 2026-11-16: real-time push, network watch, self-healing, then the rest. Milestones are in [MILESTONES.md](MILESTONES.md), the wire format in [PROTOCOL.md](PROTOCOL.md), choices and their reasons in [DECISIONS.md](DECISIONS.md), and the app-side work in [app-integration/](app-integration/).
 
 ## 1. Shape
 
@@ -17,7 +17,8 @@ Status: N0 (this document describes the whole plan; what exists today is marked 
 │ node is absent or lacks the cap  │                             │   group nightgrid-node)                    │
 └──────────────────────────────────┘                             │  nightgrid-node run  (user nightgrid-node) │
                                                                  │   ├ sampler thread: /proc, /sys, statvfs   │
-                                                                 │   ├ (N1+) watchers: journal, docker, …     │
+                                                                 │   ├ engine: uptime, disk usage, alerts     │
+                                                                 │   ├ containers thread (opt-in docker grant)│
                                                                  │   ├ SQLite: /var/lib/nightgrid-node/node.db│
                                                                  │   └ socket server (tokio, current thread)  │
                                                                  └────────────────────────────────────────────┘
@@ -37,7 +38,7 @@ The app already holds one multiplexed russh connection per host. It reaches the 
 
 Who may connect is decided by file permissions: the socket is `0660` and its directory `0750`, both group `nightgrid-node`. `install --user NAME` (default: the user who ran sudo) adds the SSH login user to that group. Group membership applies from the next login, so the app reconnects after installing (or uses `sg nightgrid-node -c 'nightgrid-node bridge'` for the current session). The node logs the peer uid of every `hello`.
 
-Tailnet transport (N6, off by default): a listener bound only to the host's tailnet address, mutually authenticated with keys exchanged over SSH at install time. It exists for the phone status page and for the app reaching the node without an SSH session; it is never on unless chosen.
+Tailnet transport (N8, off by default): a listener bound only to the host's tailnet address, mutually authenticated with keys exchanged over SSH at install time. It exists for the phone status page and for the app reaching the node without an SSH session; it is never on unless chosen.
 
 ## 3. Protocol
 
@@ -73,7 +74,7 @@ Goal: graphs, uptime bars, timeline and SLA reports have no gaps for time the no
 - **Metrics (N0):** `metrics.sync {res, after}` returns *closed* buckets with `ts > after`, oldest first, in pages of up to 5000. The app inserts minute points through its existing `insert_metric_point` (minute rows are `ON CONFLICT DO NOTHING`, so overlap with what it sampled itself is harmless) and advances the cursor. If the app was away longer than the node's minute retention, it first fills the older span from the hourly and 15-minute tiers (`oldest` in the answer tells it where minutes start). See [app-integration/0001](app-integration/0001-install-and-metrics-sync.md).
 - **Events and alerts (N1):** `events.sync {after: seq}`; the same cursor rule. A changed `node_id` (purged reinstall) resets cursors.
 - **Uptime (N1):** the node records the host as up for each minute it was running and closes an outage at boot when the gap since the last heartbeat is longer than a clean shutdown explains; services checked from the node record their own up/down time. Unknown time stays unknown, as in the app (D-113).
-- **Live (N4):** after sync, the app subscribes to streams (metrics at 1–2 s, events, log tails, container stats) instead of polling over SSH.
+- **Live (N2):** after sync, the app subscribes to streams (metrics at 1–2 s, events, log tails, container stats) instead of polling over SSH.
 
 ## 6. Alerts while offline (N1)
 
@@ -89,19 +90,31 @@ The node evaluates the same conditions as the app's alerts loop (host resources,
 | Privilege | Dedicated system account (`systemd-sysusers`, no shell, no password). `NoNewPrivileges`, empty capability set, `ProtectSystem=strict`, `ProtectHome=read-only`, syscall filter, no device access except NVIDIA's for `nvidia-smi`. **N0** |
 | Network | None. `IPAddressDeny=any`, `RestrictAddressFamilies=AF_UNIX`. Tailnet listener is a later, opt-in capability. **N0** |
 | Who can talk to it | Unix socket `0660`, group `nightgrid-node`; members are chosen at install. Peer uid logged. **N0** |
-| What it may do | Read-only in N0–N4. Policy lives in root-owned `/etc/nightgrid-node/config.toml`; nothing on the socket can widen it. `deny_unknown_fields` so a typo can't silently enable something. **N0** |
-| Privileged reads and actions (N3, N5) | Never run by the daemon itself. Each capability is opted into by root (`nightgrid-node allow <cap>`), and the work is done by a separate, short-lived, root helper that accepts only fixed, typed operations listed in the policy (no shell strings). See DECISIONS.md N-010. |
-| Audit | (N5) Append-only, hash-chained action log in the state directory: who (uid, client), what, target, result, before/after for rollbacks. Synced to the app with the events stream. |
+| What it may do | Read-only until N4 (actions). Policy lives in root-owned `/etc/nightgrid-node/config.toml`; nothing on the socket can widen it. `deny_unknown_fields` so a typo can't silently enable something. **N0** |
+| Privileged reads and actions (N4, N5) | Never run by the daemon itself. Each capability is opted into by root (`nightgrid-node allow <cap>`), and the work is done by a separate, short-lived, root helper that accepts only fixed, typed operations listed in the policy (no shell strings). See DECISIONS.md N-010. |
+| Audit | (N4) Append-only, hash-chained action log in the state directory: who (uid, client), what, target, result, before/after for rollbacks. Synced to the app with the events stream. |
 | Secrets | N0 stores none. Later ones (e.g. a service check's token) use `systemd-creds` (encrypted at rest, TPM-bound where available) or are pushed by the app per session and held in memory only. Logs and events go through the same secret filter as the app (`redact::line_has_secret`). |
 | Releases | Static binaries with SHA256SUMS and GitHub build provenance; the app verifies the checksum before uploading, and `install` is only run on a verified file. Minisign signing is wired in the release workflow but off until a key is configured (N-014). |
+| Container engine | Off until root runs `nightgrid-node allow docker`, which writes a drop-in adding the socket's group (root-equivalent, warned) and is undone by `deny docker`. The node only sends `GET`s. **N1b** |
+| Automatic actions | See section 7a. |
 | Public repo | No secrets, host names or personal details anywhere; fixtures are synthetic (`server01`, `pi`). |
+
+## 7a. Automatic actions (N4 onwards)
+
+Self-healing rules, auto-block, scheduled jobs and power schedules, and group actions all follow the same rules:
+
+- **Off by default, per rule.** Root's policy says which action types may run at all; the app pushes the rules; each rule is enabled on its own.
+- **Typed, not scripted.** An action is a named operation with checked arguments (`container.restart {name}`, `images.prune`), carried out through the engine socket or the root helper, never a shell string.
+- **Bounded.** Every rule has a rate limit (runs per hour and per day) with backoff, and stops after N attempts when the condition doesn't clear, raising an alert instead.
+- **Dry-run first.** A rule can run in dry-run mode, which records what it would have done without doing it.
+- **Audited.** Every run, dry or real, goes into the hash-chained action log and the events stream, so the app shows it on reconnect.
 
 ## 8. Install, upgrade, uninstall
 
 All three are one command run as root, idempotent, with a `--json` report for the app. **N0**
 
 - **Install:** the app uploads the verified binary to a private temp dir over SFTP and runs `sudo <tmp>/nightgrid-node install --json`. It copies itself to `/usr/local/bin` (a new file, so it gets the right SELinux label; writable on rpm-ostree/Bazzite too), creates the account with `systemd-sysusers`, writes the config (only if missing) and the unit, adds the login user to the group, enables and (re)starts the service and waits until it answers.
-- **Upgrade:** the same command with a newer binary. History and node id are kept; the running service keeps its old inode until the restart. N6 adds `upgrade` with a health check and automatic revert to the previous binary.
+- **Upgrade:** the same command with a newer binary. History and node id are kept; the running service keeps its old inode until the restart. N8 adds `upgrade` with a health check and automatic revert to the previous binary.
 - **Uninstall:** `sudo nightgrid-node uninstall` stops and removes the service and binary but keeps history and config, so reinstalling resumes. `--purge` also removes history, config and the account. If the binary is gone or broken, [dist/uninstall.sh](../dist/uninstall.sh) does the same with plain shell commands.
 - **Downgrade:** a binary refuses to open a database migrated by a newer version; `uninstall --purge` then install is the way back.
 
@@ -111,24 +124,24 @@ Portability: needs systemd ≥ 247 and `usermod`. Tested in CI on Ubuntu (x86_64
 
 | App feature (today over SSH) | Node capability | Milestone | Without the node |
 |---|---|---|---|
-| Live host metrics, overview tiles, GPU | `metrics` (latest), later `metrics` stream | N0 / N4 | `COLLECT` script over SSH |
+| Live host metrics, overview tiles, GPU | `metrics` (latest), `metrics` stream | **N0** / N2 | `COLLECT` script over SSH |
 | Metric history, long-range charts, forecasts | `metrics.sync` (minute, 15 min, hourly) | **N0** | only while the app runs |
-| Uptime bars, SLA reports | `uptime.sync` | N1 | only while the app runs |
-| Alerts (host, disk, filling, containers, services, certs) | `alerts`, `events.sync` | N1 | only while the app runs |
-| Incident timeline (boots, OOM, units, packages, containers) | `events.sync` | N1 | read from the host when opened |
-| Container states, restarts, health | `docker.watch` (opt-in docker group) | N1 | Docker API over SSH |
-| Service checks, TLS expiry | `checks` (from the host's view) | N1 | from the app's computer |
-| Log anomalies, saved log searches with alerts | `logs` (rules pushed by the app) | N2 | only while the app runs |
-| Logins, failed logins | `access.watch` | N2 | access audit on demand |
-| SMART, pools (ZFS/mdadm/btrfs) | `health.disks` (root helper) | N3 | sudo over SSH |
-| Package updates, reboot required | `updates` (root helper for refresh) | N3 | on demand |
-| Backups (restic/borg/rsync status), UPS (NUT) | `backups`, `ups` | N3 | only while the app runs |
-| Logs follow, container stats, journal | streams | N4 | SSH exec per stream |
-| Container/unit/power actions | `act.*` (root helper, opt-in per action) | N5 | SSH + sudo prompt |
-| Scheduled jobs, power schedules, WoL relay | `jobs`, `wol` | N5 | only while the app runs |
-| Snapshot and rollback (compose, config, network) | `rollback` with dead-man timer | N5 | app-driven |
-| Node self-update, tailnet, status page | `upgrade`, `tailnet`, `statuspage` | N6 | n/a |
-| DRIFT daily summaries | `summaries` | N7 | n/a |
+| Uptime bars, SLA reports | `uptime.sync` | **N1** | only while the app runs |
+| Disk usage trend, "full in N days" | `disk.sync` | **N1** | only while the app runs |
+| Alerts while away (disk, filling, containers) | `alerts`, `events.sync` | **N1** / **N1b** | only while the app runs |
+| Container states, restarts, health | `containers` (opt-in docker grant) | **N1b** | Docker API over SSH |
+| Real-time events (alerts, containers, logins, file changes) | protocol 2 streams | N2 | polling over SSH |
+| Network map, device inventory, IP conflicts, rogue DHCP | `net` | N3 | scans from the app |
+| Container/unit/power actions, self-healing | `act.*`, `heal` (opt-in per rule) | N4 | SSH + sudo prompt |
+| Snapshot and rollback (compose, config, network) | `rollback` with dead-man timer | N4 | app-driven |
+| SMART, pools, updates, backups, UPS | root helper reads | N5 | sudo over SSH |
+| Log anomalies, saved log searches with alerts | `logs` (rules pushed by the app) | N5 | only while the app runs |
+| Per-process/container stats at 1 s, power draw | `procs`, `power` | N6 | top/docker stats over SSH |
+| File integrity, new ports, failed-login bursts, auto-block | `security` | N6 | on demand |
+| Service checks, TLS expiry, node-to-node probes | `checks` (from inside the LAN) | N7 | from the app's computer |
+| Scheduled jobs, power schedules, group shutdown | `jobs`, `group` | N7 | only while the app runs |
+| Node self-update, tailnet, status page | `upgrade`, `tailnet`, `statuspage` | N8 | n/a |
+| DRIFT daily summaries | `summaries` | N9 | n/a |
 
 ## 10. Reuse of app code
 

@@ -115,6 +115,7 @@ pub fn caps() -> Caps {
         (cap::UPTIME, 1),
         (cap::DISK, 1),
         (cap::ALERTS, 1),
+        (cap::CONTAINERS, 1),
     ]
     .into_iter()
     .map(|(k, v)| (k.to_owned(), v))
@@ -253,6 +254,10 @@ fn dispatch(shared: &Shared, session: &mut Session, req: &Request) -> Result<Res
             }
             let next = rows.last().map_or(p.after, |r| r.ts);
             Ok(Response::ok(0, DiskResult { rows, next, more }))
+        }
+        method::CONTAINERS_LIST => {
+            let r = shared.containers.lock().unwrap_or_else(|e| e.into_inner()).result.clone();
+            Ok(Response::ok(0, r))
         }
         method::ALERTS_ACTIVE => {
             let active = shared.active.lock().unwrap_or_else(|e| e.into_inner()).clone();
@@ -412,6 +417,8 @@ mod tests {
         assert_eq!(r.result.unwrap()["diskPercent"], 80);
         assert_eq!(crate::engine::load_rules(&s.store.lock().unwrap()).disk_percent, 80);
         assert_eq!(call(&s, &mut ses, 10, "alerts.active", Value::Null).result, Some(json!([])));
+        let r = call(&s, &mut ses, 11, "containers.list", Value::Null).result.unwrap();
+        assert_eq!((r["access"].as_str(), r["containers"].as_array().map(Vec::len)), (Some("absent"), Some(0)));
     }
 
     #[test]

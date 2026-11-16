@@ -14,6 +14,25 @@ pub const DEFAULT_DATA_DIR: &str = "/var/lib/nightgrid-node";
 pub struct Config {
     pub metrics: MetricsConfig,
     pub server: ServerConfig,
+    pub docker: DockerConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct DockerConfig {
+    /// Watch containers when the engine socket is reachable. Reaching it
+    /// also needs `nightgrid-node allow docker` (root-equivalent access).
+    pub enabled: bool,
+    /// Docker, or Podman's compatible socket (`/run/podman/podman.sock`).
+    pub socket: PathBuf,
+    /// Seconds between reads (5-300).
+    pub interval_secs: u32,
+}
+
+impl Default for DockerConfig {
+    fn default() -> Self {
+        Self { enabled: true, socket: PathBuf::from("/var/run/docker.sock"), interval_secs: 15 }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -72,6 +91,12 @@ impl Config {
         if !self.server.socket.is_absolute() {
             return Err("server.socket must be an absolute path".into());
         }
+        if !self.docker.socket.is_absolute() {
+            return Err("docker.socket must be an absolute path".into());
+        }
+        if !(5..=300).contains(&self.docker.interval_secs) {
+            return Err("docker.interval_secs must be 5-300".into());
+        }
         if !(1..=64).contains(&self.server.max_connections) {
             return Err("server.max_connections must be 1-64".into());
         }
@@ -95,6 +120,17 @@ minute_retention_days = 14
 # group may connect; nothing listens on the network.
 socket = "/run/nightgrid-node/node.sock"
 max_connections = 8
+
+[docker]
+# Watch containers (states, restarts, crashes) when the engine is reachable.
+# The service account can only reach it after root runs
+#   nightgrid-node allow docker
+# which is root-equivalent access: read SECURITY.md first.
+enabled = true
+# Docker, or Podman's compatible socket (/run/podman/podman.sock).
+socket = "/var/run/docker.sock"
+# Seconds between reads (5-300).
+interval_secs = 15
 "#;
 
 #[cfg(test)]

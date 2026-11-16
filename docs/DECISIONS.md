@@ -72,3 +72,14 @@ Per N-011, rules are pushed by the app (`alerts.rules.set`) and stored in SQLite
 ### N-018 · Writes happen once a minute
 The heartbeat, disk usage and alert evaluation run once per minute on the sampler thread, not per 10 s sample. Disk-full alerts therefore fire up to a minute later than the app would; in exchange the SD card on a Pi sees one small transaction per minute. Forecasts are recomputed and old rows pruned once an hour.
 
+## N1b
+
+### N-019 · Container access is a systemd drop-in adding the socket's group
+`nightgrid-node allow docker` writes `nightgrid-node.service.d/docker.conf` with `SupplementaryGroups=<socket group>` instead of adding the account to the group with `usermod`. It applies to the service only (not to a login shell as that user), shows up in `systemctl cat`, and `deny docker` or uninstall removes it in one step. The group is read from the socket, so Podman's or a custom engine socket works the same. Root-owned sockets are refused, since that would mean the root group. The node talks HTTP/1.0 `GET` to the socket with a 60-line client instead of pulling in hyper or bollard.
+
+### N-020 · Order after N1 follows the expanded brief (2026-11-16)
+Roben's expanded brief puts real-time push first, then network watch, then self-healing, then the rest (root-only health and logs, fine-grained stats and host security, node-to-node and service checks with jobs and group actions, upgrades/tailnet/status page). Service checks moved from N1b to N7 so that outbound network is introduced once, for both service checks and node-to-node probes.
+
+### N-021 · Open: how network watch sees DHCP (decide before N3)
+New devices and IP conflicts come from the kernel's neighbour table over netlink, which needs no privileges. Seeing DHCP offers (to spot DHCP changes and rogue DHCP servers) needs raw packets: `CAP_NET_RAW`, which the daemon must not have. Options: a separate tiny unit holding only `CAP_NET_RAW` and a BPF filter for UDP 67/68; asking the root helper for periodic DHCP discovery; or neighbour table only. To be put to Roben when N3 starts.
+
