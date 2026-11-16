@@ -33,7 +33,7 @@ Done when: the app can be closed for a day, and on reconnect shows the outages, 
 
 Roben's expanded brief sets the order after N1: **real-time push, then network watch, then self-healing, then the rest.** Node-side service checks moved into N7 (node-to-node checks), where outbound network is introduced once for both.
 
-## N2 · Real-time push (protocol 2) — **N2a streams in 0.4.0**; N2b logins and file changes next
+## N2 · Real-time push (protocol 2) — **done (0.4.0 streams, 0.5.0 logins and file changes)**
 
 - Protocol 2: `subscribe {stream}` / `unsubscribe` on the same connection, pushed `{"stream", "data"}` frames; protocol 1 clients keep working.
 - Streams: `events` (every new event as it is written: alerts, container lifecycle, outages), `metrics` (1–2 s while subscribed, nothing extra when nobody listens), `containers` (state changes).

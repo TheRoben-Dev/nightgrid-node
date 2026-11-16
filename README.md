@@ -21,6 +21,8 @@ While the app is closed, the node:
 | 🚨 | **Evaluates alerts**: disk full, disk filling up and container down, with your thresholds from the app and the app's own grace periods. Alerts are kept and delivered when the app comes back ("while you were away"). | 0.2 / 0.3 |
 | 🐳 | **Watches containers** (opt-in): states, crashes, restarts, out-of-memory kills and health changes, through Docker's or Podman's socket. Read-only. | 0.3 |
 | 🗒 | **Keeps a timeline**: alerts firing and clearing, outages, boots and container events, numbered so the app pulls only what's new. | 0.2 |
+| 🔑 | **Records logins** (opt-in): SSH logins and failed logins (summed per minute), from the journal. | 0.5 |
+| 📄 | **Watches important files**: `sshd_config`, sudoers, `passwd`/`shadow`, cron, `hosts`, `fstab`, systemd units. It records what changed (size, hash, owner, mode), never the contents. | 0.5 |
 | ⚡ | **Pushes live**: while the app is connected, new events, alerts, container changes and metrics every 2 s are pushed as they happen, instead of the app polling over SSH. | 0.4 |
 
 When the app reconnects, it asks for everything after its last cursor and merges it in. The node keeps no per-app state, so several computers running Nightgrid can sync from the same node.
@@ -29,13 +31,12 @@ When the app reconnects, it asks for everything after its last cursor and merges
 
 See [docs/MILESTONES.md](docs/MILESTONES.md) for detail. The order is:
 
-1. **Real-time push**: events, alerts, container lifecycle and live metrics are pushed now; logins and file changes come next.
-2. **Network watch**: new or unknown devices, IP conflicts, DHCP changes and rogue DHCP on the LAN, feeding the app's network map.
-3. **Actions and self-healing**: rules such as "container unhealthy for 5 minutes → restart". Off by default per rule, with rate limits, dry-run and an audit log.
-4. **Root-only health and logs**: SMART, pools, updates, backups and UPS through a small root helper; log anomalies using the app's rules.
-5. **Fine-grained stats and host security**: 1 s per-process and per-container stats, power draw, file integrity, new listening ports, failed-login bursts.
-6. **Node-to-node and service checks, scheduled jobs, group actions**: from inside the LAN, with the app closed.
-7. **Upgrades with automatic revert, an optional tailnet transport and a status page.**
+1. **Network watch**: new or unknown devices, IP conflicts, DHCP changes and rogue DHCP on the LAN, feeding the app's network map.
+2. **Actions and self-healing**: rules such as "container unhealthy for 5 minutes → restart". Off by default per rule, with rate limits, dry-run and an audit log.
+3. **Root-only health and logs**: SMART, pools, updates, backups and UPS through a small root helper; log anomalies using the app's rules.
+4. **Fine-grained stats and host security**: 1 s per-process and per-container stats, power draw, file integrity, new listening ports, failed-login bursts.
+5. **Node-to-node and service checks, scheduled jobs, group actions**: from inside the LAN, with the app closed.
+6. **Upgrades with automatic revert, an optional tailnet transport and a status page.**
 
 Anything that acts on its own (self-healing, auto-block, scheduled power) is off unless you turn it on, and every run is logged.
 
@@ -66,10 +67,11 @@ sudo ./nightgrid-node-*-linux install          # adds you (the sudo user) to the
 nightgrid-node status
 ```
 
-Optional: let it watch containers. Read [SECURITY.md](SECURITY.md) first, because Docker's group is root-equivalent.
+Optional: let it watch containers and SSH logins. Read [SECURITY.md](SECURITY.md) first: Docker's group is root-equivalent, and the journal's group can read every log.
 
 ```sh
 sudo nightgrid-node allow docker     # undo with: sudo nightgrid-node deny docker
+sudo nightgrid-node allow journal    # SSH logins; undo with: sudo nightgrid-node deny journal
 ```
 
 Remove it with `sudo nightgrid-node uninstall` (keeps history and config) or `sudo nightgrid-node uninstall --purge` (removes everything, including the service account). If the binary is gone, [dist/uninstall.sh](dist/uninstall.sh) does the same.
@@ -83,7 +85,8 @@ nightgrid-node run                 the service (systemd starts it)
 nightgrid-node install [--user NAME]... [--no-start] [--json]
 nightgrid-node uninstall [--purge] [--json]
 nightgrid-node allow docker        let it read containers (root; root-equivalent)
-nightgrid-node deny docker         take that away again
+nightgrid-node allow journal       let it read the journal for SSH logins (root)
+nightgrid-node deny docker|journal take that away again
 nightgrid-node status              what the running node reports
 nightgrid-node query METHOD [JSON] one protocol request, e.g. query alerts.active
 nightgrid-node watch STREAM...     live frames: events, metrics, containers

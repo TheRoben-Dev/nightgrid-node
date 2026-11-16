@@ -18,6 +18,7 @@ rusqlite = { version = "0.41", features = ["bundled"] }
 rusqlite_migration = "2"
 serde.workspace = true
 serde_json.workspace = true
+sha2 = { version = "0.10", default-features = false }
 tokio = { version = "1.53.3", default-features = false, features = ["rt", "net", "io-util", "time", "signal", "macros", "sync"] }
 toml = "1.0.7"
 

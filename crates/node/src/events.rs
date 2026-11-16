@@ -18,6 +18,8 @@ fn kind_str(k: EventKind) -> &'static str {
         EventKind::Boot => "boot",
         EventKind::Outage => "outage",
         EventKind::Container => "container",
+        EventKind::Login => "login",
+        EventKind::File => "file",
         EventKind::Other => "other",
     }
 }

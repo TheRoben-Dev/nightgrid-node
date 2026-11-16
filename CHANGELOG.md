@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.0 · N2b (unreleased)
+
+- SSH logins and failed logins (summed per minute) as `login` events, from the journal, after root runs `nightgrid-node allow journal`. Resumes from a saved cursor, so logins while the node was stopped are kept.
+- Watched files: changes to `/etc/ssh`, `sudoers`, `passwd`, `shadow`, cron, `hosts`, `fstab` and `/etc/systemd/system` (root can edit the list) as `file` events, with sizes, hashes, mode and owner, never contents. Changes made while the node was stopped are reported at start.
+- `node.info` reports which optional access root has granted (`access`).
+- Both are pushed live on the `events` stream.
+
 ## 0.4.0 · N2a (unreleased)
 
 - Protocol 2: `subscribe` / `unsubscribe` and pushed frames on the same connection. Streams: `events` (every new event as it is recorded), `metrics` (every 2 s while watched), `containers` (on state or health changes), plus `lagged` when a slow client missed frames. Protocol 1 clients are unchanged.

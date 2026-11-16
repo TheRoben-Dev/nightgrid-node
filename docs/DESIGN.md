@@ -130,7 +130,7 @@ Portability: needs systemd ≥ 247 and `usermod`. Tested in CI on Ubuntu (x86_64
 | Disk usage trend, "full in N days" | `disk.sync` | **N1** | only while the app runs |
 | Alerts while away (disk, filling, containers) | `alerts`, `events.sync` | **N1** / **N1b** | only while the app runs |
 | Container states, restarts, health | `containers` (opt-in docker grant) | **N1b** | Docker API over SSH |
-| Real-time events (alerts, containers, logins, file changes) | protocol 2 streams | N2 | polling over SSH |
+| Real-time events (alerts, containers, logins, file changes) | protocol 2 streams, `logins`, `files` | **N2** | polling over SSH |
 | Network map, device inventory, IP conflicts, rogue DHCP | `net` | N3 | scans from the app |
 | Container/unit/power actions, self-healing | `act.*`, `heal` (opt-in per rule) | N4 | SSH + sudo prompt |
 | Snapshot and rollback (compose, config, network) | `rollback` with dead-man timer | N4 | app-driven |

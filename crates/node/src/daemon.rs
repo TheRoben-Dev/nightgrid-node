@@ -222,6 +222,16 @@ pub fn run(config: Config, paths: Paths) -> Result<(), String> {
     let sampler =
         Sampler::start(shared.clone(), Reader::system(), Duration::from_secs(config.metrics.interval_secs.into()))
             .map_err(|e| format!("sampler: {e}"))?;
+    let files = if config.files.enabled && !config.files.watch.is_empty() {
+        Some(crate::files::FileWatcher::start(shared.clone()).map_err(|e| format!("file watcher: {e}"))?)
+    } else {
+        None
+    };
+    let logins = if config.logins.enabled {
+        Some(crate::logins::LoginWatcher::start(shared.clone()).map_err(|e| format!("login watcher: {e}"))?)
+    } else {
+        None
+    };
     let watcher = if config.docker.enabled {
         Some(crate::containers::Watcher::start(shared.clone()).map_err(|e| format!("container watcher: {e}"))?)
     } else {
@@ -245,6 +255,12 @@ pub fn run(config: Config, paths: Paths) -> Result<(), String> {
     sd_notify("STOPPING=1");
     sampler.stop();
     if let Some(w) = watcher {
+        w.stop();
+    }
+    if let Some(w) = files {
+        w.stop();
+    }
+    if let Some(w) = logins {
         w.stop();
     }
     let _ = std::fs::remove_file(&config.server.socket);

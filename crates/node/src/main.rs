@@ -21,7 +21,8 @@ COMMANDS:
         --json              Print a machine-readable report
     allow docker            Let the service read containers through the engine
                             socket's group (root; root-equivalent access)
-    deny docker             Take that access away again (root)
+    allow journal           Let the service read the journal for SSH logins (root)
+    deny docker|journal     Take that access away again (root)
     status                  Show what the running node reports
     query METHOD [JSON]     Send one request and print the answer
     watch STREAM... [--count N]
@@ -136,8 +137,9 @@ fn real_main() -> Result<(), String> {
             Ok(())
         }
         "allow" | "deny" => {
-            let what = a.rest.first().ok_or("allow/deny what? (docker)")?;
-            let grant = install::Grant::parse(what).ok_or_else(|| format!("unknown access {what:?} (docker)"))?;
+            let what = a.rest.first().ok_or("allow/deny what? (docker, journal)")?;
+            let grant =
+                install::Grant::parse(what).ok_or_else(|| format!("unknown access {what:?} (docker, journal)"))?;
             let layout = install::Layout::system();
             let r = if a.cmd == "allow" {
                 let config = Config::load(&a.config)?;

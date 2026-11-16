@@ -15,6 +15,55 @@ pub struct Config {
     pub metrics: MetricsConfig,
     pub server: ServerConfig,
     pub docker: DockerConfig,
+    pub logins: LoginsConfig,
+    pub files: FilesConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct LoginsConfig {
+    /// Record SSH logins and failed logins from the journal. Reading the
+    /// journal also needs `nightgrid-node allow journal`.
+    pub enabled: bool,
+}
+
+impl Default for LoginsConfig {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct FilesConfig {
+    /// Record changes to the files and directories in `watch`.
+    pub enabled: bool,
+    /// Files, or directories (their direct entries), to watch. Contents are
+    /// never stored: only size, owner, mode, time and a SHA-256 when readable.
+    pub watch: Vec<PathBuf>,
+    /// Seconds between checks (2-300).
+    pub interval_secs: u32,
+}
+
+pub const DEFAULT_WATCH: &[&str] = &[
+    "/etc/ssh/sshd_config",
+    "/etc/ssh/sshd_config.d",
+    "/etc/passwd",
+    "/etc/group",
+    "/etc/shadow",
+    "/etc/sudoers",
+    "/etc/sudoers.d",
+    "/etc/crontab",
+    "/etc/cron.d",
+    "/etc/hosts",
+    "/etc/fstab",
+    "/etc/systemd/system",
+];
+
+impl Default for FilesConfig {
+    fn default() -> Self {
+        Self { enabled: true, watch: DEFAULT_WATCH.iter().map(PathBuf::from).collect(), interval_secs: 10 }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -97,6 +146,12 @@ impl Config {
         if !(5..=300).contains(&self.docker.interval_secs) {
             return Err("docker.interval_secs must be 5-300".into());
         }
+        if !(2..=300).contains(&self.files.interval_secs) {
+            return Err("files.interval_secs must be 2-300".into());
+        }
+        if self.files.watch.len() > 64 || self.files.watch.iter().any(|p| !p.is_absolute()) {
+            return Err("files.watch takes at most 64 absolute paths".into());
+        }
         if !(1..=64).contains(&self.server.max_connections) {
             return Err("server.max_connections must be 1-64".into());
         }
@@ -131,6 +186,34 @@ enabled = true
 socket = "/var/run/docker.sock"
 # Seconds between reads (5-300).
 interval_secs = 15
+
+[logins]
+# Record SSH logins and failed logins from the journal. The service can only
+# read the journal after root runs: nightgrid-node allow journal
+enabled = true
+
+[files]
+# Record changes to these files and directories (direct entries only).
+# Contents are never stored: size, owner, mode, time and a SHA-256 when the
+# service can read the file (for unreadable ones like /etc/shadow, only that
+# they changed).
+enabled = true
+watch = [
+  "/etc/ssh/sshd_config",
+  "/etc/ssh/sshd_config.d",
+  "/etc/passwd",
+  "/etc/group",
+  "/etc/shadow",
+  "/etc/sudoers",
+  "/etc/sudoers.d",
+  "/etc/crontab",
+  "/etc/cron.d",
+  "/etc/hosts",
+  "/etc/fstab",
+  "/etc/systemd/system",
+]
+# Seconds between checks (2-300).
+interval_secs = 10
 "#;
 
 #[cfg(test)]
