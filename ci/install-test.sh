@@ -604,7 +604,7 @@ PY
 
   say "peers: the link unit pairs with itself over loopback, mutual TLS with a pinned fingerprint"
   q peers.latest | grep -q '"access":"off"' || { q peers.latest; fail "link should be off by default"; }
-  sed -i '/^\[peers\]/,$ { s/^listen = "tailnet"$/listen = "127.0.0.1:17419"/; s#^networks = .*#networks = ["127.0.0.0/8"]#; s/^interval_secs = 60$/interval_secs = 30/; }' /etc/nightgrid-node/config.toml
+  sed -i '/^\[peers\]/,/^\[/ { s/^listen = "tailnet"$/listen = "127.0.0.1:17419"/; s#^networks = .*#networks = ["127.0.0.0/8"]#; s/^interval_secs = 60$/interval_secs = 30/; }' /etc/nightgrid-node/config.toml
   systemctl restart nightgrid-node
   i=0; until q node.info >/dev/null 2>&1; do i=$((i+1)); [ $i -lt 30 ] || fail "not back after restart"; sleep 1; done
   /usr/local/bin/nightgrid-node allow peers --json | tee /tmp/ngn-allow-p.json
