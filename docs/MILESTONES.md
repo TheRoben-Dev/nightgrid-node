@@ -100,19 +100,17 @@ Scope:
 ## N8 · Upgrades, node-to-node link and status page
 
 - **N8a (0.19.0):** `upgrade` with a verified binary, a health check after restart and automatic revert (N-042). App spec 0015.
-- **N8b:** an opt-in node-to-node link (Roben, 2026-11-17: "nodes should be able to communicate in general over Nightgrid Node, but default to each node acting alone"). Planned shape:
-  - off by default, turned on per host by root;
-  - a separate unit that listens only on the tailnet address (or a LAN address root names), never on every interface;
-  - mutual TLS with keys pinned per peer, paired through the app (which already reaches every host over SSH), so no trust-on-first-use;
-  - every request typed and checked against root's `[peers]` policy on the receiving side, and logged.
-- **N8c:** features on the link, each opt-in on both sides:
-  - peer reachability and health ("is nas up from here?"), so alerts can tell a dead host from a broken path;
-  - UPS group shutdown led by the host that reads the UPS, with the per-host guard (N7c) as the fallback;
-  - staged restarts across hosts (one at a time, each waiting for the last to be healthy);
-  - alerts relayed to a peer while the app is closed, so a host that can't reach its own notifier isn't silent.
-- **N8d:** an optional read-only status page over the tailnet only, off by default, auth required.
+- **N8b (0.20.0):** an opt-in node-to-node link (Roben, 2026-11-17: "nodes should be able to communicate in general over Nightgrid Node, but default to each node acting alone"), N-043. App spec 0016.
+  - off by default, turned on per host by root (`allow peers`);
+  - a separate unit that listens only on the tailnet address (or an address root names), never on every interface;
+  - mutual TLS 1.3 with certificates pinned per peer, paired through the app, so no trust-on-first-use;
+  - every request typed and checked against root's `[peers] serve` on the receiving side;
+  - peer reachability: pings, round trip, version, and "unreachable" / "reachable again" events.
+- **N8c (0.21.0):** UPS group shutdown over the link: hosts the app marks as following a UPS host start their own countdown when it starts its own, and stop when its power returns (N-044). App spec 0017. Peer reachability came with N8b. Staged restarts and alert relay stay in the app (N-044).
+- **N8d (0.22.0):** an optional read-only status page over the tailnet only, off by default, at a secret link (N-045). App spec 0018.
 - App specs for each part.
 
 ## N9 · DRIFT helpers
 
-- Daily summaries prepared on the node (what changed, what broke, what's filling up) for the app's local LLM helper; nothing leaves the host unless the app asks.
+- **N9 (0.23.0):** `summary.daily`: what happened on the host over the last day (or up to a week) as plain facts for the app's DRIFT helper, made on request from the node's own history (N-046). App spec 0019.
+- Wake-on-LAN relay: stays with the app's relay hosts and their systemd timers, which already work with the app closed (N-047).

@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.23.0 · N9 (unreleased)
+
+- `summary.daily` (`{hours}`, 1–168, default 24): what happened on this host, as short plain facts for the app's DRIFT helper: outages and restarts, active and resolved alerts, container trouble, failed and finished jobs, actions run, logins and failed logins, changed files, new listeners and LAN changes, upgrades and other warnings, disks filling up (with the forecast), and pending updates from the package cache. Each line starts with what it is about, repeats are counted, lists are capped, and times are relative. `level` is the worst thing in it, and `complete` is false (with a "Coverage" line first) when the node hasn't watched the whole window.
+- Made on request from the node's own history; nothing is sent anywhere. Capability `summary` 1 (N-046).
+
+## 0.22.0 · N8d (unreleased)
+
+- An optional read-only status page for a phone on the tailnet. `sudo nightgrid-node allow statuspage` installs `nightgrid-node-status.service` (the service account, no capabilities, reachable only from `[statuspage] networks`) and prints the page's secret link, `http://<tailnet address>:7420/<token>`. Running it again prints the same link; `deny statuspage` removes the page and the token, so the link stops working.
+- The page shows the host's state (CPU, memory, load, uptime, disks), active alerts, the UPS guard and linked hosts, refreshes every 30 s, has no scripts or forms and changes nothing. Light and dark follow the phone. It reads the node at most every 10 s.
+- Plain HTTP, so it listens only on the tailnet address (WireGuard encrypts it) or loopback; config validation refuses anything else. Any other path is a 404, and the token (256 random bits, in `/etc/nightgrid-node/status-token`, root and the service's group) is compared in constant time (N-045).
+
+## 0.21.0 · N8c (unreleased)
+
+- UPS group shutdown over the node-to-node link (opt-in on each follower): when the host that reads the UPS starts its shutdown countdown, it tells its paired peers right away (and again every minute while it lasts). A peer the app marked `followUps`, whose root lists `"ups"` in `[peers] serve` and turned on `[ups] shutdown`, starts its own countdown with its own `countdown_secs`, so followers go first and the UPS host last, as in the app's group shutdown. Power coming back or a cancel on the UPS host ends it on the followers too; a cancel on a follower holds only that follower.
+- A follower needs no NUT client or `[health] ups` of its own, only the root helper and `power.poweroff` in `[actions] allow`. Its countdown ends on time even if the UPS host is already gone. A follower's own "on line power" reading doesn't end a shutdown it follows.
+- `ups.guard` gains `ledBy` (the peer followed); `peers.set` entries gain `followUps`. Requests on the link that need the node (`peer.ups`) go to it as internal `peers.inbound`, which checks root's `serve`, the pairing and `followUps` again (N-044).
+
+## 0.20.0 · N8b (unreleased)
+
+- An opt-in node-to-node link (each node still acts alone by default). `sudo nightgrid-node allow peers` installs `nightgrid-node-peer.service`: the service account, no capabilities, network access only to `[peers] networks` (tailnet ranges by default). It makes an Ed25519 key and self-signed certificate on first start (mode 0600, in `/var/lib/nightgrid-node-peer`) and listens on this host's tailnet address (`[peers] listen`, port 7419), never on every interface.
+- Pairing goes through the app: it reads each node's `peers.latest.fingerprint` and gives it to the other with `peers.set` (id, name, address, fingerprint). Connections are mutual TLS 1.3 and both sides accept only the certificates the app paired; there is no CA and no trust on first use. A node answers only what root lists in `[peers] serve` (`ping` for now).
+- Peer reachability: every `interval_secs` (60) the link pings each peer (version, host name, round trip) and reports to the node; `peers.latest` shows the readings. A peer that misses two pings in a row is a "peer nas unreachable" event (`warn`), and "reachable again" when it answers. A changed list from the app takes effect within 10 s, and a peer that missed is tried again after 15 s.
+- `peers.set`, `peers.get`, `peers.latest`, internal `peers.report` (the link's account only); capability `peers` 1; `node.info.access.peers`. `deny peers`, `uninstall --purge` and `dist/uninstall.sh` remove it (N-043).
+
 ## 0.19.0 · N8a (unreleased)
 
 - `sudo nightgrid-node upgrade FILE --sha256 HEX`: installs a new binary only when its SHA-256 matches (the app passes the value from the release's `SHA256SUMS`). The check runs on a staged copy next to the installed binary, so the file that runs is the file that was hashed. The new binary must run here, say it is nightgrid-node, and not be older (`--allow-downgrade` to go back).

@@ -1,0 +1,65 @@
+# Nightgrid Node node-to-node link (optional, off by default).
+# Installed by `nightgrid-node allow peers`; removed by `nightgrid-node deny peers`.
+# It talks to the other nodes the app paired with this one, over mutual TLS 1.3
+# with each side's certificate fingerprint pinned (no CA, no passwords). It
+# listens on the tailnet address only ([peers] listen), never on every address,
+# answers only what [peers] serve allows, and may reach only [peers] networks
+# (networks.conf next to this unit, written from the config). It runs as the
+# service's account with no capabilities and hands results to the main service
+# over its unix socket. The main service stays offline.
+
+[Unit]
+Description=Nightgrid Node node-to-node link (paired nodes, mutual TLS)
+Documentation=https://github.com/TheRoben-Dev/nightgrid-node
+After=nightgrid-node.service network-online.target
+Wants=network-online.target
+PartOf=nightgrid-node.service
+
+[Service]
+Type=simple
+User=nightgrid-node
+Group=nightgrid-node
+ExecStart=/usr/local/bin/nightgrid-node peer
+Restart=on-failure
+RestartSec=30s
+TimeoutStopSec=5s
+# Its key and certificate (mode 0600, the service's account only).
+StateDirectory=nightgrid-node-peer
+StateDirectoryMode=0700
+
+CapabilityBoundingSet=
+NoNewPrivileges=yes
+
+# IP sockets, but only to and from the addresses networks.conf allows.
+# AF_NETLINK finds the tailnet address.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+IPAddressDeny=any
+
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+UMask=0077
+
+MemoryMax=64M
+TasksMax=16
+CPUWeight=20
+Nice=10
+
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+
+[Install]
+WantedBy=multi-user.target

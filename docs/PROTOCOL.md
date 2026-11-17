@@ -106,6 +106,8 @@ The node never buffers without bound for a slow client: each stream keeps a shor
 | `checks` 1 | `checks.set`, `checks.get`, `checks.latest`; `serviceDown` and `certExpiring` alerts (with `allow checks`) | N7a |
 | `ups` 1 | `ups.guard`, `ups.cancel`; the UPS shutdown guard (`[ups] shutdown`) | N7c |
 | `jobs` 1 | `jobs.set`, `jobs.get`, `jobs.latest`; `job` events; `backupFailed` and `backupStale` alerts | N7b |
+| `peers` 1 | `peers.set`, `peers.get`, `peers.latest`; peer reachability events (with `allow peers`) | N8b |
+| `summary` 1 | `summary.daily` | N9 |
 
 ### `node.info` (`node` 1)
 
@@ -532,7 +534,59 @@ Alerts, with the app's keys (no host segment) and its `backupStale` switch: `bac
 
 `ups.cancel` (no params) cancels a countdown, or the watch for this outage, and answers like `ups.guard`. It can't start anything.
 
+`ledBy` (0.21.0): the paired peer whose shutdown this host follows, with `reason` "nas is shutting down for ups@nas (on battery for 5 min)". `problem` is also `null` without a UPS of its own when `[peers] serve` lists "ups".
+
 Events (`other`): "UPS shutdown in 60 s" (`critical`, with the reason), "UPS shutdown cancelled: power is back" (`ok`), "UPS shutdown cancelled" (`warn`, from the app).
+
+### `peers.set` / `peers.get` / `peers.latest` (`peers` 1)
+
+The app pairs nodes. `peers.set` replaces this node's list (at most 64) and answers like `peers.get`:
+
+```json
+{"peers": [{"id": "9f1c…32 hex", "name": "nas", "address": "100.101.102.103:7419", "fingerprint": "…64 hex"}],
+ "interval": 60, "serve": ["ping"]}
+```
+
+- `followUps` (0.21.0, default `false`): this host follows that peer's UPS shutdown (see `ups.guard`). Mark only the host that reads the UPS this host is on.
+- `id` is the peer's `node.info.node.nodeId`; a peer that answers as another id is counted as unreachable. `address` is `ip:port` (`[v6]:port`), normally the peer's `peers.latest.listening`. `fingerprint` is the peer's `peers.latest.fingerprint`. Ids and fingerprints are unique; `name` is 1–80 characters.
+- `interval` and `serve` are root's `[peers] interval_secs` and `[peers] serve` (ignored in `set`).
+
+`peers.latest`:
+
+```json
+{"access": "ok", "fingerprint": "…64 hex", "listening": "100.64.0.7:7419",
+ "readings": [{"id": "9f1c…", "at": 1763290000, "ok": true, "rttMs": 4, "version": "0.20.0", "hostname": "nas", "error": null}]}
+```
+
+- `access`: `ok` while the link unit reports, `off` when it hasn't since the node started (root hasn't run `allow peers`), `denied` when it stopped reporting.
+- `fingerprint`: this node's link certificate (SHA-256 of its DER), to give to the nodes it is paired with. `null` until the link has started once. `listening`: where the link listens, `null` if it doesn't (no tailnet address yet, or `[peers] listen = ""`).
+- `error` explains a miss: "connection refused (is the link on there?)", "not allowed by [peers] networks", "timed out", "the peer's certificate isn't the paired one (pair the nodes again in the app)", "the peer refused this node (it may not have this node paired)", "\"peer.ping\" isn't served here ([peers] serve)".
+
+Events (`other`): "peer nas unreachable" (`warn`, after two misses in a row) and "peer nas reachable again" (`ok`).
+
+`peers.report` is internal (the link's results), and so is `peers.inbound` (a peer's request the link passes on: `{from, method, params}`, with `from` taken from the peer's certificate); only the service's own account may call them.
+
+The link itself (TCP, mutual TLS 1.3, both certificates pinned) carries one JSON request per line, at most 4 KiB: `{"method": "peer.ping"}` → `{"ok": true, "result": {"id", "hostname", "version", "uptime"}}`, or `{"ok": false, "error"}` for anything root's `[peers] serve` doesn't list. `{"method": "peer.ups", "params": {"phase", "reason", "target"}}` (0.21.0) is sent by a host whose UPS guard starts a countdown (`countdown`, `shuttingDown`, repeated every minute) or ends one (`idle`: power is back; `cancelled`); the answer is `{"phase"}` of the receiver's guard, or an error such as "this host doesn't follow that node's UPS".
+
+### `summary.daily` (`summary` 1)
+
+Params `{"hours": 24}` (1–168, default 24; `null` params mean 24):
+
+```json
+{"host": "nas", "from": 1763200000, "to": 1763286400, "level": "warn", "complete": true,
+ "facts": ["Uptime: down (crash or power loss) for 2 h from 7 h ago.",
+           "Restarts: booted 1 time in the last 24 h.",
+           "Active alerts: none.",
+           "Containers: jellyfin restarted (×2).",
+           "Jobs and backups: backup nightly failed (exit 1); 3 other runs fine.",
+           "Failed logins: 37 in the last 24 h.",
+           "Disks: /srv 91% full, full in about 12 days.",
+           "Updates: 14 pending (from the package cache)."]}
+```
+
+- Each fact starts with its topic: `Coverage`, `Uptime`, `Restarts`, `Active alerts`, `Resolved in …`, `Containers`, `Jobs and backups`, `Actions run …`, `Logins`, `Failed logins`, `Files changed`, `Listening ports`, `Network`, `Other`, `Disks`, `Updates`. Topics with nothing to say are left out, except `Active alerts` and an all-day `Uptime`.
+- `level`: `ok`, `warn` or `critical`, the worst thing in it. `complete`: false when the node's history starts after `from`; the first fact then says since when.
+- Made on request from the timeline (at most the newest 5000 events in the window), active alerts, disk forecasts and the last update reading. Nothing is stored or sent.
 
 ### `upgrade.note` (internal)
 

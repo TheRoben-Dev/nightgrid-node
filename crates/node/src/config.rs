@@ -28,6 +28,72 @@ pub struct Config {
     pub checks: ChecksConfig,
     pub jobs: JobsConfig,
     pub ups: UpsConfig,
+    pub peers: PeersConfig,
+    pub statuspage: StatusPageConfig,
+}
+
+/// The optional read-only status page (`allow statuspage`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct StatusPageConfig {
+    /// `tailnet` (this host's tailnet address) or an `ip:port` on the
+    /// tailnet or loopback. Plain HTTP, so never a LAN or public address.
+    pub listen: String,
+    /// Port for `listen = "tailnet"`.
+    pub port: u16,
+    /// Who may open it (tailnet ranges by default).
+    pub networks: Vec<String>,
+}
+
+impl Default for StatusPageConfig {
+    fn default() -> Self {
+        Self {
+            listen: "tailnet".into(),
+            port: 7420,
+            networks: DEFAULT_PEER_NETWORKS.iter().map(|s| (*s).to_owned()).collect(),
+        }
+    }
+}
+
+/// Whether plain HTTP may listen on `ip`: tailnet (WireGuard-encrypted) or loopback.
+pub fn statuspage_ip_ok(ip: std::net::IpAddr) -> bool {
+    ip.is_loopback()
+        || DEFAULT_PEER_NETWORKS
+            .iter()
+            .any(|n| crate::firewall::parse_cidr(n).is_some_and(|c| crate::firewall::in_cidr(ip, c)))
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct PeersConfig {
+    /// Where the link listens: `tailnet` (this host's first 100.64.0.0/10
+    /// address), a specific `ip:port`, or empty (connect out only). Never
+    /// every interface.
+    pub listen: String,
+    /// Port for `listen = "tailnet"`.
+    pub port: u16,
+    /// The only addresses the link may talk to, in and out (tailnet ranges by default).
+    pub networks: Vec<String>,
+    /// What paired peers may ask this node (`ping`, `ups`).
+    pub serve: Vec<String>,
+    /// Seconds between probes of each peer (30-3600).
+    pub interval_secs: u32,
+}
+
+pub const DEFAULT_PEER_NETWORKS: &[&str] = &["100.64.0.0/10", "fd7a:115c:a1e0::/48"];
+/// What `[peers] serve` may list.
+pub const PEER_SERVES: &[&str] = &["ping", "ups"];
+
+impl Default for PeersConfig {
+    fn default() -> Self {
+        Self {
+            listen: "tailnet".into(),
+            port: 7419,
+            networks: DEFAULT_PEER_NETWORKS.iter().map(|s| (*s).to_owned()).collect(),
+            serve: vec!["ping".into()],
+            interval_secs: 60,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -467,6 +533,47 @@ impl Config {
         {
             return Err("[ups] shutdown needs a limit: on_battery_minutes, below_percent or low_battery".into());
         }
+        if !(30..=3600).contains(&self.peers.interval_secs) {
+            return Err("peers.interval_secs must be 30-3600".into());
+        }
+        if self.peers.port == 0 {
+            return Err("peers.port must be 1-65535".into());
+        }
+        match self.peers.listen.as_str() {
+            "" | "tailnet" => {}
+            l => match l.parse::<std::net::SocketAddr>() {
+                Ok(a) if a.ip().is_unspecified() => {
+                    return Err("peers.listen must be one address, not every interface".into())
+                }
+                Ok(_) => {}
+                Err(_) => return Err("peers.listen must be \"tailnet\", \"ip:port\" or empty".into()),
+            },
+        }
+        if self.peers.networks.is_empty()
+            || self.peers.networks.len() > 64
+            || self.peers.networks.iter().any(|c| crate::firewall::parse_cidr(c).is_none())
+        {
+            return Err("peers.networks takes 1-64 addresses or CIDR ranges".into());
+        }
+        if let Some(s) = self.peers.serve.iter().find(|s| !PEER_SERVES.contains(&s.as_str())) {
+            return Err(format!("peers.serve: unknown {s:?} (one of {})", PEER_SERVES.join(", ")));
+        }
+        if self.statuspage.listen != "tailnet" {
+            match self.statuspage.listen.parse::<std::net::SocketAddr>() {
+                Ok(a) if statuspage_ip_ok(a.ip()) && a.port() != 0 => {}
+                _ => {
+                    return Err("statuspage.listen must be \"tailnet\" or an ip:port on the tailnet or loopback \
+                                (it is plain HTTP)"
+                        .into())
+                }
+            }
+        }
+        if self.statuspage.networks.is_empty()
+            || self.statuspage.networks.len() > 64
+            || self.statuspage.networks.iter().any(|c| crate::firewall::parse_cidr(c).is_none())
+        {
+            return Err("statuspage.networks takes 1-64 addresses or CIDR ranges".into());
+        }
         if !(30..=3600).contains(&self.jobs.interval_secs) {
             return Err("jobs.interval_secs must be 30-3600".into());
         }
@@ -746,6 +853,8 @@ interval_secs = 60
 # give the hosts that must stay up longest (storage, the NUT server) larger
 # limits. Also needs "power.poweroff" in [actions] allow,
 # `nightgrid-node allow helper`, `allow health` and the UPS in [health] ups.
+# A host that can't read the UPS can follow a paired peer's shutdown instead
+# ("ups" in [peers] serve); it then needs only the helper and the allow.
 # Every step is in the timeline and the action log. Off by default.
 shutdown = false
 # The [health] ups entry to follow (empty: the first).
@@ -761,6 +870,39 @@ low_battery = true
 countdown_secs = 60
 # Only log the power-off, to try the settings.
 dry_run = false
+
+[peers]
+# The node-to-node link, off until root runs `nightgrid-node allow peers`.
+# Each node acts alone by default; the link lets nodes the app paired check
+# each other. A separate unit runs it, with mutual TLS: a peer is accepted
+# only if the app gave this node its certificate fingerprint. It may talk
+# only to `networks` (run `allow peers` again after changing them).
+#
+# Where it listens: "tailnet" (this host's tailnet address), "ip:port", or
+# "" to only connect out. Never every interface.
+listen = "tailnet"
+# Port for "tailnet".
+port = 7419
+networks = ["100.64.0.0/10", "fd7a:115c:a1e0::/48"]
+# What paired peers may ask this node:
+#   "ping"  version, host name and uptime (reachability);
+#   "ups"   start this host's UPS shutdown when a peer the app marked
+#           "follow" starts its own, and end it when that peer's power is
+#           back. Also needs [ups] shutdown and its requirements here.
+serve = ["ping"]
+# Seconds between probes of each peer (30-3600).
+interval_secs = 60
+
+[statuspage]
+# A read-only status page for your phone, off until root runs
+# `nightgrid-node allow statuspage`, which prints its address with a secret
+# link. A separate unit serves it. Plain HTTP, so it listens only on the
+# tailnet (WireGuard encrypts it) or loopback: "tailnet" or "ip:port".
+listen = "tailnet"
+# Port for "tailnet".
+port = 7420
+# Who may open it (run `allow statuspage` again after changing them).
+networks = ["100.64.0.0/10", "fd7a:115c:a1e0::/48"]
 "#;
 
 #[cfg(test)]

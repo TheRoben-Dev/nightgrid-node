@@ -295,3 +295,247 @@ fn actions_need_roots_allow_and_are_logged() {
     assert_eq!(c.call("heal.rules.get", Value::Null).unwrap(), set);
     assert_eq!(c.call("heal.status", Value::Null).unwrap(), json!({"enabled": 0, "tracking": []}));
 }
+
+struct Link(Child);
+
+impl Drop for Link {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+/// Runs `nightgrid-node peer` for a service, keeping its key in `dir`.
+fn link(svc: &Service, dir: &Path, listen: &str) -> Link {
+    let config = dir.join("peer.toml");
+    std::fs::write(
+        &config,
+        format!(
+            "[server]\nsocket = {:?}\n[peers]\nlisten = {listen:?}\nnetworks = [\"127.0.0.0/8\"]\ninterval_secs = 30\n",
+            svc.socket
+        ),
+    )
+    .unwrap();
+    let child = Command::new(BIN)
+        .args(["peer", "--config"])
+        .arg(&config)
+        .env("STATE_DIRECTORY", dir)
+        .stdin(Stdio::null())
+        .spawn()
+        .unwrap();
+    Link(child)
+}
+
+fn latest(svc: &Service, until: impl Fn(&Value) -> bool) -> Value {
+    let t = Instant::now();
+    loop {
+        let mut c = Client::connect(&svc.socket, "e2e").unwrap();
+        let v = c.call("peers.latest", Value::Null).unwrap();
+        if until(&v) {
+            return v;
+        }
+        assert!(t.elapsed() < Duration::from_secs(40), "peers.latest never got there: {v}");
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
+#[test]
+fn paired_nodes_reach_each_other_over_the_link() {
+    let free = || std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().to_string();
+    let (addr_a, addr_b) = (free(), free());
+    let a = start();
+    let b = start();
+    let mut c = Client::connect(&a.socket, "e2e").unwrap();
+    assert_eq!(c.welcome.caps.get("peers"), Some(&1));
+    let v = c.call("peers.latest", Value::Null).unwrap();
+    assert_eq!(v["access"], "off", "no link until root allows it: {v}");
+    let id_a = c.welcome.node.node_id.clone();
+    let id_b = Client::connect(&b.socket, "e2e").unwrap().welcome.node.node_id.clone();
+
+    let keys = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(keys.path().join("a")).unwrap();
+    std::fs::create_dir_all(keys.path().join("b")).unwrap();
+    let _lb = link(&b, &keys.path().join("b"), &addr_b);
+    let vb = latest(&b, |v| v["listening"].is_string());
+    let _la = link(&a, &keys.path().join("a"), &addr_a);
+    let va = latest(&a, |v| v["listening"].is_string());
+    assert_eq!(va["access"], "ok");
+    let (fp_a, fp_b) = (va["fingerprint"].as_str().unwrap(), vb["fingerprint"].as_str().unwrap());
+    assert_ne!(fp_a, fp_b);
+
+    // The app pairs them: each gets the other's fingerprint.
+    let pair = |svc: &Service, id: &str, addr: &str, fp: &str| {
+        let mut c = Client::connect(&svc.socket, "e2e").unwrap();
+        c.call("peers.set", json!({"peers": [{"id": id, "name": "other", "address": addr, "fingerprint": fp}]}))
+            .unwrap()
+    };
+    pair(&b, &id_a, &addr_a, fp_a);
+    // A pinned the wrong certificate for B first: refused.
+    pair(&a, &id_b, &addr_b, fp_a);
+    let v = latest(&a, |v| v["readings"][0]["at"].is_number());
+    assert_eq!(v["readings"][0]["ok"], false, "{v}");
+    pair(&a, &id_b, &addr_b, fp_b);
+    let v = latest(&a, |v| v["readings"][0]["ok"] == true);
+    assert_eq!(v["readings"][0]["id"], id_b.as_str());
+    assert_eq!(v["readings"][0]["version"], env!("CARGO_PKG_VERSION"));
+    let v = latest(&b, |v| v["readings"][0]["ok"] == true);
+    assert_eq!(v["readings"][0]["id"], id_a.as_str());
+}
+
+#[test]
+fn follows_a_paired_peers_ups_shutdown() {
+    use nightgrid_node::peers;
+    let addr_b = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().to_string();
+    let serve = "[peers]\nserve = [\"ping\", \"ups\"]\nnetworks = [\"127.0.0.0/8\"]\n";
+    let b = start_with(&format!(
+        "[actions]\nallow = [\"power.poweroff\"]\n[ups]\nshutdown = true\ndry_run = true\ncountdown_secs = 300\n{serve}"
+    ));
+    let keys = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(keys.path().join("b")).unwrap();
+    let config = keys.path().join("peer.toml");
+    std::fs::write(
+        &config,
+        format!("[server]\nsocket = {:?}\n{serve}listen = {addr_b:?}\ninterval_secs = 30\n", b.socket),
+    )
+    .unwrap();
+    let _lb = Link(
+        Command::new(BIN)
+            .args(["peer", "--config"])
+            .arg(&config)
+            .env("STATE_DIRECTORY", keys.path().join("b"))
+            .stdin(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let vb = latest(&b, |v| v["listening"].is_string());
+    let fp_b = vb["fingerprint"].as_str().unwrap().to_owned();
+
+    // A is the test itself, with its own link identity.
+    let a = peers::identity(&keys.path().join("a")).unwrap();
+    let id_a = "a".repeat(32);
+    let mut c = Client::connect(&b.socket, "e2e").unwrap();
+    let pair = |c: &mut Client, follow: bool| {
+        c.call(
+            "peers.set",
+            json!({"peers": [{"id": id_a, "name": "nas", "address": "127.0.0.1:9", "fingerprint": a.fingerprint, "followUps": follow}]}),
+        )
+        .unwrap();
+    };
+    let to_b = nightgrid_node_proto::Peer {
+        id: String::new(),
+        name: "b".into(),
+        address: addr_b.clone(),
+        fingerprint: fp_b,
+        follow_ups: false,
+    };
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let tell = |phase: &str| {
+        rt.block_on(peers::request(
+            &a,
+            &to_b,
+            &json!({"method": "peer.ups", "params": {"phase": phase, "reason": "on battery for 5 min", "target": "ups@nas"}}),
+        ))
+    };
+    // Paired, but not followed: refused. (B learns the list within 10 s.)
+    pair(&mut c, false);
+    let t = Instant::now();
+    let err = loop {
+        let e = tell("countdown").unwrap_err();
+        if e != "not paired" && !e.contains("certificate") && !e.contains("refused this node") {
+            break e;
+        }
+        assert!(t.elapsed() < Duration::from_secs(20), "B never took the pairing: {e}");
+        std::thread::sleep(Duration::from_millis(500));
+    };
+    assert!(err.contains("doesn't follow"), "{err}");
+    pair(&mut c, true);
+    std::thread::sleep(Duration::from_secs(11));
+    let r = tell("countdown").unwrap();
+    assert_eq!(r["phase"], "countdown");
+    let g = c.call("ups.guard", Value::Null).unwrap();
+    assert_eq!(g["ledBy"], "nas", "{g}");
+    assert!(g["reason"].as_str().unwrap().starts_with("nas is shutting down for ups@nas"), "{g}");
+    let ev = c.call("events.sync", json!({"after": 0})).unwrap().to_string();
+    assert!(ev.contains("UPS shutdown in 5 min"), "{ev}");
+    assert_eq!(tell("idle").unwrap()["phase"], "idle");
+    assert_eq!(c.call("ups.guard", Value::Null).unwrap()["phase"], "idle");
+}
+
+fn http_get(addr: &str, path: &str) -> String {
+    let mut s = std::net::TcpStream::connect(addr).unwrap();
+    s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    write!(s, "GET {path} HTTP/1.1\r\nHost: x\r\n\r\n").unwrap();
+    let mut out = String::new();
+    std::io::Read::read_to_string(&mut s, &mut out).unwrap();
+    out
+}
+
+#[test]
+fn status_page_at_its_secret_path_only() {
+    let svc = start();
+    let dir = tempfile::tempdir().unwrap();
+    let addr = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().to_string();
+    let token = "0123456789abcdef".repeat(4);
+    std::fs::write(dir.path().join("token"), format!("{token}\n")).unwrap();
+    let config = dir.path().join("page.toml");
+    std::fs::write(&config, format!("[server]\nsocket = {:?}\n[statuspage]\nlisten = {addr:?}\n", svc.socket)).unwrap();
+    let _page = Link(
+        Command::new(BIN)
+            .args(["status-page", "--config"])
+            .arg(&config)
+            .env("NIGHTGRID_STATUS_TOKEN", dir.path().join("token"))
+            .stdin(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let t = Instant::now();
+    while std::net::TcpStream::connect(&addr).is_err() {
+        assert!(t.elapsed() < Duration::from_secs(10), "status page never listened");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let page = http_get(&addr, &format!("/{token}"));
+    assert!(page.starts_with("HTTP/1.1 200 OK\r\n"), "{page}");
+    assert!(page.contains("Content-Security-Policy: default-src 'none'"));
+    assert!(page.contains("Nightgrid Node ") && page.contains("Alerts"), "{page}");
+    assert!(http_get(&addr, "/").starts_with("HTTP/1.1 404"));
+    assert!(http_get(&addr, &format!("/{}", &token[..63])).starts_with("HTTP/1.1 404"));
+    let mut s = std::net::TcpStream::connect(&addr).unwrap();
+    write!(s, "POST /{token} HTTP/1.1\r\n\r\n").unwrap();
+    let mut out = String::new();
+    std::io::Read::read_to_string(&mut s, &mut out).unwrap();
+    assert!(out.starts_with("HTTP/1.1 405"), "{out}");
+}
+
+#[test]
+fn daily_summary_for_drift() {
+    let svc = start();
+    let mut c = Client::connect(&svc.socket, "e2e").unwrap();
+    assert_eq!(c.welcome.caps.get("summary"), Some(&1));
+    let s = c.call("summary.daily", Value::Null).unwrap();
+    assert_eq!(s["to"].as_i64().unwrap() - s["from"].as_i64().unwrap(), 86_400);
+    let facts: Vec<String> = serde_json::from_value(s["facts"].clone()).unwrap();
+    assert!(facts.iter().any(|f| f.starts_with("Active alerts")), "{facts:?}");
+    assert!(
+        facts.iter().any(|f| f.starts_with("Coverage:")),
+        "a new node says it hasn't watched the whole day: {facts:?}"
+    );
+    let week = c.call("summary.daily", json!({"hours": 168})).unwrap();
+    assert_eq!(week["to"].as_i64().unwrap() - week["from"].as_i64().unwrap(), 168 * 3600);
+    assert!(c.call("summary.daily", json!({"hours": 0})).is_err());
+}
+
+#[test]
+fn a_node_answers_while_it_pings() {
+    // Paired with itself: it must serve its own ping while making it.
+    let addr = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().to_string();
+    let a = start();
+    let keys = tempfile::tempdir().unwrap();
+    let _l = link(&a, keys.path(), &addr);
+    let v = latest(&a, |v| v["listening"].is_string());
+    let fp = v["fingerprint"].as_str().unwrap().to_owned();
+    let mut c = Client::connect(&a.socket, "e2e").unwrap();
+    let id = c.welcome.node.node_id.clone();
+    c.call("peers.set", json!({"peers": [{"id": id, "name": "self", "address": addr, "fingerprint": fp}]})).unwrap();
+    let v = latest(&a, |v| v["readings"][0]["at"].is_number());
+    assert_eq!(v["readings"][0]["ok"], true, "{v}");
+}

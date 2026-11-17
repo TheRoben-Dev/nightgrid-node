@@ -238,9 +238,18 @@ fn access(shared: &Shared) -> std::collections::BTreeMap<String, String> {
         ),
         ("power".to_owned(), power_access(shared)),
         ("jobs".to_owned(), if shared.config.jobs.enabled { "ok" } else { "off" }.to_owned()),
+        ("peers".to_owned(), peers_access(shared).to_owned()),
     ]
     .into_iter()
     .collect()
+}
+
+fn peers_list(shared: &Shared, s: &crate::peers::PeersState) -> nightgrid_node_proto::PeersList {
+    nightgrid_node_proto::PeersList {
+        peers: s.list.clone(),
+        interval: shared.config.peers.interval_secs,
+        serve: shared.config.peers.serve.clone(),
+    }
 }
 
 fn power_access(shared: &Shared) -> String {
@@ -255,6 +264,18 @@ fn checks_access(shared: &Shared, c: &crate::checks::ChecksState) -> &'static st
         "off"
     } else if c.fresh(shared.config.checks.interval_secs, crate::daemon::now_secs()) {
         "ok"
+    } else {
+        "denied"
+    }
+}
+
+/// "ok" while the link unit reports, "off" when it never has.
+fn peers_access(shared: &Shared) -> &'static str {
+    let p = shared.peers.lock().unwrap_or_else(|e| e.into_inner());
+    if p.fresh(shared.config.peers.interval_secs, crate::daemon::now_secs()) {
+        "ok"
+    } else if p.reported == 0 {
+        "off"
     } else {
         "denied"
     }
@@ -343,6 +364,8 @@ pub fn caps() -> Caps {
         (cap::CHECKS, 1),
         (cap::JOBS, 1),
         (cap::UPS, 1),
+        (cap::PEERS, 1),
+        (cap::SUMMARY, 1),
     ]
     .into_iter()
     .map(|(k, v)| (k.to_owned(), v))
@@ -383,7 +406,13 @@ fn dispatch(shared: &Shared, session: &mut Session, req: &Request) -> Result<Res
         };
         session.proto = Some(v);
         let client: String = h.client.chars().filter(|c| !c.is_control()).take(80).collect();
-        crate::info!("hello from {client:?} as uid {} (protocol {v})", session.uid);
+        // The node's own units (link, check runner, helpers) connect often.
+        // SAFETY: geteuid has no preconditions.
+        if session.uid.parse::<u32>().ok() == Some(unsafe { libc::geteuid() }) && client.starts_with("nightgrid-node") {
+            crate::debug!("hello from {client:?} as uid {} (protocol {v})", session.uid);
+        } else {
+            crate::info!("hello from {client:?} as uid {} (protocol {v})", session.uid);
+        }
         return Ok(Response::ok(0, Welcome { proto: v, node: shared.identity.clone(), caps: caps() }));
     }
     if session.proto.is_none() {
@@ -684,6 +713,103 @@ fn dispatch(shared: &Shared, session: &mut Session, req: &Request) -> Result<Res
             let st = shared.store.lock().unwrap_or_else(|e| e.into_inner());
             shared.bus.record(&st, &e).map_err(internal)?;
             Ok(Response::ok(0, Value::Null))
+        }
+        method::PEERS_SET => {
+            let p: nightgrid_node_proto::PeersList = params(&req.params)?;
+            crate::peers::validate(&p.peers).map_err(|e| Response::err(0, ErrorCode::BadRequest, e))?;
+            {
+                let st = shared.store.lock().unwrap_or_else(|e| e.into_inner());
+                crate::peers::save(&st, &p.peers).map_err(internal)?;
+            }
+            crate::info!("node-to-node peers updated by uid {} ({} peers)", session.uid, p.peers.len());
+            let mut s = shared.peers.lock().unwrap_or_else(|e| e.into_inner());
+            s.set(p.peers);
+            Ok(Response::ok(0, peers_list(shared, &s)))
+        }
+        method::PEERS_GET => {
+            let s = shared.peers.lock().unwrap_or_else(|e| e.into_inner());
+            Ok(Response::ok(0, peers_list(shared, &s)))
+        }
+        method::PEERS_LATEST => {
+            let mut l = shared
+                .peers
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .latest(&shared.config, crate::daemon::now_secs());
+            l.access = peers_access(shared).into();
+            Ok(Response::ok(0, l))
+        }
+        method::PEERS_REPORT => {
+            // Only the link unit, which runs as the service's own account.
+            // SAFETY: geteuid has no preconditions.
+            let me = unsafe { libc::geteuid() };
+            if session.uid.parse::<u32>().ok() != Some(me) {
+                return Err(Response::err(0, ErrorCode::Forbidden, "only the node-to-node link may report"));
+            }
+            let r: nightgrid_node_proto::PeersReport = params(&req.params)?;
+            let events = shared.peers.lock().unwrap_or_else(|e| e.into_inner()).take(r, crate::daemon::now_secs());
+            let st = shared.store.lock().unwrap_or_else(|e| e.into_inner());
+            for e in &events {
+                shared.bus.record(&st, e).map_err(internal)?;
+            }
+            Ok(Response::ok(0, Value::Null))
+        }
+        method::PEERS_INBOUND => {
+            // Only the link, which runs as the service's own account and has
+            // checked the peer's certificate.
+            // SAFETY: geteuid has no preconditions.
+            let me = unsafe { libc::geteuid() };
+            if session.uid.parse::<u32>().ok() != Some(me) {
+                return Err(Response::err(0, ErrorCode::Forbidden, "only the node-to-node link may pass requests on"));
+            }
+            let p: nightgrid_node_proto::PeerInbound = params(&req.params)?;
+            let peer =
+                shared.peers.lock().unwrap_or_else(|e| e.into_inner()).list.iter().find(|x| x.id == p.from).cloned();
+            let Some(peer) = peer else {
+                return Err(Response::err(0, ErrorCode::Forbidden, "not paired"));
+            };
+            if !shared.config.peers.serve.contains(&p.method) {
+                return Err(Response::err(
+                    0,
+                    ErrorCode::Forbidden,
+                    format!("{:?} isn't served here ([peers] serve)", p.method),
+                ));
+            }
+            match p.method.as_str() {
+                "ups" => {
+                    if !peer.follow_ups {
+                        return Err(Response::err(0, ErrorCode::Forbidden, "this host doesn't follow that node's UPS"));
+                    }
+                    if !shared.config.ups.shutdown {
+                        return Err(Response::err(
+                            0,
+                            ErrorCode::Forbidden,
+                            "UPS shutdown is off here ([ups] shutdown)",
+                        ));
+                    }
+                    let n: nightgrid_node_proto::UpsNotice = serde_json::from_value(p.params)
+                        .map_err(|e| Response::err(0, ErrorCode::BadRequest, e.to_string()))?;
+                    let steps = shared.ups_guard.lock().unwrap_or_else(|e| e.into_inner()).peer(
+                        &shared.config,
+                        &peer.name,
+                        &n,
+                        crate::daemon::now_secs(),
+                    );
+                    crate::upsguard::apply(shared, steps);
+                    let g = shared.ups_guard.lock().unwrap_or_else(|e| e.into_inner()).status(&shared.config);
+                    Ok(Response::ok(0, serde_json::json!({"phase": g.phase})))
+                }
+                m => Err(Response::err(0, ErrorCode::BadRequest, format!("unknown peer request {m:?}"))),
+            }
+        }
+        method::SUMMARY_DAILY => {
+            let p: nightgrid_node_proto::SummaryParams =
+                if req.params.is_null() { Default::default() } else { params(&req.params)? };
+            let hours = p.hours.unwrap_or(24);
+            if !(1..=168).contains(&hours) {
+                return Err(Response::err(0, ErrorCode::BadRequest, "hours must be 1-168"));
+            }
+            crate::summary::daily(shared, hours).map(|s| Response::ok(0, s)).map_err(internal)
         }
         method::UPS_GUARD => {
             let g = shared.ups_guard.lock().unwrap_or_else(|e| e.into_inner()).status(&shared.config);
