@@ -65,6 +65,8 @@ pub struct Shared {
     pub blocks: Mutex<crate::firewall::Blocks>,
     /// Where the login watcher sends addresses past `[block] threshold`.
     pub autoblock: Mutex<Option<std::sync::mpsc::Sender<String>>>,
+    /// The app's service checks and the runner's latest results.
+    pub checks: Mutex<crate::checks::ChecksState>,
 }
 
 impl Shared {
@@ -107,6 +109,7 @@ impl Shared {
             ports: Mutex::new(nightgrid_node_proto::PortsResult::default()),
             blocks: Mutex::new(crate::firewall::Blocks::default()),
             autoblock: Mutex::new(None),
+            checks: Mutex::new(crate::checks::ChecksState::default()),
         })
     }
 }
@@ -270,6 +273,10 @@ pub fn run(config: Config, paths: Paths) -> Result<(), String> {
         None
     };
     crate::firewall::load(&shared);
+    {
+        let list = crate::checks::load(&shared.store.lock().unwrap_or_else(|e| e.into_inner()));
+        shared.checks.lock().unwrap_or_else(|e| e.into_inner()).list = list;
+    }
     let autoblock = if crate::firewall::auto_enabled(&shared) && config.logins.enabled {
         let (b, tx) = crate::firewall::AutoBlocker::start(shared.clone()).map_err(|e| format!("auto-block: {e}"))?;
         *shared.autoblock.lock().unwrap_or_else(|e| e.into_inner()) = Some(tx);

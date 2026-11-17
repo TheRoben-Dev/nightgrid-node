@@ -15,6 +15,7 @@ The Nightgrid app repository is developed elsewhere and is read-only from here. 
 | [0009 · Usage and power](0009-usage-and-power.md) | N6a | proposed |
 | [0010 · Host security](0010-host-security.md) | N6b | proposed |
 | [0011 · Blocking addresses](0011-blocking.md) | N6c | proposed |
+| [0012 · Service checks](0012-service-checks.md) | N7a | proposed |
 
 Rules every spec follows:
 

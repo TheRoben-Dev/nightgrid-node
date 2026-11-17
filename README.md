@@ -29,6 +29,7 @@ While the app is closed, the node:
 | 📜 | **Watches logs** (opt-in): error bursts and new kinds of errors in the journal and containers, with the app's own detector, and the app's saved searches with alerts, every 10 minutes. Lines stay in memory and secret-looking ones are dropped. | 0.12 |
 | 🛡 | **Watches the attack surface**: a socket that starts listening (with the container publishing it) shows up in the timeline, louder when it's reachable from the network, and a burst of failed SSH logins becomes an alert. No privileges needed beyond the journal grant. | 0.14 |
 | 🚧 | **Blocks brute-forcers** (opt-in, off by default): addresses that keep failing SSH logins, or one you pick in the app, are blocked for a while in a firewall table of the node's own, which expires by itself. Never your LAN or tailnet, never an address that logged in recently, and every block is logged. | 0.15 |
+| 📡 | **Checks your services from inside the LAN** (opt-in): the app's HTTP(S) and TCP checks, with status codes and certificate expiry, every minute with the app closed, so "down" is told from "unreachable from my laptop". A separate runner does it, allowed to reach only the networks you list; the node itself stays offline. | 0.16 |
 | 📊 | **Measures per service, container and process**: CPU, memory, disk and network per systemd service and container (from cgroups), the busiest processes, and power draw from the CPU's energy counters (opt-in). Every second while you watch, every 10 s otherwise, with a day of one-minute history. | 0.13 |
 | ⚡ | **Pushes live**: while the app is connected, new events, alerts, container changes and metrics every 2 s are pushed as they happen, instead of the app polling over SSH. | 0.4 |
 
@@ -38,7 +39,7 @@ When the app reconnects, it asks for everything after its last cursor and merges
 
 See [docs/MILESTONES.md](docs/MILESTONES.md) for detail. The order is:
 
-1. **Node-to-node and service checks, scheduled jobs, group actions**: from inside the LAN, with the app closed.
+1. **Scheduled jobs, backup status and group actions**: from inside the LAN, with the app closed.
 2. **Upgrades with automatic revert, an optional tailnet transport and a status page.**
 
 Anything that acts on its own (self-healing, auto-block, scheduled power) is off unless you turn it on, and every run is logged.

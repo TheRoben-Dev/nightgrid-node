@@ -1,0 +1,59 @@
+# Nightgrid Node check runner (optional, off by default).
+# Installed by `nightgrid-node allow checks`; removed by `nightgrid-node deny checks`.
+# It runs the app's service checks (HTTP(S) status and certificates, TCP
+# connects) every [checks] interval_secs and hands the results to the main
+# service over its unix socket. It runs as the service's account with no
+# capabilities, and may connect only to [checks] networks (networks.conf next
+# to this unit, written from the config). The main service stays offline.
+
+[Unit]
+Description=Nightgrid Node check runner (service checks from inside the LAN)
+Documentation=https://github.com/TheRoben-Dev/nightgrid-node
+After=nightgrid-node.service network-online.target
+Wants=network-online.target
+PartOf=nightgrid-node.service
+
+[Service]
+Type=simple
+User=nightgrid-node
+Group=nightgrid-node
+ExecStart=/usr/local/bin/nightgrid-node checker
+Restart=on-failure
+RestartSec=30s
+TimeoutStopSec=5s
+
+CapabilityBoundingSet=
+NoNewPrivileges=yes
+
+# IP sockets, but only to the addresses networks.conf allows.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+IPAddressDeny=any
+
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+UMask=0077
+
+MemoryMax=64M
+TasksMax=16
+CPUWeight=20
+Nice=10
+
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+
+[Install]
+WantedBy=multi-user.target

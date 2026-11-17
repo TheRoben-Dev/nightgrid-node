@@ -41,7 +41,7 @@ pub fn parse_cidr(s: &str) -> Option<(IpAddr, u8)> {
     (n <= max).then_some((ip, n))
 }
 
-fn in_cidr(ip: IpAddr, (net, bits): (IpAddr, u8)) -> bool {
+pub fn in_cidr(ip: IpAddr, (net, bits): (IpAddr, u8)) -> bool {
     match (ip, net) {
         (IpAddr::V4(a), IpAddr::V4(b)) => {
             let m = if bits == 0 { 0 } else { u32::MAX << (32 - bits) };

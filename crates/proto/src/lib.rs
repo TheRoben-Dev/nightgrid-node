@@ -89,6 +89,13 @@ pub mod method {
     pub const PORTS_LIST: &str = "ports.list";
     /// Addresses blocked now, and the auto-block settings.
     pub const BLOCK_LIST: &str = "block.list";
+    /// The app's service checks for the node to run (replaces the list).
+    pub const CHECKS_SET: &str = "checks.set";
+    pub const CHECKS_GET: &str = "checks.get";
+    /// The latest result of each check.
+    pub const CHECKS_LATEST: &str = "checks.latest";
+    /// Internal: the check runner hands over results (service account only).
+    pub const CHECKS_REPORT: &str = "checks.report";
     /// Protocol 2: start pushing frames for streams.
     pub const SUBSCRIBE: &str = "subscribe";
     /// Protocol 2: stop pushing frames for streams.
@@ -158,6 +165,9 @@ pub mod cap {
     /// `firewall.block` / `firewall.unblock` actions, `block.list`, and the
     /// optional auto-block of failed-login bursts (0.15.0).
     pub const BLOCK: &str = "block";
+    /// `checks.set`, `checks.get`, `checks.latest`; service-down and
+    /// certificate alerts from inside the LAN (with `allow checks`, 0.16.0).
+    pub const CHECKS: &str = "checks";
 }
 
 /// Typed actions (N4). Root lists the ones the node may run in
@@ -879,6 +889,12 @@ pub struct AlertRules {
     /// Error bursts and new error patterns in the journal and container
     /// logs. Off by default, like the app.
     pub log_anomaly: bool,
+    /// A service check failing (`svc:<id>`), as in the app.
+    pub service_down: bool,
+    /// A checked HTTPS certificate expiring within `cert_days` (`svc:<id>:cert`).
+    pub cert_expiring: bool,
+    /// 1-365.
+    pub cert_days: u16,
     /// Failed-login bursts as alerts (node 0.14.0+). Not an app setting yet:
     /// off unless the app sends it, so older apps never get a kind they
     /// can't read.
@@ -897,6 +913,9 @@ impl Default for AlertRules {
             smart_warning: true,
             pool_degraded: true,
             log_anomaly: false,
+            service_down: true,
+            cert_expiring: true,
+            cert_days: 14,
             login_burst: false,
         }
     }
@@ -909,6 +928,9 @@ impl AlertRules {
         }
         if !(1..=90).contains(&self.forecast_days) {
             return Err("forecastDays must be 1-90".into());
+        }
+        if !(1..=365).contains(&self.cert_days) {
+            return Err("certDays must be 1-365".into());
         }
         Ok(())
     }
@@ -1028,6 +1050,83 @@ pub struct Listener {
     /// Well-known service on this port (`ssh`, `postgres`).
     #[serde(default)]
     pub service: Option<String>,
+}
+
+/// One service check the app asks the node to run. Same meaning as the
+/// app's `services::Service` check fields.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServiceCheck {
+    /// The app's service id, as text (alert key `svc:<id>`).
+    pub id: String,
+    pub name: String,
+    /// `http://`, `https://`, or `tcp://host:port` for a plain connect.
+    pub url: String,
+    /// Status codes that count as up, e.g. `200-399` (empty: 200-399).
+    #[serde(default)]
+    pub expect_status: String,
+    /// A self-signed or internal-CA certificate doesn't make it down.
+    #[serde(default)]
+    pub allow_untrusted: bool,
+}
+
+/// `checks.set` params and `checks.get` result.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChecksList {
+    pub checks: Vec<ServiceCheck>,
+    /// Seconds between rounds (root's `[checks] interval_secs`; ignored in `set`).
+    #[serde(default)]
+    pub interval: u32,
+}
+
+/// A certificate as the check saw it. Same as the app's `services::check::TlsInfo`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TlsInfo {
+    pub trusted: bool,
+    pub problem: Option<String>,
+    /// `notAfter`, unix seconds.
+    pub expires: Option<i64>,
+    pub subject: Option<String>,
+    pub issuer: Option<String>,
+}
+
+/// One check's outcome. Same as the app's `services::check::CheckResult`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckResult {
+    pub up: bool,
+    pub status: Option<u16>,
+    pub latency_ms: Option<u32>,
+    pub error: Option<String>,
+    pub tls: Option<TlsInfo>,
+}
+
+/// One check's latest result.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckReading {
+    pub id: String,
+    /// When it ran (unix seconds).
+    pub at: i64,
+    pub result: CheckResult,
+}
+
+/// `checks.report` params (internal).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChecksReport {
+    pub readings: Vec<CheckReading>,
+}
+
+/// `checks.latest`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChecksLatest {
+    /// `ok` (the runner reported recently), `denied` (root hasn't run
+    /// `allow checks`) or `off`.
+    pub access: String,
+    pub readings: Vec<CheckReading>,
 }
 
 /// One blocked address.

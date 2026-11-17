@@ -24,6 +24,8 @@ pub const UNIT: &str = include_str!("../../../dist/systemd/nightgrid-node.servic
 /// The opt-in network watch helper (`allow netwatch`).
 pub const NETWATCH_UNIT: &str = include_str!("../../../dist/systemd/nightgrid-node-netwatch.service");
 pub const NETWATCH_SERVICE: &str = "nightgrid-node-netwatch";
+pub const CHECKS_UNIT: &str = include_str!("../../../dist/systemd/nightgrid-node-checks.service");
+pub const CHECKS_SERVICE: &str = "nightgrid-node-checks";
 /// The opt-in root helper (`allow helper`): a socket and a per-connection service.
 pub const HELPER_SOCKET_UNIT: &str = include_str!("../../../dist/systemd/nightgrid-node-helper.socket");
 pub const HELPER_SERVICE_UNIT: &str = include_str!("../../../dist/systemd/nightgrid-node-helper@.service");
@@ -45,6 +47,9 @@ fn power_now(group: &str, mode: &str) -> String {
     )
 }
 
+/// Writes a drop-in's body from root's config.
+type DropinFn = fn(&Layout) -> String;
+
 /// An opt-in grant that installs units of its own rather than a drop-in.
 struct Extra {
     name: &'static str,
@@ -54,8 +59,8 @@ struct Extra {
     unit: &'static str,
     warning: &'static str,
     what: &'static str,
-    /// A drop-in written from the config next to the second file's unit.
-    dropin: Option<fn(&Layout) -> String>,
+    /// A drop-in (file name, body from the config) next to the last file's unit.
+    dropin: Option<(&'static str, DropinFn)>,
 }
 
 const NETWATCH: Extra = Extra {
@@ -80,7 +85,7 @@ const HELPER: Extra = Extra {
               [actions] units and to reboot or power off, but only for the actions you list in [actions] allow \
               in /etc/nightgrid-node/config.toml (none by default). The helper checks that file itself.",
     what: "root helper",
-    dropin: Some(helper_dropin),
+    dropin: Some(("rollback.conf", helper_dropin)),
 };
 
 const HEALTH: Extra = Extra {
@@ -112,14 +117,15 @@ fn helper_dropin(layout: &Layout) -> String {
 
 impl Layout {
     fn extra_dropin(&self, e: &Extra) -> PathBuf {
-        self.system_unit(&format!("{}.d", e.files[e.files.len() - 1].0)).join("rollback.conf")
+        let name = e.dropin.map_or("rollback.conf", |(n, _)| n);
+        self.system_unit(&format!("{}.d", e.files[e.files.len() - 1].0)).join(name)
     }
     fn write_extra(&self, e: &Extra, rep: &mut Report, verb: &str) -> Result<(), String> {
         for (name, body) in e.files {
             write_file(&self.system_unit(name), body, 0o644)?;
             rep.step(format!("{verb} {}", self.system_unit(name).display()));
         }
-        if let Some(f) = e.dropin {
+        if let Some((_, f)) = e.dropin {
             let path = self.extra_dropin(e);
             std::fs::create_dir_all(path.parent().unwrap_or(Path::new("/")))
                 .map_err(|err| format!("{}: {err}", path.display()))?;
@@ -139,7 +145,32 @@ impl Layout {
     }
 }
 
-const EXTRAS: [&Extra; 3] = [&NETWATCH, &HELPER, &HEALTH];
+const CHECKS: Extra = Extra {
+    name: "checks",
+    files: &[("nightgrid-node-checks.service", CHECKS_UNIT)],
+    unit: CHECKS_SERVICE,
+    warning: "the check runner can now open connections to the networks in [checks] networks (private ranges \
+              by default) to run the app's service checks. It runs as the service's account with no \
+              capabilities; the main service still has no network access. Run allow checks again after \
+              changing the networks.",
+    what: "check runner",
+    dropin: Some(("networks.conf", checks_dropin)),
+};
+
+/// The runner may reach exactly root's networks.
+fn checks_dropin(layout: &Layout) -> String {
+    let nets = crate::config::Config::load(&layout.config()).map(|c| c.checks.networks).unwrap_or_default();
+    let mut s = String::from(
+        "# Written by `nightgrid-node allow checks` from [checks] networks in /etc/nightgrid-node/config.toml.\n\
+         # Run that command again after changing the list.\n[Service]\n",
+    );
+    for n in nets.iter().filter(|n| crate::firewall::parse_cidr(n).is_some()) {
+        s.push_str(&format!("IPAddressAllow={}\n", n.trim()));
+    }
+    s
+}
+
+const EXTRAS: [&Extra; 4] = [&NETWATCH, &HELPER, &HEALTH, &CHECKS];
 pub const SYSUSERS: &str = "# Nightgrid Node service account (no login shell, no password).\n\
                             u nightgrid-node - \"Nightgrid Node\" /var/lib/nightgrid-node\n";
 
@@ -442,6 +473,9 @@ pub enum Grant {
     Health,
     /// Group read access to RAPL energy counters (power draw).
     Power,
+    /// The service check runner: a separate unit with network access to
+    /// `[checks] networks` only.
+    Checks,
 }
 
 impl Grant {
@@ -453,6 +487,7 @@ impl Grant {
             "helper" => Some(Self::Helper),
             "health" => Some(Self::Health),
             "power" => Some(Self::Power),
+            "checks" => Some(Self::Checks),
             _ => None,
         }
     }
@@ -464,6 +499,7 @@ impl Grant {
             Self::Helper => "helper",
             Self::Health => "health",
             Self::Power => "power",
+            Self::Checks => "checks",
         }
     }
     fn extra(self) -> Option<&'static Extra> {
@@ -471,6 +507,7 @@ impl Grant {
             Self::Netwatch => Some(&NETWATCH),
             Self::Helper => Some(&HELPER),
             Self::Health => Some(&HEALTH),
+            Self::Checks => Some(&CHECKS),
             _ => None,
         }
     }
@@ -515,6 +552,10 @@ pub fn allow(
             rep.step("enabled at boot, not started".to_string());
         } else {
             sys.run("systemctl", &["enable", "--now", e.unit])?;
+            if std::ptr::eq(e, &CHECKS) {
+                // Already running: pick up new networks.
+                sys.run("systemctl", &["restart", e.unit])?;
+            }
             rep.step(format!("{} started", e.what));
         }
         return Ok(rep);
@@ -536,7 +577,9 @@ pub fn allow(
         return Ok(rep);
     }
     let body = match grant {
-        Grant::Netwatch | Grant::Helper | Grant::Health | Grant::Power => unreachable!("handled above"),
+        Grant::Netwatch | Grant::Helper | Grant::Health | Grant::Power | Grant::Checks => {
+            unreachable!("handled above")
+        }
         Grant::Docker => {
             let group = socket_group(sys, socket, layout.is_system())?;
             rep.warnings.push(format!(
@@ -739,6 +782,34 @@ mod tests {
         allow(&layout, &mut sys, Grant::Netwatch, Path::new("/x"), true).unwrap();
         uninstall(&layout, &mut sys, false).unwrap();
         assert!(!layout.netwatch_unit().exists());
+    }
+
+    #[test]
+    fn allow_and_deny_checks() {
+        let (_d, layout, exe) = setup();
+        let mut sys = FakeSys::default();
+        install(&layout, &mut sys, &exe, &InstallOptions::default()).unwrap();
+        let rep = allow(&layout, &mut sys, Grant::Checks, Path::new("/x"), false).unwrap();
+        assert!(rep.warnings[0].contains("no capabilities"));
+        let unit = std::fs::read_to_string(layout.system_unit("nightgrid-node-checks.service")).unwrap();
+        assert!(
+            unit.contains("CapabilityBoundingSet=\n")
+                && unit.contains("IPAddressDeny=any")
+                && unit.contains("User=nightgrid-node")
+        );
+        let dropin = std::fs::read_to_string(layout.extra_dropin(&CHECKS)).unwrap();
+        assert!(
+            dropin.contains("IPAddressAllow=192.168.0.0/16\n") && dropin.contains("IPAddressAllow=::1/128\n"),
+            "{dropin}"
+        );
+        assert!(dropin.ends_with("networks.conf") || layout.extra_dropin(&CHECKS).ends_with("networks.conf"));
+        assert!(sys.log.ends_with(&[
+            "systemctl enable --now nightgrid-node-checks".to_string(),
+            "systemctl restart nightgrid-node-checks".to_string()
+        ]));
+        deny(&layout, &mut sys, Grant::Checks, false).unwrap();
+        assert!(!layout.system_unit("nightgrid-node-checks.service").exists());
+        assert!(!layout.extra_dropin(&CHECKS).exists());
     }
 
     #[test]

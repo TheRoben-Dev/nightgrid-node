@@ -88,18 +88,19 @@ Scope:
 
 ## N7 · Node-to-node and service checks, jobs, group actions
 
+- **N7a (0.16.0):** service checks (HTTP(S), TLS expiry, TCP) through a separate network-limited runner (N-039). App spec 0012. Node-to-node probes are TCP checks between nodes.
 - Service checks from the node (HTTP(S), TCP, TLS expiry) and node-to-node probes, so the app can tell "really down" from "only unreachable over the tailnet". First outbound network: a systemd drop-in that allows exactly the configured addresses.
 - Scheduled jobs that run with the app closed: backups, test restores, update windows, reboots. Results kept for the app; power jobs opt-in and audited.
 - Backup job status (restic/borg/rsync, moved from N5): last run, result and staleness alerts for the jobs the app defines.
 - Group actions coordinated by one node: UPS group shutdown, staged restarts across nodes.
-- App spec 0012.
+- App specs 0012 and later.
 
 ## N8 · Upgrades, tailnet and status page
 
 - `upgrade`: verified binary, health check after restart, automatic revert on failure.
 - Optional tailnet listener with mutual key authentication.
 - Optional read-only status page over the tailnet only, off by default, auth required.
-- App spec 0013.
+- An app spec.
 
 ## N9 · DRIFT helpers
 
