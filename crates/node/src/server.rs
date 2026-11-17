@@ -323,6 +323,7 @@ pub fn caps() -> Caps {
         (cap::HEALTH, 1),
         (cap::LOGS, 1),
         (cap::USAGE, 1),
+        (cap::SECURITY, 1),
     ]
     .into_iter()
     .map(|(k, v)| (k.to_owned(), v))
@@ -561,6 +562,11 @@ fn dispatch(shared: &Shared, session: &mut Session, req: &Request) -> Result<Res
         method::USAGE_LATEST => {
             let u = shared.usage.lock().unwrap_or_else(|e| e.into_inner()).clone();
             Ok(Response::ok(0, u))
+        }
+        method::PORTS_LIST => {
+            // `at` is 0 until the first read, and stays 0 with [ports] off.
+            let p = shared.ports.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            Ok(Response::ok(0, p))
         }
         method::USAGE_HISTORY => {
             let p: nightgrid_node_proto::UsageHistoryParams = params(&req.params)?;

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.14.0 · N6b (unreleased)
+
+- Listening ports: every 15 s (`[ports] interval_secs`) the node reads the kernel's socket tables (no privileges) and records `port` events when a socket starts or stops listening ("new listener 6379/tcp (redis)", `warn` when reachable from the network). `ports.list` with the app's `Listener` fields, and the containers that publish each port. `containers.list` entries gain `ports`.
+- Failed-login bursts as alerts: `loginBurst` (key `logins:burst`) while at least `[logins] burst` (default 20) failed SSH logins fall in 5 minutes, when the app turns `loginBurst` on in its alert rules.
+- A wider file baseline (`[files] baseline`, default on): ld.so.preload, PAM, profile, cron directories and root's crontabs, sysctl, modprobe, package sources, Docker's daemon.json, enabled units, root's and every login user's `authorized_keys`, and running containers' compose files. With `allow health`, the read-only health helper takes these snapshots so homes and root-only files are covered (its unit now reads homes read-only). Cron, PAM and `authorized_keys` changes are `warn`.
+- New capability `security` 1.
+
 ## 0.13.0 · N6a (unreleased)
 
 - Usage per systemd service and per container (CPU, memory, disk read/write and, for containers with their own network, traffic) from cgroup v2, and the 15 busiest process names (CPU, resident memory, how many) from `/proc`. Every 10 s, every second while anyone subscribes to the new `usage` stream.

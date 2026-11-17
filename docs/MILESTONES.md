@@ -77,12 +77,13 @@ Scope:
 ## N6 · Fine-grained stats and host security
 
 - **N6a (0.13.0):** per-service, per-container and per-process usage and RAPL power (N-036). App spec 0009.
+- **N6b (0.14.0):** listening ports (`ports.list`, `port` events), login-burst alerts, wider file baseline through the health helper (N-037). App spec 0010.
 
 - Per-process and per-container CPU, I/O and network at 1 s while the app watches, 10 s otherwise, kept 24 h and downsampled into minutes.
 - Power draw from RAPL (powercap, needs read access root grants) or the UPS.
 - File integrity baselines for `/etc`, compose files and `authorized_keys`; newly listening ports; failed-login bursts as alerts.
 - Optional auto-block of failed-login bursts (nftables set through the root helper), off by default, time-limited, audited.
-- App spec 0009.
+- App specs 0009, 0010.
 
 ## N7 · Node-to-node and service checks, jobs, group actions
 
@@ -90,14 +91,14 @@ Scope:
 - Scheduled jobs that run with the app closed: backups, test restores, update windows, reboots. Results kept for the app; power jobs opt-in and audited.
 - Backup job status (restic/borg/rsync, moved from N5): last run, result and staleness alerts for the jobs the app defines.
 - Group actions coordinated by one node: UPS group shutdown, staged restarts across nodes.
-- App spec 0010.
+- App spec 0011.
 
 ## N8 · Upgrades, tailnet and status page
 
 - `upgrade`: verified binary, health check after restart, automatic revert on failure.
 - Optional tailnet listener with mutual key authentication.
 - Optional read-only status page over the tailnet only, off by default, auth required.
-- App spec 0011.
+- App spec 0012.
 
 ## N9 · DRIFT helpers
 

@@ -101,6 +101,7 @@ The node never buffers without bound for a slow client: each stream keeps a shor
 | `health` 1 | `health.latest`; SMART, pool and UPS alerts; update events (with `allow health`) | N5a |
 | `logs` 1 | `logs.status`, `logs.samples`, `logs.searches.get`, `logs.searches.set`; log alerts | N5b |
 | `usage` 1 | `usage.latest`, `usage.history`, the `usage` stream; power (with `allow power`) | N6a |
+| `security` 1 | `ports.list`; `port` events; `loginBurst` alerts; the wider file baseline; `ports` on containers | N6b |
 
 ### `node.info` (`node` 1)
 
@@ -170,9 +171,10 @@ The cursor is the event's `seq`, which only grows.
            "title": "server01", "detail": "/srv is 91% full (40 GB free)", "since": 1763290000, "resolved": null}}
 ```
 
-- `kind`: `alert` (fired, worse, or changed: `level: info` when it got better), `recovered` (`level: ok`, `alert.resolved` set), `boot`, `outage`, `container` (N1b), `login` and `file` (N2b), `network` (N3a); unknown kinds read as `other`.
+- `kind`: `alert` (fired, worse, or changed: `level: info` when it got better), `recovered` (`level: ok`, `alert.resolved` set), `boot`, `outage`, `container` (N1b), `login` and `file` (N2b), `network` (N3a), `action` (N4a), `port` (N6b); unknown kinds read as `other`.
 - `login`: "alice logged in from 10.0.0.5" (`detail`: "ssh, publickey"), or failed logins summed per minute: "failed login for root from 192.0.2.7" / "12 failed logins from 3 addresses" (`detail`: users and the top addresses; `warn` from 10 failures). Needs `allow journal`.
-- `file`: "changed /etc/ssh/sshd_config", "added /etc/cron.d/backup", "removed …". `detail` lists size, a short SHA-256, mode and owner changes, never contents; "(while the node was not running)" when found at start. `warn` for SSH, sudoers, passwd, shadow and group files.
+- `file`: "changed /etc/ssh/sshd_config", "added /etc/cron.d/backup", "removed …". `detail` lists size, a short SHA-256, mode and owner changes, never contents; "(while the node was not running)" when found at start. `warn` for SSH (including `authorized_keys`), sudoers, passwd, shadow, group, cron, PAM and `ld.so.preload` files. With `[files] baseline` (default on, 0.14.0) the node also watches more of `/etc`, root's and every login user's `authorized_keys` and running containers' compose files; with `allow health` the read-only health helper takes those snapshots, so files the service can't read (homes, root's crontabs) are seen too, with hashes.
+- `port` (0.14.0): "new listener 8080/tcp (http-alt)" (`detail`: "on every interface, published by container web"; `warn` when reachable from the network, i.e. bound to every interface or a specific address, with a note for databases and caches) and "stopped listening 8080/tcp (http-alt)" (`info`). A socket must be there (or gone) in two reads in a row. Unconnected UDP sockets in the ephemeral range are listed but not reported. "(while the node was not running)" when found at start.
 - `network`: "new device 192.168.1.23" (`detail`: "aa:bb:cc:dd:ee:ff on eth0"), "N new devices" (more than 20 in one read), "device moved 192.168.1.20 → 192.168.1.21" (a new lease), "address 192.168.1.50 answers from a new MAC" (`detail`: "old → new"), "IP conflict on 192.168.1.50" (`warn`: the address keeps switching between MACs; `critical` on the gateway), "gateway 192.168.1.1 answers from a new MAC" (`warn`: a replaced router, or ARP spoofing), and one "network watch started" on a fresh install. With `allow netwatch` (N3b): "DHCP server 192.168.1.1" (the first one seen, or one root listed), "another DHCP server on the LAN: 192.168.1.66" (`warn`: possibly rogue), "DHCP server 192.168.1.1 hands out a different router / DNS / router and DNS" (`warn`).
 - `level`: `info`, `ok`, `warn`, `critical`.
 - `outage` events carry `"outage": {"start", "end", "state": "down" | "asleep"}`. Titles: `Down` (the host or node went away without a clean stop), `Restarted` (clean stop, then a new boot), `Suspended` (the host slept).
@@ -211,6 +213,8 @@ The node evaluates the rules it has implemented with the app's field names. `set
 {"enabled": true, "diskFull": true, "diskPercent": 90, "diskForecast": true, "forecastDays": 14}
 ```
 
+`loginBurst` (0.14.0, default `false`; not an app setting yet, so the app turns it on when it knows the `loginBurst` alert kind) raises a `loginBurst` alert, key `logins:burst`, while at least `[logins] burst` (root's config, default 20) failed SSH logins fall in the last 5 minutes; `critical` at ten times that. Needs `allow journal`.
+
 `diskPercent` must be 50–99 and `forecastDays` 1–90, else `bad_request`. Rules are stored in the node's state directory and survive restarts and upgrades.
 
 ### `containers.list` (`containers` 1)
@@ -220,7 +224,8 @@ What the watcher last read (every 15 s by default):
 ```json
 {"access": "ok", "at": 1763290000, "containers": [
   {"id": "0123456789ab", "name": "web", "image": "nginx:1.27", "state": "running",
-   "status": "Up 2 hours (healthy)", "health": "healthy", "project": "site"}
+   "status": "Up 2 hours (healthy)", "health": "healthy", "project": "site",
+   "ports": [{"proto": "tcp", "addr": "0.0.0.0", "port": 8080, "privatePort": 80}]}
 ]}
 ```
 
@@ -376,6 +381,7 @@ Alerts (`alerts.active`, `alert` events), with the app's keys and switches:
 | `poolDegraded` | `pool:<Kind>:<name>` | a pool is `warn` or `bad` | `poolDegraded` |
 | `upsOnBattery` | `ups:<target>:power` | on battery (`warn`); low battery or under 5 minutes left (`critical`) | always (with `enabled`) |
 | `upsOnBattery` | `ups:<target>:rb` | the UPS asks for a new battery (`warn`) | always |
+| `loginBurst` | `logins:burst` | at least `[logins] burst` failed SSH logins in 5 minutes (`warn`), ten times that (`critical`); 0.14.0, needs `allow journal` | `loginBurst` (off by default) |
 
 Info events (`other`): "N package update(s) available" when the count goes from zero to some, and "reboot required" when it becomes required.
 
@@ -438,6 +444,21 @@ A finding stays active for at least 150 s, then clears at the next round without
 ### `usage.history` (`usage` 1)
 
 Params `{"kind": "service", "name": "nginx.service", "since": 1763200000}` (`since` defaults to, and is at most, a day ago) → `{"points": [{"ts", "cpu", "mem", "ioRead", "ioWrite", "netRx", "netTx", "watts"}]}`: one-minute averages, oldest first. Power is `{"kind": "power", "name": "total"}` or a domain name. A minute is stored for services and containers that used any CPU or memory, the listed process names and power.
+
+### `ports.list` (`security` 1)
+
+The sockets listening on this host at the last read (every 15 s, `[ports] interval_secs`), from `/proc/net/{tcp,tcp6,udp,udp6}`, plus ports containers publish:
+
+```json
+{"at": 1763290000, "listeners": [
+  {"proto": "tcp", "addr": "0.0.0.0", "port": 22, "scope": "all", "process": null, "container": null, "service": "ssh"},
+  {"proto": "tcp", "addr": "0.0.0.0", "port": 8080, "scope": "all", "process": null, "container": "web", "service": "http-alt"}
+]}
+```
+
+- Same fields as the app's `Listener` (security audit, M10d). `scope`: `local`, `vpn`, `address` or `all`. `0.0.0.0` and `::` for one port are one entry.
+- `process` is always `null`: the kernel only shows a socket's process to its owner or root. The app's own audit over SSH still fills it.
+- `container` needs `allow docker`. `at` is 0 until the first read and with `[ports]` off.
 
 ## Planned (not in version 1 yet)
 

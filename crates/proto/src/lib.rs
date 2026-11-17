@@ -85,6 +85,8 @@ pub mod method {
     pub const USAGE_LATEST: &str = "usage.latest";
     /// One-minute usage of one service, container, process name or power, for a day.
     pub const USAGE_HISTORY: &str = "usage.history";
+    /// The sockets listening on this host now, with the containers publishing them.
+    pub const PORTS_LIST: &str = "ports.list";
     /// Protocol 2: start pushing frames for streams.
     pub const SUBSCRIBE: &str = "subscribe";
     /// Protocol 2: stop pushing frames for streams.
@@ -148,6 +150,9 @@ pub mod cap {
     /// `usage.latest`, `usage.history`, the `usage` stream; power from RAPL
     /// (needs `allow power`).
     pub const USAGE: &str = "usage";
+    /// `ports.list` and `port` events for sockets that start or stop
+    /// listening; login-burst alerts; the wider file baseline (0.14.0).
+    pub const SECURITY: &str = "security";
 }
 
 /// Typed actions (N4). Root lists the ones the node may run in
@@ -556,6 +561,9 @@ pub enum AlertKind {
     PoolDegraded,
     UpsOnBattery,
     LogMatch,
+    /// Many failed SSH logins in a few minutes (`loginBurst` in the rules;
+    /// the app must opt in, since older apps don't know this kind).
+    LoginBurst,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -723,6 +731,8 @@ pub enum EventKind {
     Network,
     /// An action ran, was dry-run, failed or was refused (N4).
     Action,
+    /// A socket started or stopped listening (0.14.0).
+    Port,
     /// Kinds added by newer nodes.
     #[serde(other)]
     Other,
@@ -853,6 +863,10 @@ pub struct AlertRules {
     /// Error bursts and new error patterns in the journal and container
     /// logs. Off by default, like the app.
     pub log_anomaly: bool,
+    /// Failed-login bursts as alerts (node 0.14.0+). Not an app setting yet:
+    /// off unless the app sends it, so older apps never get a kind they
+    /// can't read.
+    pub login_burst: bool,
 }
 
 impl Default for AlertRules {
@@ -867,6 +881,7 @@ impl Default for AlertRules {
             smart_warning: true,
             pool_degraded: true,
             log_anomaly: false,
+            login_burst: false,
         }
     }
 }
@@ -944,6 +959,68 @@ pub struct ContainerInfo {
     pub health: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project: Option<String>,
+    /// Host ports it publishes (0.14.0).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ports: Vec<PublishedPort>,
+    /// Its compose files (from the engine's labels); node-internal.
+    #[serde(skip)]
+    pub compose_files: Vec<String>,
+}
+
+/// A host port a container publishes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PublishedPort {
+    /// `tcp` or `udp`.
+    pub proto: String,
+    /// Host address; `0.0.0.0` for every interface.
+    pub addr: String,
+    pub port: u16,
+    pub private_port: u16,
+}
+
+/// Who can reach a socket, judged from the bound address alone. Same as the
+/// app's `system::security::Scope` (commit 8eedcf2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Scope {
+    /// Loopback only.
+    Local,
+    /// A VPN address (Tailscale/CGNAT 100.64.0.0/10 or Tailscale's IPv6 range).
+    Vpn,
+    /// One specific address (often the LAN).
+    Address,
+    /// Every interface (`0.0.0.0`, `::`).
+    All,
+}
+
+/// One listening socket. Same fields as the app's `system::security::Listener`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Listener {
+    /// `tcp` or `udp`.
+    pub proto: String,
+    pub addr: String,
+    pub port: u16,
+    pub scope: Scope,
+    /// Process name; the node only sees its own (the app's audit adds the rest).
+    #[serde(default)]
+    pub process: Option<String>,
+    /// Container publishing it (needs `allow docker`).
+    #[serde(default)]
+    pub container: Option<String>,
+    /// Well-known service on this port (`ssh`, `postgres`).
+    #[serde(default)]
+    pub service: Option<String>,
+}
+
+/// `ports.list`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PortsResult {
+    /// When the sockets were read (unix seconds).
+    pub at: i64,
+    pub listeners: Vec<Listener>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

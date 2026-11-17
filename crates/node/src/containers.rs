@@ -364,6 +364,8 @@ mod tests {
             status: status.into(),
             health: None,
             project: None,
+            ports: vec![],
+            compose_files: vec![],
         }
     }
 

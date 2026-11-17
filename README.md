@@ -22,11 +22,12 @@ While the app is closed, the node:
 | 🐳 | **Watches containers** (opt-in): states, crashes, restarts, out-of-memory kills and health changes, through Docker's or Podman's socket. Read-only. | 0.3 |
 | 🗒 | **Keeps a timeline**: alerts firing and clearing, outages, boots and container events, numbered so the app pulls only what's new. | 0.2 |
 | 🔑 | **Records logins** (opt-in): SSH logins and failed logins (summed per minute), from the journal. | 0.5 |
-| 📄 | **Watches important files**: `sshd_config`, sudoers, `passwd`/`shadow`, cron, `hosts`, `fstab`, systemd units. It records what changed (size, hash, owner, mode), never the contents. | 0.5 |
+| 📄 | **Watches important files**: `sshd_config`, sudoers, `passwd`/`shadow`, cron, `hosts`, `fstab`, systemd units, and a wider baseline: PAM, `ld.so.preload`, package sources, everyone's `authorized_keys` and your compose files. It records what changed (size, hash, owner, mode), never the contents. | 0.5 / 0.14 |
 | 🌐 | **Watches the LAN**: keeps an inventory of devices from the kernel's neighbour table and notes new devices, address changes, IP conflicts and a gateway that suddenly answers from another MAC (possible ARP spoofing). No privileges, nothing sent. With `allow netwatch`, a listen-only helper also spots DHCP servers, a rogue one, and devices' names. | 0.6 / 0.7 |
 | 🩹 | **Heals** (opt-in): typed actions root allows (restart, start or stop a container or a listed systemd unit, prune dangling images, reboot or power off) from the app or from self-healing rules such as "unhealthy for 5 minutes → restart". Rules are off and dry-run by default, rate-limited, give up when the problem doesn't clear, and every run lands in a tamper-evident audit log. Risky edits can be wrapped in a rollback that puts the files back unless the app confirms it still reaches the host. | 0.8–0.10 |
 | 🩺 | **Checks host health** (opt-in): disk SMART, ZFS/mdadm/Btrfs pools, pending updates and reboot-required, and UPS status through NUT, with the app's own checks and verdicts, through a read-only helper. Alerts for failing disks, degraded pools and power cuts while the app is closed. | 0.11 |
 | 📜 | **Watches logs** (opt-in): error bursts and new kinds of errors in the journal and containers, with the app's own detector, and the app's saved searches with alerts, every 10 minutes. Lines stay in memory and secret-looking ones are dropped. | 0.12 |
+| 🛡 | **Watches the attack surface**: a socket that starts listening (with the container publishing it) shows up in the timeline, louder when it's reachable from the network, and a burst of failed SSH logins becomes an alert. No privileges needed beyond the journal grant. | 0.14 |
 | 📊 | **Measures per service, container and process**: CPU, memory, disk and network per systemd service and container (from cgroups), the busiest processes, and power draw from the CPU's energy counters (opt-in). Every second while you watch, every 10 s otherwise, with a day of one-minute history. | 0.13 |
 | ⚡ | **Pushes live**: while the app is connected, new events, alerts, container changes and metrics every 2 s are pushed as they happen, instead of the app polling over SSH. | 0.4 |
 
@@ -36,7 +37,7 @@ When the app reconnects, it asks for everything after its last cursor and merges
 
 See [docs/MILESTONES.md](docs/MILESTONES.md) for detail. The order is:
 
-1. **Host security**: new listening ports, failed-login bursts, wider file integrity, optional auto-block.
+1. **Optional auto-block** of failed-login bursts (off by default, time-limited, logged).
 2. **Node-to-node and service checks, scheduled jobs, group actions**: from inside the LAN, with the app closed.
 3. **Upgrades with automatic revert, an optional tailnet transport and a status page.**
 

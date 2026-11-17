@@ -95,6 +95,10 @@ impl Engine {
             conds.extend(h.ups.iter().cloned());
             drop(h);
             conds.extend(shared.logs.lock().unwrap_or_else(|e| e.into_inner()).conditions.iter().cloned());
+            if rules.login_burst {
+                let mut l = shared.logins.lock().unwrap_or_else(|e| e.into_inner());
+                conds.extend(l.condition(host, shared.config.logins.burst, now));
+            }
         }
         let changes = self.tracker.report(conds, now);
         if !changes.is_empty() {

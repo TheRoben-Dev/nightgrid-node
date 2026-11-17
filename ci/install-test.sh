@@ -372,6 +372,50 @@ PY
   fi
   /usr/local/bin/nightgrid-node deny power >/dev/null
   test ! -e /etc/udev/rules.d/70-nightgrid-node-power.rules || fail "power rule left after deny"
+
+  say "security: a new listening port, a login-burst alert, authorized_keys through the health helper"
+  wait_for() {
+    i=0; until ev | grep -qE "\"title\":\"$1"; do
+      i=$((i+1)); [ $i -lt "$2" ] || { ev | tr '}' '\n' | tail -15; fail "no event: $1"; }; sleep 1; done
+  }
+  sed -i '/^\[ports\]/,$ s/^interval_secs = 15$/interval_secs = 5/' /etc/nightgrid-node/config.toml
+  grep -A6 '^\[ports\]' /etc/nightgrid-node/config.toml | grep -q '^interval_secs = 5$' || fail "no [ports] interval in the config"
+  /usr/local/bin/nightgrid-node allow journal >/dev/null
+  /usr/local/bin/nightgrid-node allow health >/dev/null
+  systemctl restart nightgrid-node
+  i=0; until q node.info >/dev/null 2>&1; do i=$((i+1)); [ $i -lt 30 ] || fail "not back after restart"; sleep 1; done
+  as_user "echo '{\"id\":1,\"method\":\"hello\",\"params\":{\"protoMin\":1,\"protoMax\":2}}' | /usr/local/bin/nightgrid-node bridge" | grep -q '"security":1' || fail "no security cap"
+  python3 -m http.server 18765 --bind 0.0.0.0 >/dev/null 2>&1 &
+  srv=$!
+  wait_for "new listener 18765/tcp" 60
+  q ports.list | grep -q '"port":18765,"process":null,"proto":"tcp","scope":"all"' || { q ports.list; fail "18765 not in ports.list"; }
+  ev | tr '}' '\n' | grep 'listener 18765' | head -1 | grep -q '"level":"warn"' || fail "a port on every interface should warn"
+  kill $srv
+  wait_for "stopped listening 18765/tcp" 60
+
+  q "alerts.rules.set '{\"loginBurst\":true}'" | grep -q '"loginBurst":true' || fail "loginBurst rule"
+  sleep 3
+  for n in $(seq 1 25); do logger -t sshd "Failed password for root from 203.0.113.50 port $n ssh2"; done
+  i=0; until q alerts.active | grep -q '"key":"logins:burst"'; do
+    i=$((i+1)); [ $i -lt 120 ] || { q alerts.active; journalctl -u nightgrid-node --no-pager -n 20; fail "no login-burst alert"; }; sleep 1; done
+  q alerts.active | grep -q '203.0.113.50 ×25' || { q alerts.active; fail "burst alert detail"; }
+  q "alerts.rules.set '{\"loginBurst\":false}'" >/dev/null
+
+  useradd -m -s /bin/sh ngnkeys
+  chmod 700 /home/ngnkeys
+  mkdir -m 700 /home/ngnkeys/.ssh
+  echo "ssh-ed25519 AAAAngnsecretkey ci" > /home/ngnkeys/.ssh/authorized_keys
+  chown -R ngnkeys: /home/ngnkeys/.ssh && chmod 600 /home/ngnkeys/.ssh/authorized_keys
+  as_user "cat /home/ngnkeys/.ssh/authorized_keys" 2>/dev/null && fail "the service can read a user's keys itself"
+  wait_for "added /home/ngnkeys/.ssh/authorized_keys" 90
+  ev | tr '}' '\n' | grep 'ngnkeys/.ssh/authorized_keys' | head -1
+  ev | grep -q 'AAAAngnsecretkey' && fail "key contents leaked into an event"
+  echo "ssh-ed25519 AAAAngnother ci2" >> /home/ngnkeys/.ssh/authorized_keys
+  wait_for "changed /home/ngnkeys/.ssh/authorized_keys" 90
+  ev | tr '}' '\n' | grep 'changed /home/ngnkeys' | head -1 | grep -q 'sha256' || fail "no hash in the change (read through the helper)"
+  userdel -r ngnkeys 2>/dev/null || true
+  /usr/local/bin/nightgrid-node deny health >/dev/null
+  /usr/local/bin/nightgrid-node deny journal >/dev/null
 fi
 
 say "reinstall (upgrade in place) keeps the node id"

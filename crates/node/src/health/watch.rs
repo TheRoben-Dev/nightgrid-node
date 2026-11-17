@@ -30,7 +30,7 @@ const MAX_OUTPUT: u64 = 4 << 20;
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ReadRequest {
-    /// `smart`, `pools`, `updates` or `ups`.
+    /// `smart`, `pools`, `updates`, `ups` or `files`.
     pub read: String,
     /// The UPS, for `ups`.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -101,6 +101,9 @@ pub fn handle(config: &Config, req: &ReadRequest) -> ReadReply {
                 }
             }
         }
+        // Snapshots of the files root's [files] config lists (metadata and a
+        // short hash only, never contents), for the ones the service can't read.
+        "files" => crate::files::helper_snapshot(&config.files),
         other => Err(format!("unknown read {other:?}")),
     };
     match r {

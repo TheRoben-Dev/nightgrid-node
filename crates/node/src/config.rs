@@ -23,6 +23,22 @@ pub struct Config {
     pub health: HealthConfig,
     pub logs: LogsConfig,
     pub usage: UsageConfig,
+    pub ports: PortsConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct PortsConfig {
+    /// Record sockets that start or stop listening, and answer `ports.list`.
+    pub enabled: bool,
+    /// Seconds between reads (5-300).
+    pub interval_secs: u32,
+}
+
+impl Default for PortsConfig {
+    fn default() -> Self {
+        Self { enabled: true, interval_secs: 15 }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -137,11 +153,14 @@ pub struct LoginsConfig {
     /// Record SSH logins and failed logins from the journal. Reading the
     /// journal also needs `nightgrid-node allow journal`.
     pub enabled: bool,
+    /// Failed logins within 5 minutes that make a login-burst alert (5-10000;
+    /// the alert also needs `loginBurst` on in the app's rules).
+    pub burst: u32,
 }
 
 impl Default for LoginsConfig {
     fn default() -> Self {
-        Self { enabled: true }
+        Self { enabled: true, burst: 20 }
     }
 }
 
@@ -153,9 +172,49 @@ pub struct FilesConfig {
     /// Files, or directories (their direct entries), to watch. Contents are
     /// never stored: only size, owner, mode, time and a SHA-256 when readable.
     pub watch: Vec<PathBuf>,
+    /// Also watch the built-in security baseline: more of `/etc` (see
+    /// [`BASELINE_WATCH`]), every login user's `authorized_keys` and the
+    /// compose files of running containers.
+    pub baseline: bool,
     /// Seconds between checks (2-300).
     pub interval_secs: u32,
 }
+
+/// Watched when `[files] baseline` is on, besides `watch`: places where a
+/// change can give someone a way in or keep one.
+pub const BASELINE_WATCH: &[&str] = &[
+    "/etc/ld.so.preload",
+    "/etc/environment",
+    "/etc/profile",
+    "/etc/profile.d",
+    "/etc/bash.bashrc",
+    "/etc/pam.d",
+    "/etc/security/access.conf",
+    "/etc/nsswitch.conf",
+    "/etc/login.defs",
+    "/etc/hosts.allow",
+    "/etc/hosts.deny",
+    "/etc/rc.local",
+    "/etc/cron.hourly",
+    "/etc/cron.daily",
+    "/etc/cron.weekly",
+    "/etc/cron.monthly",
+    "/var/spool/cron/crontabs",
+    "/var/spool/cron",
+    "/etc/systemd/system/multi-user.target.wants",
+    "/etc/systemd/system/timers.target.wants",
+    "/etc/sysctl.conf",
+    "/etc/sysctl.d",
+    "/etc/modprobe.d",
+    "/etc/modules-load.d",
+    "/etc/apt/sources.list",
+    "/etc/apt/sources.list.d",
+    "/etc/yum.repos.d",
+    "/etc/docker/daemon.json",
+    "/etc/sudo.conf",
+    "/root/.ssh/authorized_keys",
+    "/root/.ssh/authorized_keys2",
+];
 
 pub const DEFAULT_WATCH: &[&str] = &[
     "/etc/ssh/sshd_config",
@@ -174,7 +233,12 @@ pub const DEFAULT_WATCH: &[&str] = &[
 
 impl Default for FilesConfig {
     fn default() -> Self {
-        Self { enabled: true, watch: DEFAULT_WATCH.iter().map(PathBuf::from).collect(), interval_secs: 10 }
+        Self {
+            enabled: true,
+            watch: DEFAULT_WATCH.iter().map(PathBuf::from).collect(),
+            baseline: true,
+            interval_secs: 10,
+        }
     }
 }
 
@@ -257,6 +321,12 @@ impl Config {
         }
         if !(5..=300).contains(&self.docker.interval_secs) {
             return Err("docker.interval_secs must be 5-300".into());
+        }
+        if !(5..=300).contains(&self.ports.interval_secs) {
+            return Err("ports.interval_secs must be 5-300".into());
+        }
+        if !(5..=10_000).contains(&self.logins.burst) {
+            return Err("logins.burst must be 5-10000".into());
         }
         if !(2..=300).contains(&self.files.interval_secs) {
             return Err("files.interval_secs must be 2-300".into());
@@ -349,6 +419,9 @@ interval_secs = 15
 # Record SSH logins and failed logins from the journal. The service can only
 # read the journal after root runs: nightgrid-node allow journal
 enabled = true
+# Failed logins within 5 minutes that raise a login-burst alert (5-10000).
+# The app turns that alert on (loginBurst in its alert rules).
+burst = 20
 
 [files]
 # Record changes to these files and directories (direct entries only).
@@ -370,7 +443,13 @@ watch = [
   "/etc/fstab",
   "/etc/systemd/system",
 ]
-# Seconds between checks (2-300).
+# Also watch a built-in security baseline: more of /etc (ld.so.preload, PAM,
+# profile, cron, sysctl, package sources, ...), root's and every login user's
+# authorized_keys, and the compose files of running containers. With
+# `nightgrid-node allow health`, files the service can't read (homes, root's
+# crontabs) are read by the read-only health helper.
+baseline = true
+# Seconds between checks (2-300; at least 30 through the health helper).
 interval_secs = 10
 
 [network]
@@ -439,6 +518,13 @@ interval_secs = 600
 # counters (RAPL, after root runs: nightgrid-node allow power). Every 10 s,
 # every second while the app watches; one-minute averages are kept a day.
 enabled = true
+
+[ports]
+# Record sockets that start or stop listening (from /proc/net, no privileges)
+# and list them for the app, with the containers that publish them.
+enabled = true
+# Seconds between reads (5-300). A change is reported after two reads agree.
+interval_secs = 15
 "#;
 
 #[cfg(test)]

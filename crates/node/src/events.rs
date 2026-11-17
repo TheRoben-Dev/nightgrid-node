@@ -22,6 +22,7 @@ fn kind_str(k: EventKind) -> &'static str {
         EventKind::File => "file",
         EventKind::Network => "network",
         EventKind::Action => "action",
+        EventKind::Port => "port",
         EventKind::Other => "other",
     }
 }
