@@ -27,7 +27,9 @@ UMask=0007
 
 # Footprint guard rails (the service normally uses a few MB).
 MemoryMax=64M
-TasksMax=16
+# About 15 long-lived threads plus short-lived reads (journalctl, systemctl,
+# helper calls, sensors) when every watcher is on; 16 was too tight.
+TasksMax=64
 CPUWeight=20
 IOWeight=20
 Nice=10

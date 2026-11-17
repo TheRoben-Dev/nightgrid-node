@@ -651,6 +651,40 @@ fn dispatch(shared: &Shared, session: &mut Session, req: &Request) -> Result<Res
             l.access = if shared.config.jobs.enabled { "ok" } else { "off" }.into();
             Ok(Response::ok(0, l))
         }
+        method::UPGRADE_NOTE => {
+            // Only root, which is who runs `nightgrid-node upgrade`.
+            if session.uid != "0" {
+                return Err(Response::err(0, ErrorCode::Forbidden, "only root's upgrade may report"));
+            }
+            let ok = req.params["ok"].as_bool().unwrap_or(false);
+            let s = |k: &str| req.params[k].as_str().unwrap_or("?").chars().take(40).collect::<String>();
+            let (from, to) = (s("from"), s("to"));
+            let e = if ok {
+                crate::events::NewEvent::new(
+                    crate::daemon::now_secs(),
+                    nightgrid_node_proto::EventKind::Other,
+                    nightgrid_node_proto::Level::Info,
+                    format!("upgraded to {to}"),
+                    format!("from {from}, checksum verified; the previous binary is kept as nightgrid-node.prev"),
+                )
+            } else {
+                let err = req.params["error"].as_str().unwrap_or("").chars().take(300).collect::<String>();
+                crate::events::NewEvent::new(
+                    crate::daemon::now_secs(),
+                    nightgrid_node_proto::EventKind::Other,
+                    nightgrid_node_proto::Level::Warn,
+                    format!("upgrade to {to} failed"),
+                    if req.params["reverted"].as_bool().unwrap_or(false) {
+                        format!("{err}; back on {from}")
+                    } else {
+                        err
+                    },
+                )
+            };
+            let st = shared.store.lock().unwrap_or_else(|e| e.into_inner());
+            shared.bus.record(&st, &e).map_err(internal)?;
+            Ok(Response::ok(0, Value::Null))
+        }
         method::UPS_GUARD => {
             let g = shared.ups_guard.lock().unwrap_or_else(|e| e.into_inner()).status(&shared.config);
             Ok(Response::ok(0, g))

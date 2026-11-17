@@ -97,12 +97,21 @@ Scope:
 - Group actions coordinated by one node: UPS group shutdown, staged restarts across nodes.
 - App specs 0012 and later.
 
-## N8 · Upgrades, tailnet and status page
+## N8 · Upgrades, node-to-node link and status page
 
-- `upgrade`: verified binary, health check after restart, automatic revert on failure.
-- Optional tailnet listener with mutual key authentication.
-- Optional read-only status page over the tailnet only, off by default, auth required.
-- An app spec.
+- **N8a (0.19.0):** `upgrade` with a verified binary, a health check after restart and automatic revert (N-042). App spec 0015.
+- **N8b:** an opt-in node-to-node link (Roben, 2026-11-17: "nodes should be able to communicate in general over Nightgrid Node, but default to each node acting alone"). Planned shape:
+  - off by default, turned on per host by root;
+  - a separate unit that listens only on the tailnet address (or a LAN address root names), never on every interface;
+  - mutual TLS with keys pinned per peer, paired through the app (which already reaches every host over SSH), so no trust-on-first-use;
+  - every request typed and checked against root's `[peers]` policy on the receiving side, and logged.
+- **N8c:** features on the link, each opt-in on both sides:
+  - peer reachability and health ("is nas up from here?"), so alerts can tell a dead host from a broken path;
+  - UPS group shutdown led by the host that reads the UPS, with the per-host guard (N7c) as the fallback;
+  - staged restarts across hosts (one at a time, each waiting for the last to be healthy);
+  - alerts relayed to a peer while the app is closed, so a host that can't reach its own notifier isn't silent.
+- **N8d:** an optional read-only status page over the tailnet only, off by default, auth required.
+- App specs for each part.
 
 ## N9 · DRIFT helpers
 

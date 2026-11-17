@@ -105,6 +105,8 @@ pub mod method {
     pub const UPS_GUARD: &str = "ups.guard";
     /// Cancel a UPS shutdown countdown (for the rest of this outage).
     pub const UPS_CANCEL: &str = "ups.cancel";
+    /// Internal: `nightgrid-node upgrade` (root) reports what happened.
+    pub const UPGRADE_NOTE: &str = "upgrade.note";
     /// Protocol 2: start pushing frames for streams.
     pub const SUBSCRIBE: &str = "subscribe";
     /// Protocol 2: stop pushing frames for streams.

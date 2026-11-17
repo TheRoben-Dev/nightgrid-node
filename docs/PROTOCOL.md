@@ -534,6 +534,10 @@ Alerts, with the app's keys (no host segment) and its `backupStale` switch: `bac
 
 Events (`other`): "UPS shutdown in 60 s" (`critical`, with the reason), "UPS shutdown cancelled: power is back" (`ok`), "UPS shutdown cancelled" (`warn`, from the app).
 
+### `upgrade.note` (internal)
+
+`nightgrid-node upgrade` (root) reports `{from, to, ok, reverted, error}`, and the node records "upgraded to 0.19.0" (`info`) or "upgrade to 0.19.0 failed" (`warn`, with the error and "back on 0.18.0" when reverted) as `other` events. Only uid 0 may call it.
+
 ### `block.list` (`block` 1)
 
 ```json

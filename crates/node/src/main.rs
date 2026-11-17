@@ -16,6 +16,9 @@ COMMANDS:
                             default: the user who ran sudo)
         --no-start          Enable at boot but don't start now
         --json              Print a machine-readable report
+    upgrade FILE --sha256 HEX [--allow-downgrade]
+                            Install a new binary if its checksum matches, check
+                            the service stays up, else put the old one back (root)
     uninstall               Stop and remove the service (root)
         --purge             Also remove history, config and the service account
         --json              Print a machine-readable report
@@ -63,6 +66,8 @@ struct Args {
     purge: bool,
     no_start: bool,
     count: Option<u64>,
+    sha256: Option<String>,
+    allow_downgrade: bool,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -78,6 +83,8 @@ fn parse_args() -> Result<Args, String> {
         purge: false,
         no_start: false,
         count: None,
+        sha256: None,
+        allow_downgrade: false,
     };
     while let Some(x) = it.next() {
         let mut val = |name: &str| it.next().ok_or_else(|| format!("{name} needs a value"));
@@ -90,6 +97,8 @@ fn parse_args() -> Result<Args, String> {
             "--purge" => a.purge = true,
             "--no-start" => a.no_start = true,
             "--count" => a.count = Some(val("--count")?.parse().map_err(|_| "--count needs a number")?),
+            "--sha256" => a.sha256 = Some(val("--sha256")?.to_ascii_lowercase()),
+            "--allow-downgrade" => a.allow_downgrade = true,
             "-h" | "--help" => a.cmd = "help".into(),
             "-V" | "--version" => a.cmd = "version".into(),
             s if s.starts_with("--") => return Err(format!("unknown option {s}")),
@@ -172,6 +181,37 @@ fn real_main() -> Result<(), String> {
                 config.server.socket = s.clone();
             }
             nightgrid_node::sniff::run(&config)
+        }
+        "upgrade" => {
+            let file = a.rest.first().ok_or("upgrade needs the new binary: upgrade FILE --sha256 HEX")?;
+            let opts = nightgrid_node::upgrade::UpgradeOptions {
+                sha256: a.sha256.clone().ok_or("upgrade needs --sha256 (from the release's SHA256SUMS)")?,
+                allow_downgrade: a.allow_downgrade,
+            };
+            let sock = socket(&a);
+            let mut probe = nightgrid_node::upgrade::SocketProbe { socket: sock.clone() };
+            let layout = install::Layout::system();
+            install::preflight(&layout)?;
+            let r = nightgrid_node::upgrade::upgrade(
+                &layout,
+                &mut install::RealSys,
+                &mut probe,
+                std::path::Path::new(file),
+                &opts,
+            )?;
+            nightgrid_node::upgrade::note(&sock, &r);
+            if a.json {
+                println!("{}", serde_json::to_string(&r).unwrap_or_default());
+            } else {
+                for s in &r.steps {
+                    println!("{s}");
+                }
+            }
+            match (&r.error, r.ok) {
+                (_, true) => Ok(()),
+                (Some(e), false) => Err(e.clone()),
+                (None, false) => Err("upgrade failed".into()),
+            }
         }
         "uninstall" => {
             let r = install::uninstall(&install::Layout::system(), &mut install::RealSys, a.purge)?;

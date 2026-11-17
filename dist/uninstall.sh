@@ -24,7 +24,7 @@ if [ -e /etc/udev/rules.d/70-nightgrid-node-power.rules ]; then
   for f in /sys/class/powercap/intel-rapl:*/energy_uj; do [ -e "$f" ] && chgrp root "$f" && chmod 0400 "$f"; done
 fi
 systemctl daemon-reload 2>/dev/null || true
-rm -f /usr/local/bin/nightgrid-node
+rm -f /usr/local/bin/nightgrid-node /usr/local/bin/nightgrid-node.prev
 if [ "${1:-}" = "--purge" ]; then
   rm -rf /var/lib/nightgrid-node /var/lib/nightgrid-node-rollback /etc/nightgrid-node /run/nightgrid-node
   rm -f /etc/sysusers.d/nightgrid-node.conf

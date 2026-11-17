@@ -308,7 +308,7 @@ fn copy_binary(from: &Path, to: &Path) -> Result<bool, String> {
     Ok(true)
 }
 
-fn preflight(layout: &Layout) -> Result<(), String> {
+pub fn preflight(layout: &Layout) -> Result<(), String> {
     if !layout.is_system() {
         return Ok(());
     }
@@ -427,6 +427,7 @@ pub fn uninstall(layout: &Layout, sys: &mut dyn Sys, purge: bool) -> Result<Repo
         rep.warnings.push(e);
     }
     remove(&layout.bin(), &mut rep)?;
+    remove(&crate::upgrade::previous(layout), &mut rep)?;
     remove_dir(&layout.dropin_dir(), &mut rep)?;
     if layout.at(POWER_RULE).exists() {
         remove(&layout.at(POWER_RULE), &mut rep)?;
