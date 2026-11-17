@@ -54,10 +54,6 @@ Disk SMART needs raw device commands, so `sudo nightgrid-node allow health` inst
 
 `sudo nightgrid-node allow power` lets the service's group read the CPU energy counters (RAPL), through a udev rule in `/etc/udev/rules.d/70-nightgrid-node-power.rules`. The kernel makes them root-only because sampling them very fast can hint at what other programs compute (CVE-2020-8694); the node reads them at most once a second. `deny power` makes them root-only again (decision N-036). Everything else in usage (cgroups, `/proc`) is readable by any user and needs no grant.
 
-## Power (`allow power`)
-
-`sudo nightgrid-node allow power` lets the service's group read the CPU energy counters (RAPL), through a udev rule in `/etc/udev/rules.d/70-nightgrid-node-power.rules`. The kernel makes them root-only because sampling them very fast can hint at what other programs compute (CVE-2020-8694); the node reads them at most once a second. `deny power` makes them root-only again (decision N-036). Everything else in usage (cgroups, `/proc`) is readable by any user and needs no grant.
-
 ## Logs
 
 Log watching reads only what `allow journal` and `allow docker` already grant. Lines are kept in memory (up to 40 recent error lines per source, for the app's "what broke" view) and never written to disk; lines that look like they carry a secret (private keys, tokens, `password=` and similar, the app's own check) are dropped before they are kept and are never put in an alert (decision N-035).
