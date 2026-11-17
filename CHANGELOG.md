@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.23.0 · N9 (unreleased)
+
+- `summary.daily` (`{hours}`, 1–168, default 24): what happened on this host, as short plain facts for the app's DRIFT helper: outages and restarts, active and resolved alerts, container trouble, failed and finished jobs, actions run, logins and failed logins, changed files, new listeners and LAN changes, upgrades and other warnings, disks filling up (with the forecast), and pending updates from the package cache. Each line starts with what it is about, repeats are counted, lists are capped, and times are relative. `level` is the worst thing in it, and `complete` is false (with a "Coverage" line first) when the node hasn't watched the whole window.
+- Made on request from the node's own history; nothing is sent anywhere. Capability `summary` 1 (N-046).
+
 ## 0.22.0 · N8d (unreleased)
 
 - An optional read-only status page for a phone on the tailnet. `sudo nightgrid-node allow statuspage` installs `nightgrid-node-status.service` (the service account, no capabilities, reachable only from `[statuspage] networks`) and prints the page's secret link, `http://<tailnet address>:7420/<token>`. Running it again prints the same link; `deny statuspage` removes the page and the token, so the link stops working.

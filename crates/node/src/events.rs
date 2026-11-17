@@ -125,6 +125,22 @@ impl Store {
         rows.collect()
     }
 
+    /// Events with `from <= at <= to`, oldest first (at most `limit`, the newest kept).
+    pub fn events_between(&self, from: i64, to: i64, limit: usize) -> Result<Vec<Event>> {
+        let first: Option<i64> = self.conn().query_row(
+            "SELECT min(seq) FROM (SELECT seq FROM events WHERE at >= ?1 AND at <= ?2 ORDER BY seq DESC LIMIT ?3)",
+            params![from, to, limit as i64],
+            |r| r.get(0),
+        )?;
+        let Some(first) = first else { return Ok(Vec::new()) };
+        Ok(self.events_after(first - 1, limit)?.into_iter().filter(|e| e.at >= from && e.at <= to).collect())
+    }
+
+    /// When the oldest event still kept happened.
+    pub fn events_oldest_at(&self) -> Result<Option<i64>> {
+        self.conn().query_row("SELECT min(at) FROM events", [], |r| r.get(0))
+    }
+
     pub fn events_oldest(&self) -> Result<Option<i64>> {
         self.conn().query_row("SELECT min(seq) FROM events", [], |r| r.get(0))
     }
@@ -134,6 +150,20 @@ impl Store {
 mod tests {
     use super::*;
     use nightgrid_node_proto::{AlertKind, OutageState, Severity};
+
+    #[test]
+    fn events_in_a_window() {
+        let s = Store::open_in_memory().unwrap();
+        for at in [100, 200, 300, 400] {
+            s.event_add(&NewEvent::new(at, EventKind::Boot, Level::Info, "booted", "")).unwrap();
+        }
+        let w: Vec<i64> = s.events_between(150, 350, 10).unwrap().iter().map(|e| e.at).collect();
+        assert_eq!(w, [200, 300]);
+        let newest: Vec<i64> = s.events_between(0, 1000, 2).unwrap().iter().map(|e| e.at).collect();
+        assert_eq!(newest, [300, 400], "the newest are kept");
+        assert!(s.events_between(500, 600, 10).unwrap().is_empty());
+        assert_eq!(s.events_oldest_at().unwrap(), Some(100));
+    }
 
     #[test]
     fn add_read_and_trim() {

@@ -116,6 +116,9 @@ pub mod method {
     pub const PEERS_REPORT: &str = "peers.report";
     /// Internal: a request from a paired peer, passed on by the link.
     pub const PEERS_INBOUND: &str = "peers.inbound";
+    /// What happened on this host over the last day, as plain facts for
+    /// the app's DRIFT helper (N9).
+    pub const SUMMARY_DAILY: &str = "summary.daily";
     /// Protocol 2: start pushing frames for streams.
     pub const SUBSCRIBE: &str = "subscribe";
     /// Protocol 2: stop pushing frames for streams.
@@ -197,6 +200,7 @@ pub mod cap {
     /// `peers.set`, `peers.get`, `peers.latest`: the opt-in node-to-node
     /// link (with `allow peers`, 0.20.0).
     pub const PEERS: &str = "peers";
+    pub const SUMMARY: &str = "summary";
 }
 
 /// Typed actions (N4). Root lists the ones the node may run in
@@ -1405,6 +1409,31 @@ pub struct PeersLatest {
     pub fingerprint: Option<String>,
     pub listening: Option<String>,
     pub readings: Vec<PeerReading>,
+}
+
+/// `summary.daily` params.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SummaryParams {
+    /// How far back, 1-168 (default 24).
+    #[serde(default)]
+    pub hours: Option<u32>,
+}
+
+/// `summary.daily`: what happened on this host, as plain facts for a small
+/// local model. Every line starts with what it is about.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DailySummary {
+    pub host: String,
+    pub from: i64,
+    pub to: i64,
+    /// `ok`, `warn` or `critical`: the worst thing in it.
+    pub level: String,
+    /// False when the node didn't watch the whole window (it started later,
+    /// or older events were trimmed); the first fact then says from when.
+    pub complete: bool,
+    pub facts: Vec<String>,
 }
 
 /// One blocked address.

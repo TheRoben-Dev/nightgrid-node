@@ -505,3 +505,21 @@ fn status_page_at_its_secret_path_only() {
     std::io::Read::read_to_string(&mut s, &mut out).unwrap();
     assert!(out.starts_with("HTTP/1.1 405"), "{out}");
 }
+
+#[test]
+fn daily_summary_for_drift() {
+    let svc = start();
+    let mut c = Client::connect(&svc.socket, "e2e").unwrap();
+    assert_eq!(c.welcome.caps.get("summary"), Some(&1));
+    let s = c.call("summary.daily", Value::Null).unwrap();
+    assert_eq!(s["to"].as_i64().unwrap() - s["from"].as_i64().unwrap(), 86_400);
+    let facts: Vec<String> = serde_json::from_value(s["facts"].clone()).unwrap();
+    assert!(facts.iter().any(|f| f.starts_with("Active alerts")), "{facts:?}");
+    assert!(
+        facts.iter().any(|f| f.starts_with("Coverage:")),
+        "a new node says it hasn't watched the whole day: {facts:?}"
+    );
+    let week = c.call("summary.daily", json!({"hours": 168})).unwrap();
+    assert_eq!(week["to"].as_i64().unwrap() - week["from"].as_i64().unwrap(), 168 * 3600);
+    assert!(c.call("summary.daily", json!({"hours": 0})).is_err());
+}

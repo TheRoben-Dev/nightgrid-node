@@ -365,6 +365,7 @@ pub fn caps() -> Caps {
         (cap::JOBS, 1),
         (cap::UPS, 1),
         (cap::PEERS, 1),
+        (cap::SUMMARY, 1),
     ]
     .into_iter()
     .map(|(k, v)| (k.to_owned(), v))
@@ -800,6 +801,15 @@ fn dispatch(shared: &Shared, session: &mut Session, req: &Request) -> Result<Res
                 }
                 m => Err(Response::err(0, ErrorCode::BadRequest, format!("unknown peer request {m:?}"))),
             }
+        }
+        method::SUMMARY_DAILY => {
+            let p: nightgrid_node_proto::SummaryParams =
+                if req.params.is_null() { Default::default() } else { params(&req.params)? };
+            let hours = p.hours.unwrap_or(24);
+            if !(1..=168).contains(&hours) {
+                return Err(Response::err(0, ErrorCode::BadRequest, "hours must be 1-168"));
+            }
+            crate::summary::daily(shared, hours).map(|s| Response::ok(0, s)).map_err(internal)
         }
         method::UPS_GUARD => {
             let g = shared.ups_guard.lock().unwrap_or_else(|e| e.into_inner()).status(&shared.config);

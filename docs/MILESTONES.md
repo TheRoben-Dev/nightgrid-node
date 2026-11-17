@@ -112,4 +112,4 @@ Scope:
 
 ## N9 · DRIFT helpers
 
-- Daily summaries prepared on the node (what changed, what broke, what's filling up) for the app's local LLM helper; nothing leaves the host unless the app asks.
+- **N9 (0.23.0):** `summary.daily`: what happened on the host over the last day (or up to a week) as plain facts for the app's DRIFT helper, made on request from the node's own history (N-046). App spec 0019.

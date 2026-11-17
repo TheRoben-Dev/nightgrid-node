@@ -38,6 +38,7 @@ pub mod server;
 pub mod sniff;
 pub mod statuspage;
 pub mod store;
+pub mod summary;
 pub mod upgrade;
 pub mod upsguard;
 pub mod uptime;

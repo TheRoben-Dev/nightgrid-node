@@ -36,6 +36,7 @@ While the app is closed, the node:
 | ⬆️ | **Upgrades safely**: the app hands over a new release with its checksum; the node installs it only if the checksum matches, checks that the new version comes up and stays up, and puts the old one back by itself if not. | 0.19 |
 | 🔗 | **Links nodes** (opt-in, off by default): nodes you pair in the app check each other over the tailnet with mutual TLS, so a dead host is told from a broken path, with the app closed. Hosts without a UPS reading can follow the UPS host's shutdown. Each node still acts alone unless you pair it; it answers only what you allow and listens only on the tailnet address. | 0.20 / 0.21 |
 | 📱 | **Shows a status page** (opt-in, off by default): a read-only page for your phone on the tailnet, with the host's state, alerts, UPS and linked hosts, at a secret link. No scripts, nothing it can change. | 0.22 |
+| 📝 | **Prepares a daily summary** for the app's DRIFT helper: what broke, what changed and what is filling up while the app was closed, as short facts a small local model can use. Made on request; nothing leaves the host. | 0.23 |
 | ⚡ | **Pushes live**: while the app is connected, new events, alerts, container changes and metrics every 2 s are pushed as they happen, instead of the app polling over SSH. | 0.4 |
 
 When the app reconnects, it asks for everything after its last cursor and merges it in. The node keeps no per-app state, so several computers running Nightgrid can sync from the same node.
