@@ -46,6 +46,10 @@ COMMANDS:
     peer                    Run the node-to-node link (its unit starts this)
     status-page             Serve the status page (its unit starts this)
     status                  Show what the running node reports
+    doctor                  Check this host's install: config, service, socket,
+                            memory and each allowed access (read-only; exits 1
+                            on a failure)
+        --json              Print a machine-readable report
     query METHOD [JSON]     Send one request and print the answer
     watch STREAM... [--count N]
                             Print live frames (events, metrics, containers, usage)
@@ -242,6 +246,23 @@ fn real_main() -> Result<(), String> {
                 println!("{info}");
             } else {
                 println!("{}", serde_json::to_string_pretty(&info).unwrap_or_default());
+            }
+            Ok(())
+        }
+        "doctor" => {
+            let r = nightgrid_node::doctor::run(
+                &install::Layout::system(),
+                &a.config,
+                a.socket.as_deref(),
+                &mut nightgrid_node::doctor::RealProbe,
+            );
+            if a.json {
+                println!("{}", serde_json::to_string(&r).unwrap_or_default());
+            } else {
+                print!("{}", nightgrid_node::doctor::render(&r));
+            }
+            if r.worst() == nightgrid_node::doctor::Level::Fail {
+                return Err("doctor found a failure".into());
             }
             Ok(())
         }

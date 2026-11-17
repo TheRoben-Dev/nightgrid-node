@@ -647,6 +647,22 @@ except urllib.error.HTTPError as e:
   /usr/local/bin/nightgrid-node deny statuspage >/dev/null
   test ! -e /etc/nightgrid-node/status-token || fail "token left after deny"
   systemctl is-active --quiet nightgrid-node-status && fail "status page still running after deny"
+
+  say "doctor: a clean bill with the link on; a stopped link unit is named"
+  /usr/local/bin/nightgrid-node allow peers >/dev/null
+  as_user "/usr/local/bin/nightgrid-node doctor" | tee /tmp/ngn-doctor.txt || fail "doctor found a failure"
+  grep -Eq '^  ok  +allow peers +on$' /tmp/ngn-doctor.txt || fail "doctor: link not on"
+  grep -E '^WARN +(install|config|service|socket|version|memory) ' /tmp/ngn-doctor.txt && fail "doctor warned about the core"
+  systemctl stop nightgrid-node-peer
+  as_user "/usr/local/bin/nightgrid-node doctor --json" >/tmp/ngn-doctor.json || true
+  grep -q '"check":"allow peers","level":"warn"' /tmp/ngn-doctor.json || { cat /tmp/ngn-doctor.json; fail "doctor missed the stopped link"; }
+  /usr/local/bin/nightgrid-node deny peers >/dev/null
+
+  say "footprint after every feature ran: peak memory stays in budget"
+  pid=$(systemctl show -p MainPID --value nightgrid-node)
+  grep -E 'VmHWM|VmRSS|Threads' /proc/"$pid"/status
+  hwm=$(awk '/VmHWM/ {print $2}' /proc/"$pid"/status)
+  [ "$hwm" -lt 20480 ] || fail "peak RSS ${hwm} kB is over 20 MB"
 fi
 
 say "upgrade: a wrong checksum changes nothing; a good one upgrades; a new binary that won't start is reverted"

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.24.0 · N10 refinement (unreleased)
+
+- `nightgrid-node doctor` (`--json` too): a read-only self-check any user can run. It checks the installed binary, that `/etc/nightgrid-node/config.toml` parses and validates, that the service is active, that the socket answers (with a hint when the user isn't in the node's group), that the running version matches this binary, resident memory against the 20 MB budget, history size, and for each `allow` grant whether it is on, its unit runs and the node sees the access. It exits 1 on a failure. Nothing in the app protocol changed (N-048).
+- CI: every unit's systemd sandbox score is held at today's level (`ci/sandbox-scores.sh`), the real-systemd test checks peak memory after every feature ran and runs `doctor`, and a test feeds every protocol method wrong-shaped params (never a panic or an internal error) (N-049).
+
 ## 0.23.0 · N9 (unreleased)
 
 - `summary.daily` (`{hours}`, 1–168, default 24): what happened on this host, as short plain facts for the app's DRIFT helper: outages and restarts, active and resolved alerts, container trouble, failed and finished jobs, actions run, logins and failed logins, changed files, new listeners and LAN changes, upgrades and other warnings, disks filling up (with the forecast), and pending updates from the package cache. Each line starts with what it is about, repeats are counted, lists are capped, and times are relative. `level` is the worst thing in it, and `complete` is false (with a "Coverage" line first) when the node hasn't watched the whole window.

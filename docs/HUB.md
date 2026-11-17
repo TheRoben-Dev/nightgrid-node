@@ -1,6 +1,6 @@
 # Nightgrid Node: Hub profile (design proposal)
 
-Status: **proposed** (H0, design only). Nothing here is built. Decisions N-048 to N-056 in [DECISIONS.md](DECISIONS.md) record the choices, milestones H1 to H7 are in [MILESTONES.md](MILESTONES.md#hub-profile-proposed), and the app side is the future spec [app-integration/0020](app-integration/0020-hub-fleet-sync.md).
+Status: **proposed** (H0, design only). Nothing here is built. Decisions N-051 to N-059 in [DECISIONS.md](DECISIONS.md) record the choices, milestones H1 to H7 are in [MILESTONES.md](MILESTONES.md#hub-profile-proposed), and the app side is the future spec [app-integration/0020](app-integration/0020-hub-fleet-sync.md).
 
 Roben, 2026-11-17: keep Lite and Hub separate, with the Hub profile recommended as one system per network.
 
@@ -37,7 +37,7 @@ The rules that make this safe:
 
 A hub host also runs Lite for itself. The hub reads its own host through the local Lite socket like the app does, so there is one way to collect a host's data and the hub never samples anything itself.
 
-### 1.1 Why a separate binary (N-048)
+### 1.1 Why a separate binary (N-051)
 
 Two options were weighed:
 
@@ -62,7 +62,7 @@ The app will do this for you (future spec 0020). `nightgrid-hub uninstall [--pur
 
 A network is a set of hosts the person thinks of as one place: a home LAN, a rack, a parents' house. In the app it is a host group the person marks as a site. A tailnet can span several sites; each site may have its own hub, and the app syncs each hub. A hub never pulls from hosts outside its site, even when the tailnet reaches them, because the person chose the members (section 2.3).
 
-### 2.2 Designation, not election (N-049)
+### 2.2 Designation, not election (N-052)
 
 The hub is **chosen by the person in the app**, not elected by the nodes.
 
@@ -84,7 +84,7 @@ No broadcast discovery (no mDNS, no UDP announce). Lite hosts never listen on th
 
 - The app refuses to designate a second hub in the same site and says which host is the hub.
 - If two hubs end up pulling the same node anyway (a restored backup, a manual install), nothing breaks: pulls are read-only and idempotent. The node answers sync requests only from the peer `hub.member` names, so the second hub gets `"not this node's hub"` and raises a `hub` warning event ("nas also lists hub pi as its hub; only one hub per network").
-- A **standby hub** (later, N-056) is the only supported second hub: it pulls the same members but keeps notifications muted while the primary answers link pings. If the primary misses three pings in a row (about three minutes), the standby sends its notifications; when the primary is back, it goes quiet again. Primary wins by designation, so there is nothing to vote on.
+- A **standby hub** (later, N-059) is the only supported second hub: it pulls the same members but keeps notifications muted while the primary answers link pings. If the primary misses three pings in a row (about three minutes), the standby sends its notifications; when the primary is back, it goes quiet again. Primary wins by designation, so there is nothing to vote on.
 
 ## 3. Shape
 
@@ -112,7 +112,7 @@ Units, all as the `nightgrid-hub` account with no capabilities, `NoNewPrivileges
 
 This mirrors what Lite already does: the process with the history never has the network, and each piece that needs a network has only the one it needs.
 
-## 4. Resource budget (N-050)
+## 4. Resource budget (N-053)
 
 Targets for a network of **25 Lite nodes** on a Raspberry Pi 4 (4 GB) or any small x86 box. They are design targets; H1 adds a CI budget test that runs a hub against 25 simulated nodes and fails if a unit exceeds its line.
 
@@ -135,7 +135,7 @@ The core stays inside the 100 to 200 MB the proposal named; the full set goes a 
 
 **Pull cost on Lite nodes.** One pull a minute per node, of closed buckets and new events only, is a few KB. The Lite node's work is a cursor query it already does for the app; its budget doesn't change.
 
-## 5. Fleet aggregation (H1, N-051)
+## 5. Fleet aggregation (H1, N-054)
 
 ### 5.1 Pull, don't push
 
@@ -177,7 +177,7 @@ If a member's `node_id` changes (purged reinstall), the hub starts a new series,
 
 Data keeps the node's timestamps. The hub compares each answer's `at` with its own clock and raises a `hub` warning when a member is more than 60 s off, since skew bends graphs and grace periods.
 
-## 6. Failure modes (N-052)
+## 6. Failure modes (N-055)
 
 | What fails | What happens | What the person sees |
 |---|---|---|
@@ -199,10 +199,10 @@ Data keeps the node's timestamps. The hub compares each answer's `at` with its o
 A hub that is down sends nothing, so silence can mean "all fine" or "hub dead". Three answers, all opt-in:
 
 1. **The app**, whenever it is open, shows the hub's state first.
-2. **A standby hub** (N-056) takes over notifications.
+2. **A standby hub** (N-059) takes over notifications.
 3. **A heartbeat URL**: the notifier calls a URL the person gives (a self-hosted Uptime Kuma push monitor, Healthchecks, or similar) every few minutes. If the hub stops, that service alerts. Nothing is sent unless the person sets one.
 
-## 7. Security model (N-053)
+## 7. Security model (N-056)
 
 ### 7.1 What a compromised hub can and can't do
 
@@ -239,7 +239,7 @@ Some later features need coordination across hosts: patch windows that stop roll
 
 The hub contacts nothing on its own. The only outbound traffic beyond the tailnet is to channels the person sets up, to the endpoints they name; with no channel set, the notifier unit isn't even installed. A public ntfy server or Discord is a third party the person chose, and the app says so when it is picked; a self-hosted ntfy or SMTP relay on the LAN keeps everything local. A `minimal` message mode sends only "2 alerts on home, open Nightgrid" with no host names or details, for people who use a public push service.
 
-## 8. Notifications (H2, N-054)
+## 8. Notifications (H2, N-057)
 
 ### 8.1 Channels
 
