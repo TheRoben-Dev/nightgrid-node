@@ -603,6 +603,31 @@ PY
   rm -f /usr/local/sbin/upsc
 fi
 
+say "upgrade: a wrong checksum changes nothing; a good one upgrades; a new binary that won't start is reverted"
+sum=$(sha256sum "$bin" | cut -d' ' -f1)
+if /usr/local/bin/nightgrid-node upgrade "$bin" --sha256 "$(printf '0%.0s' $(seq 64))" >/tmp/ngn-up.txt 2>&1; then fail "a wrong checksum upgraded"; fi
+grep -q 'checksum mismatch' /tmp/ngn-up.txt || { cat /tmp/ngn-up.txt; fail "no checksum message"; }
+test ! -e /usr/local/bin/nightgrid-node.prev || fail "a refused upgrade kept a previous binary"
+/usr/local/bin/nightgrid-node upgrade "$bin" --sha256 "$sum" --json | tee /tmp/ngn-up.json
+grep -q '"ok":true' /tmp/ngn-up.json || fail "upgrade with the right checksum"
+[ "$(sha256sum < /usr/local/bin/nightgrid-node.prev)" = "$(sha256sum < "$bin")" ] || fail "previous binary not kept"
+as_user "/usr/local/bin/nightgrid-node query events.sync '{\"after\":0}'" | grep -q '"title":"upgraded to ' || fail "no upgrade event"
+# A "new" binary that differs (trailing bytes still run) and that a drop-in keeps from starting.
+cp "$bin" /run/ngn-broken && printf 'ngn-test-trailer' >> /run/ngn-broken
+mkdir -p /etc/systemd/system/nightgrid-node.service.d
+printf '[ "$(sha256sum < /usr/local/bin/nightgrid-node)" != "$(sha256sum < /run/ngn-broken)" ]\n' > /run/ngn-check.sh
+printf '[Service]\nExecStartPre=/bin/sh /run/ngn-check.sh\n' > /etc/systemd/system/nightgrid-node.service.d/zz-test-break.conf
+systemctl daemon-reload
+bsum=$(sha256sum /run/ngn-broken | cut -d' ' -f1)
+if /usr/local/bin/nightgrid-node upgrade /run/ngn-broken --sha256 "$bsum" --json >/tmp/ngn-up2.json 2>/tmp/ngn-up2.err; then cat /tmp/ngn-up2.json; fail "a binary that can't start was kept"; fi
+cat /tmp/ngn-up2.json
+grep -q '"reverted":true' /tmp/ngn-up2.json || { cat /tmp/ngn-up2.err; fail "not reverted"; }
+[ "$(sha256sum < /usr/local/bin/nightgrid-node)" = "$(sha256sum < "$bin")" ] || fail "the reverted binary isn't the previous one"
+systemctl is-active --quiet nightgrid-node || fail "not running after the revert"
+as_user "/usr/local/bin/nightgrid-node query events.sync '{\"after\":0}'" | grep -q '"title":"upgrade to [0-9.]* failed"' || fail "no failed-upgrade event"
+rm -f /etc/systemd/system/nightgrid-node.service.d/zz-test-break.conf /run/ngn-broken /run/ngn-check.sh
+systemctl daemon-reload
+
 say "reinstall (upgrade in place) keeps the node id"
 before=$(as_user "/usr/local/bin/nightgrid-node query node.info" | sed 's/.*"nodeId":"\([0-9a-f]*\)".*/\1/')
 cp "$bin" /tmp/ngn-upgrade && /tmp/ngn-upgrade install --json >/dev/null
@@ -612,7 +637,7 @@ after=$(as_user "/usr/local/bin/nightgrid-node query node.info" | sed 's/.*"node
 say "uninstall keeps history"
 /usr/local/bin/nightgrid-node uninstall
 systemctl is-active --quiet nightgrid-node && fail "still running"
-test ! -e /usr/local/bin/nightgrid-node || fail "binary left"
+test ! -e /usr/local/bin/nightgrid-node && test ! -e /usr/local/bin/nightgrid-node.prev || fail "binary left"
 test ! -e /etc/systemd/system/nightgrid-node.service || fail "unit left"
 test -e /var/lib/nightgrid-node/node.db || fail "history removed without --purge"
 

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.19.0 · N8a (unreleased)
+
+- `sudo nightgrid-node upgrade FILE --sha256 HEX`: installs a new binary only when its SHA-256 matches (the app passes the value from the release's `SHA256SUMS`). The check runs on a staged copy next to the installed binary, so the file that runs is the file that was hashed. The new binary must run here, say it is nightgrid-node, and not be older (`--allow-downgrade` to go back).
+- After the new binary installs itself (its own units and drop-ins), the upgrade waits for the socket to answer with the new version and for the service to stay active for 10 s without a restart. Otherwise it reinstalls the previous binary, kept as `/usr/local/bin/nightgrid-node.prev`, and checks that one too. `--json` reports `ok`, `reverted`, the steps and the error.
+- The timeline records "upgraded to 0.19.0" or "upgrade to 0.19.0 failed" (internal `upgrade.note`, root only). `uninstall` also removes the previous binary.
+
 ## 0.18.0 · N7c (unreleased)
 
 - UPS shutdown with the app closed (opt-in, `[ups] shutdown`): when the UPS this host follows (`[health] ups`) has been on battery for `on_battery_minutes` (5), drops below `below_percent`, or reports low battery, the node announces a countdown (`countdown_secs`, 60) in the timeline and then requests `power.poweroff` through the root helper, in the action log as source `ups`. Power coming back cancels the countdown, and `ups.cancel` holds it for the rest of the outage. `dry_run` only logs the power-off.
