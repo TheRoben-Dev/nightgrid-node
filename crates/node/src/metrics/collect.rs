@@ -6,7 +6,8 @@
 //! (when present), at most every [`GPU_EVERY`] and with a timeout.
 //! Network filesystems are `statvfs`ed on a helper thread with a timeout so
 //! a hung NFS server can't stall sampling; a mount that timed out is skipped
-//! until that call returns.
+//! until that call returns. Sensors (hwmon, thermal, GPU sysfs) are read the
+//! same way, keeping the last readings while a slow read is still running.
 
 use std::collections::HashMap;
 use std::ffi::CString;
@@ -22,6 +23,7 @@ use std::time::{Duration, Instant};
 pub const GPU_EVERY: Duration = Duration::from_secs(30);
 const NVIDIA_TIMEOUT: Duration = Duration::from_secs(3);
 const NETFS_TIMEOUT: Duration = Duration::from_secs(2);
+const SENSORS_TIMEOUT: Duration = Duration::from_secs(1);
 
 const NVIDIA_QUERY: &str = "--query-gpu=index,name,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw";
 
@@ -31,6 +33,9 @@ pub struct Reader {
     gpu_cache: Option<(Instant, String)>,
     /// Network mounts with a `statvfs` still running on a helper thread.
     busy: HashMap<String, Arc<AtomicBool>>,
+    /// Sensor reads still running on a helper thread, and the last result.
+    sensors_rx: Option<mpsc::Receiver<[String; 3]>>,
+    sensors_last: [String; 3],
 }
 
 impl Reader {
@@ -40,12 +45,19 @@ impl Reader {
             .iter()
             .map(PathBuf::from)
             .find(|p| p.is_file());
-        Self { root: PathBuf::from("/"), nvidia, gpu_cache: None, busy: HashMap::new() }
+        Self { root: PathBuf::from("/"), nvidia, ..Self::at("/") }
     }
 
     /// Reads a fake tree (tests): `root/proc/stat`, `root/sys/...`.
     pub fn at(root: impl Into<PathBuf>) -> Self {
-        Self { root: root.into(), nvidia: None, gpu_cache: None, busy: HashMap::new() }
+        Self {
+            root: root.into(),
+            nvidia: None,
+            gpu_cache: None,
+            busy: HashMap::new(),
+            sensors_rx: None,
+            sensors_last: Default::default(),
+        }
     }
 
     fn p(&self, rel: &str) -> PathBuf {
@@ -83,11 +95,12 @@ impl Reader {
         section(&mut o, "mounts", &mounts);
         let df = self.df(&mounts);
         section(&mut o, "df", &df);
-        section(&mut o, "hwmon", &self.hwmon());
-        section(&mut o, "thermal", &self.thermal());
+        let [hwmon, thermal, drm] = self.sensors();
+        section(&mut o, "hwmon", &hwmon);
+        section(&mut o, "thermal", &thermal);
         let nv = self.nvidia_smi();
         section(&mut o, "nvidia", &nv);
-        section(&mut o, "drm", &self.drm());
+        section(&mut o, "drm", &drm);
         o.push_str("@@end\n");
         o
     }
@@ -112,6 +125,37 @@ impl Reader {
             let _ = writeln!(out, "{dev} {total} {used} {avail} {pct}% {mount}");
         }
         out
+    }
+
+    /// hwmon, thermal zones and GPU sysfs files, read on a helper thread.
+    /// Some drivers answer a temperature read by asking the device (NVMe
+    /// drives, ACPI firmware) and can take a minute or hang; sampling then
+    /// carries on with the last good readings until that read returns.
+    fn sensors(&mut self) -> [String; 3] {
+        if self.sensors_rx.is_none() {
+            let (tx, rx) = mpsc::channel();
+            let root = self.root.clone();
+            let spawned = std::thread::Builder::new().name("sensors".into()).spawn(move || {
+                let _ = tx.send([Self::hwmon(&root), Self::thermal(&root), Self::drm(&root)]);
+            });
+            if spawned.is_err() {
+                return self.sensors_last.clone();
+            }
+            self.sensors_rx = Some(rx);
+        }
+        if let Some(rx) = &self.sensors_rx {
+            match rx.recv_timeout(SENSORS_TIMEOUT) {
+                Ok(v) => {
+                    self.sensors_last = v;
+                    self.sensors_rx = None;
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    crate::debug!("sensor reads are slow; reusing the last readings");
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => self.sensors_rx = None,
+            }
+        }
+        self.sensors_last.clone()
     }
 
     fn statvfs_guarded(&mut self, mount: &str, path: PathBuf) -> Option<(u64, u64, u64)> {
@@ -142,9 +186,9 @@ impl Reader {
         }
     }
 
-    fn hwmon(&self) -> String {
+    fn hwmon(root: &Path) -> String {
         let mut out = String::new();
-        let base = self.p("sys/class/hwmon");
+        let base = root.join("sys/class/hwmon");
         for h in list_dir(&base).into_iter().filter(|n| n.starts_with("hwmon")) {
             let dir = base.join(&h);
             let name = fs::read_to_string(dir.join("name")).unwrap_or_default();
@@ -161,9 +205,9 @@ impl Reader {
         out
     }
 
-    fn thermal(&self) -> String {
+    fn thermal(root: &Path) -> String {
         let mut out = String::new();
-        let base = self.p("sys/class/thermal");
+        let base = root.join("sys/class/thermal");
         for z in list_dir(&base).into_iter().filter(|n| n.starts_with("thermal_zone")) {
             let Ok(t) = fs::read_to_string(base.join(&z).join("temp")) else { continue };
             let kind = fs::read_to_string(base.join(&z).join("type")).unwrap_or_default();
@@ -172,9 +216,9 @@ impl Reader {
         out
     }
 
-    fn drm(&self) -> String {
+    fn drm(root: &Path) -> String {
         let mut out = String::new();
-        let base = self.p("sys/class/drm");
+        let base = root.join("sys/class/drm");
         for c in list_dir(&base) {
             let Some(n) = c.strip_prefix("card") else { continue };
             if n.is_empty() || n.len() > 2 || !n.chars().all(|ch| ch.is_ascii_digit()) {
@@ -401,6 +445,32 @@ mod tests {
         assert!(raw.cpu.is_some() && !raw.cores.is_empty());
         assert!(raw.mem.total > 0);
         assert!(raw.kernel.starts_with("Linux "));
+    }
+
+    #[test]
+    fn a_hanging_sensor_does_not_stall_sampling() {
+        use std::os::unix::ffi::OsStrExt;
+        let d = tempfile::tempdir().unwrap();
+        write(d.path(), "proc/stat", "cpu  1 0 1 10 0 0 0 0 0 0\n");
+        write(d.path(), "sys/class/hwmon/hwmon0/name", "nvme\n");
+        // A FIFO with no writer blocks the reader in open(), like a drive
+        // that doesn't answer a temperature query.
+        let fifo = d.path().join("sys/class/hwmon/hwmon0/temp1_input");
+        let c = CString::new(fifo.as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        let mut r = Reader::at(d.path());
+        for _ in 0..3 {
+            let t = Instant::now();
+            let out = r.read();
+            assert!(t.elapsed() < Duration::from_secs(3), "{:?}", t.elapsed());
+            assert!(out.contains("@@hwmon\n@@thermal"), "{out}");
+        }
+        // Unblock the stuck read (the writer's close is EOF), swap in a real
+        // file, and the sensor comes back within a couple of samples.
+        drop(fs::OpenOptions::new().write(true).open(&fifo).unwrap());
+        fs::remove_file(&fifo).unwrap();
+        write(d.path(), "sys/class/hwmon/hwmon0/temp1_input", "41000\n");
+        assert!((0..5).any(|_| r.read().contains("nvme|41000|")));
     }
 
     #[test]

@@ -6,6 +6,7 @@
 - `health.latest` with the last reading of each, and `node.info.access.health`.
 - Alerts with the app's switches: SMART warning, pool degraded, and UPS on battery / low battery / replace battery. New updates and reboot-required are info events in the timeline.
 - `[health]` in the config: `enabled`, `ups`.
+- Sensors (hwmon, thermal zones, GPU sysfs) are read on a helper thread with a 1 s limit, so a drive or firmware that is slow to answer a temperature read can no longer stall sampling; the last readings are kept meanwhile.
 - `dist/uninstall.sh` also removes the helper units (netwatch, root helper, health) and the rollback directory.
 
 ## 0.10.0 · N4c (unreleased)
