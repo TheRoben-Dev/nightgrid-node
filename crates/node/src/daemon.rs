@@ -49,6 +49,10 @@ pub struct Shared {
     pub heal: Mutex<crate::heal::Heal>,
     /// The root helper's socket (tests point it elsewhere).
     pub helper_socket: PathBuf,
+    /// Host health readings from the health helper.
+    pub health: Mutex<crate::health::watch::HealthState>,
+    /// The health helper's socket (tests point it elsewhere).
+    pub health_socket: PathBuf,
 }
 
 impl Shared {
@@ -82,6 +86,8 @@ impl Shared {
             dhcp: Mutex::new(dhcp),
             heal: Mutex::new(heal),
             helper_socket: PathBuf::from(crate::helper::SOCKET),
+            health: Mutex::new(crate::health::watch::HealthState::default()),
+            health_socket: PathBuf::from(crate::health::watch::SOCKET),
         })
     }
 }
@@ -258,6 +264,11 @@ pub fn run(config: Config, paths: Paths) -> Result<(), String> {
         None
     };
     let healer = crate::heal::Healer::start(shared.clone()).map_err(|e| format!("self-healing: {e}"))?;
+    let health = if config.health.enabled {
+        Some(crate::health::watch::HealthWatcher::start(shared.clone()).map_err(|e| format!("health watcher: {e}"))?)
+    } else {
+        None
+    };
     let watcher = if config.docker.enabled {
         Some(crate::containers::Watcher::start(shared.clone()).map_err(|e| format!("container watcher: {e}"))?)
     } else {
@@ -291,6 +302,9 @@ pub fn run(config: Config, paths: Paths) -> Result<(), String> {
         w.stop();
     }
     if let Some(w) = network {
+        w.stop();
+    }
+    if let Some(w) = health {
         w.stop();
     }
     let _ = std::fs::remove_file(&config.server.socket);

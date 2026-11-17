@@ -1,0 +1,28 @@
+{
+  "json_format_version": [1, 0],
+  "smartctl": { "version": [7, 4], "exit_status": 0 },
+  "device": { "name": "/dev/nvme0", "info_name": "/dev/nvme0", "type": "nvme", "protocol": "NVMe" },
+  "model_name": "Example NVMe 1TB",
+  "serial_number": "EX0000000003",
+  "firmware_version": "3B2QGXA7",
+  "nvme_total_capacity": 1000204886016,
+  "smart_support": { "available": true, "enabled": true },
+  "smart_status": { "passed": true, "nvme": { "value": 0 } },
+  "nvme_smart_health_information_log": {
+    "critical_warning": 0,
+    "temperature": 74,
+    "available_spare": 100,
+    "available_spare_threshold": 10,
+    "percentage_used": 92,
+    "data_units_read": 234567,
+    "data_units_written": 123456,
+    "power_cycles": 900,
+    "power_on_hours": 8123,
+    "unsafe_shutdowns": 41,
+    "media_errors": 3,
+    "num_err_log_entries": 12
+  },
+  "temperature": { "current": 74 },
+  "power_cycle_count": 900,
+  "power_on_time": { "hours": 8123 }
+}

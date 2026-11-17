@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.11.0 · N5a (unreleased)
+
+- Host health, off until root runs `nightgrid-node allow health`: a read-only root helper (socket-activated per read, like the root helper) runs the app's own checks with the app's parsers: disk SMART (every hour), ZFS/mdadm/Btrfs pools (every 5 minutes), pending updates and reboot-required from the package manager's local cache (every 6 hours; the node never fetches package lists) and NUT UPS status (every 30 s, only for targets root lists in `[health] ups`).
+- `health.latest` with the last reading of each, and `node.info.access.health`.
+- Alerts with the app's switches: SMART warning, pool degraded, and UPS on battery / low battery / replace battery. New updates and reboot-required are info events in the timeline.
+- `[health]` in the config: `enabled`, `ups`.
+- `dist/uninstall.sh` also removes the helper units (netwatch, root helper, health) and the rollback directory.
+
 ## 0.10.0 · N4c (unreleased)
 
 - Rollbacks with a dead-man timer: `changes.begin` snapshots files (through the root helper, only under root's `[rollback] paths`), and unless the app calls `changes.confirm` in time the node puts them back, with owner and mode, removes files the change added, and runs an optional `onRevert` unit or container action. The timer survives restarts and reboots of the node. `changes.revert`, `changes.list`.

@@ -20,6 +20,23 @@ pub struct Config {
     pub network: NetworkConfig,
     pub actions: ActionsConfig,
     pub rollback: RollbackConfig,
+    pub health: HealthConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct HealthConfig {
+    /// Read disk SMART, storage pools, pending updates and UPS status through
+    /// the read-only health helper (after `allow health`).
+    pub enabled: bool,
+    /// NUT targets (`ups@host`) the helper may query with `upsc`.
+    pub ups: Vec<String>,
+}
+
+impl Default for HealthConfig {
+    fn default() -> Self {
+        Self { enabled: true, ups: Vec::new() }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -252,6 +269,12 @@ impl Config {
                 "actions.units: {u:?} is not a full unit name like nginx.service (the node's own units can't be listed)"
             ));
         }
+        if self.health.ups.len() > 16 {
+            return Err("health.ups takes at most 16 targets".into());
+        }
+        if let Some(u) = self.health.ups.iter().find(|u| !crate::health::ups::valid_target(u)) {
+            return Err(format!("health.ups: {u:?} is not a NUT target like ups@localhost"));
+        }
         if !(1..=64).contains(&self.server.max_connections) {
             return Err("server.max_connections must be 1-64".into());
         }
@@ -356,6 +379,15 @@ units = []
 #   nightgrid-node allow helper
 # again so the helper may write there.
 paths = []
+
+[health]
+# Disk SMART, storage pools (ZFS, mdadm, Btrfs, LVM), pending updates and
+# UPS status, read by a separate read-only helper that root turns on with
+#   nightgrid-node allow health
+# It runs the same checks as the app and changes nothing.
+enabled = true
+# NUT UPS targets to poll with upsc, e.g. ["ups@localhost"].
+ups = []
 "#;
 
 #[cfg(test)]

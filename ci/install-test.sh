@@ -288,6 +288,45 @@ PY
   test ! -e /run/nightgrid-node-helper.sock || fail "helper socket left after deny"
   q node.info | grep -q '"helper":"denied"' || fail "helper still ok after deny"
   systemctl stop ngn-dummy; rm -f /etc/systemd/system/ngn-dummy.service; systemctl daemon-reload
+
+  say "health helper: off until root allows it, then pools, SMART and updates"
+  q node.info | grep -q '"health":"denied"' || { q node.info; fail "health should be denied"; }
+  q health.latest | grep -q '"access":"denied"' || { q health.latest; fail "health.latest should say denied"; }
+  /usr/local/bin/nightgrid-node allow health --json | tee /tmp/ngn-allow-health.json
+  grep -q 'read-only' /tmp/ngn-allow-health.json || fail "no health warning"
+  [ "$(stat -c '%a %U' /run/nightgrid-node-health.sock)" = "600 nightgrid-node" ] || { stat /run/nightgrid-node-health.sock; fail "health socket mode"; }
+  as_user "python3 -c 'import socket; socket.socket(socket.AF_UNIX).connect(\"/run/nightgrid-node-health.sock\")'" 2>/dev/null && fail "a login user reached the health helper"
+  q node.info | grep -q '"health":"ok"' || { q node.info; fail "health not ok after allow"; }
+  i=0; until q health.latest | grep -q '"manager":"apt"'; do
+    i=$((i+1)); [ $i -lt 90 ] || { q health.latest; journalctl -u 'nightgrid-node-health@*' --no-pager -n 30; fail "no update check"; }; sleep 1; done
+  i=0; until q health.latest | grep -q '"smart":{'; do
+    i=$((i+1)); [ $i -lt 90 ] || { q health.latest; journalctl -u 'nightgrid-node-health@*' --no-pager -n 30; fail "no SMART read"; }; sleep 1; done
+  q health.latest | tee /tmp/ngn-health.json
+  grep -q '"pools":{"at":' /tmp/ngn-health.json || fail "no pools read"
+  python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); bad=[k for k in ("smart","pools","updates") if "error" in r[k]]; sys.exit(1 if bad else 0)' /tmp/ngn-health.json \
+    || { journalctl -u 'nightgrid-node-health@*' --no-pager -n 30; fail "a health read failed"; }
+  say "SMART reads the same through the sandbox as directly as root"
+  dev=$(smartctl --scan-open 2>/dev/null | awk '$1 ~ /^\/dev\// {print $1; exit}')
+  if [ -n "$dev" ]; then
+    direct=$(smartctl -a -j "$dev" | python3 -c 'import json,sys; print(json.load(sys.stdin)["smartctl"]["exit_status"] & 3)')
+    echo "direct smartctl on $dev: open/command bits $direct"
+    if [ "$direct" = 0 ] && grep -q "couldn't open the device" /tmp/ngn-health.json; then
+      journalctl -u 'nightgrid-node-health@*' --no-pager -n 30; fail "the health sandbox keeps smartctl from opening $dev"
+    fi
+  fi
+  say "the health helper only queries UPS targets root listed"
+  python3 - <<'PY' > /tmp/ngn-health-direct.json
+import socket
+s = socket.socket(socket.AF_UNIX)
+s.connect("/run/nightgrid-node-health.sock")
+s.sendall(b'{"read":"ups","target":"evil@203.0.113.9"}\n')
+print(s.makefile().readline())
+PY
+  cat /tmp/ngn-health-direct.json
+  grep -q '"ok":false' /tmp/ngn-health-direct.json || fail "health helper queried a UPS root did not list"
+  /usr/local/bin/nightgrid-node deny health >/dev/null
+  test ! -e /run/nightgrid-node-health.sock || fail "health socket left after deny"
+  q node.info | grep -q '"health":"denied"' || fail "health still ok after deny"
 fi
 
 say "reinstall (upgrade in place) keeps the node id"
