@@ -96,6 +96,11 @@ pub mod method {
     pub const CHECKS_LATEST: &str = "checks.latest";
     /// Internal: the check runner hands over results (service account only).
     pub const CHECKS_REPORT: &str = "checks.report";
+    /// The app's backup jobs for the node to watch (replaces the list).
+    pub const JOBS_SET: &str = "jobs.set";
+    pub const JOBS_GET: &str = "jobs.get";
+    /// Backup status and the last run of each of the app's scheduled jobs.
+    pub const JOBS_LATEST: &str = "jobs.latest";
     /// Protocol 2: start pushing frames for streams.
     pub const SUBSCRIBE: &str = "subscribe";
     /// Protocol 2: stop pushing frames for streams.
@@ -168,6 +173,9 @@ pub mod cap {
     /// `checks.set`, `checks.get`, `checks.latest`; service-down and
     /// certificate alerts from inside the LAN (with `allow checks`, 0.16.0).
     pub const CHECKS: &str = "checks";
+    /// `jobs.set`, `jobs.get`, `jobs.latest`; backup failed/stale alerts and
+    /// `job` events for backup units and the app's scheduled jobs (0.17.0).
+    pub const JOBS: &str = "jobs";
 }
 
 /// Typed actions (N4). Root lists the ones the node may run in
@@ -759,6 +767,8 @@ pub enum EventKind {
     Action,
     /// A socket started or stopped listening (0.14.0).
     Port,
+    /// A backup unit or one of the app's scheduled jobs finished a run (0.17.0).
+    Job,
     /// Kinds added by newer nodes.
     #[serde(other)]
     Other,
@@ -899,6 +909,9 @@ pub struct AlertRules {
     /// off unless the app sends it, so older apps never get a kind they
     /// can't read.
     pub login_burst: bool,
+    /// A watched backup job failed or has no good run within its limit
+    /// (`backup:<id>`, as in the app's `backupStale` switch).
+    pub backup_stale: bool,
 }
 
 impl Default for AlertRules {
@@ -917,6 +930,7 @@ impl Default for AlertRules {
             cert_expiring: true,
             cert_days: 14,
             login_burst: false,
+            backup_stale: true,
         }
     }
 }
@@ -1127,6 +1141,109 @@ pub struct ChecksLatest {
     /// `allow checks`) or `off`.
     pub access: String,
     pub readings: Vec<CheckReading>,
+}
+
+/// The tool a backup job runs. Same as the app's `backup_jobs::BackupTool`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BackupTool {
+    Restic,
+    Borg,
+    Rsync,
+    Rclone,
+    #[serde(other)]
+    Other,
+}
+
+/// Where a backup job's status comes from. Same as the app's `BackupSource`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BackupSource {
+    /// A systemd timer or service.
+    Unit,
+    /// A repository, target folder or marker file.
+    Path,
+}
+
+/// One backup job the app asks the node to watch. The app's
+/// `backup_jobs::BackupJob` without `hostId`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupJob {
+    pub id: i32,
+    pub name: String,
+    pub tool: BackupTool,
+    pub source: BackupSource,
+    /// Unit name or absolute path.
+    pub target: String,
+    /// Stale when the last good run is older than this (1-2160).
+    pub stale_hours: u32,
+}
+
+/// `jobs.set` params and `jobs.get` result.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JobsList {
+    pub backups: Vec<BackupJob>,
+    /// Seconds between reads (root's `[jobs] interval_secs`; ignored in `set`).
+    #[serde(default)]
+    pub interval: u32,
+}
+
+/// Same as the app's `backup_jobs::BackupResult`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BackupResult {
+    Ok,
+    Failed,
+    Running,
+    #[serde(other)]
+    Unknown,
+}
+
+/// Same fields as the app's `backup_jobs::BackupStatus`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupStatus {
+    pub job_id: i32,
+    pub result: BackupResult,
+    pub last_run: Option<f64>,
+    pub last_ok: Option<f64>,
+    pub exit_code: Option<i32>,
+    pub size: Option<u64>,
+    pub added: Option<u64>,
+    pub summary: Option<String>,
+    pub stale: bool,
+    pub error: Option<String>,
+}
+
+/// The last run of one of the app's scheduled jobs (`nightgrid-job-*`,
+/// `nightgrid-power-*`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JobRun {
+    /// Unit name without `.service`.
+    pub unit: String,
+    pub description: String,
+    /// `ok`, `failed`, `running` or `unknown` (no run since boot).
+    pub result: BackupResult,
+    pub started: Option<f64>,
+    pub finished: Option<f64>,
+    pub exit_code: Option<i32>,
+    /// The last line of output, or the error (masked if it looks secret).
+    pub summary: Option<String>,
+}
+
+/// `jobs.latest`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JobsLatest {
+    /// `ok`, or `off` (root turned `[jobs]` off).
+    pub access: String,
+    /// When it was read (unix seconds; 0 before the first read).
+    pub at: i64,
+    pub backups: Vec<BackupStatus>,
+    pub runs: Vec<JobRun>,
 }
 
 /// One blocked address.

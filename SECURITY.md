@@ -48,6 +48,10 @@ The node changes nothing on the host unless root lists an action type in `[actio
 
 Service checks need outbound connections, and the main service has none (`IPAddressDeny=any`, unix sockets only). `sudo nightgrid-node allow checks` installs `nightgrid-node-checks.service` instead: the same service account, no capabilities, IP sockets allowed only to the ranges in `[checks] networks` (private ranges by default) through systemd's `IPAddressAllow`, nothing to write. It reads the check list over the node's socket and hands back results, which the main service accepts only from its own account. URLs are parsed and checked before use, requests are fixed `GET`s that read only the status line, and nothing from responses is stored besides the status, timing and certificate details. Add a public range to `[checks] networks` (and run `allow checks` again) only for things you want checked outside your LAN (decision N-039). `sudo nightgrid-node deny checks` removes it.
 
+## Jobs and backups
+
+The node schedules and runs nothing for jobs: the app's timers are systemd's (`nightgrid-job-*`, `nightgrid-power-*`, installed by the app with the person's sudo confirmation), and the node only reads their state with `systemctl show`, their output with `journalctl` (with `allow journal`) and backup paths with the service account's read access. Unit names and paths from the app are validated before use and passed as arguments, never through a shell. Output lines that look like they carry a secret are hidden before they are stored (decision N-040).
+
 ## Root helper (`allow helper`)
 
 Unit and power actions need root. `sudo nightgrid-node allow helper` installs a socket that only the service account can reach; each request starts one short-lived root process that re-reads the root-owned config, runs `systemctl` on a unit root listed in `[actions] units` or schedules `shutdown` a minute ahead, answers and exits. A compromised service can ask only for what root listed. The helper has no network, no new privileges, a read-only system and only `CAP_SYS_BOOT` (decision N-032). `sudo nightgrid-node deny helper` removes it.

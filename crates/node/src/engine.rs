@@ -97,6 +97,9 @@ impl Engine {
             conds.extend(shared.logs.lock().unwrap_or_else(|e| e.into_inner()).conditions.iter().cloned());
             let interval = shared.config.checks.interval_secs;
             conds.extend(shared.checks.lock().unwrap_or_else(|e| e.into_inner()).conditions(&rules, interval, now));
+            if rules.backup_stale {
+                conds.extend(shared.jobs.lock().unwrap_or_else(|e| e.into_inner()).conditions(host));
+            }
             if rules.login_burst {
                 let mut l = shared.logins.lock().unwrap_or_else(|e| e.into_inner());
                 conds.extend(l.condition(host, shared.config.logins.burst, now));

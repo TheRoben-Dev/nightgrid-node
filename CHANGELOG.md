@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.17.0 · N7b (unreleased)
+
+- Backup status with the app closed: the app pushes its backup jobs (`jobs.set`: restic, borg, rsync or rclone, a systemd unit or a path, with a stale limit). The node reads them every minute with the app's own rules (last run, result, size, what was added, the run's error line) and raises `backupFailed` and `backupStale` alerts with the app's keys and its `backupStale` switch. Paths are walked at most every 10 minutes, and their size is read again only when the newest file changes.
+- The app's scheduled jobs (`nightgrid-job-*`) and backup units: each finished run is a `job` event ("job nightly sync failed (exit 2)", "backup nightly finished · snapshot 1a2b saved · 5.0 GiB"), including runs while the node was stopped. A scheduled reboot or shutdown (`nightgrid-power-*`) is recorded after the host is back, from the previous boot's journal.
+- `jobs.latest`; `[jobs]` in the config (`enabled`, `interval_secs`); capability `jobs` 1; `node.info.access.jobs`. Read-only: the node schedules and runs nothing itself (N-040). Run output needs `allow journal`.
+
 ## 0.16.0 · N7a (unreleased)
 
 - Service checks from inside the LAN: the app pushes its HTTP(S) and TCP checks (`checks.set`). After root runs `nightgrid-node allow checks`, a separate check runner (the service account, no capabilities, network access only to `[checks] networks`) runs them every minute with the app's own rules (expected status, certificate trust and expiry) and hands results to the node. `checks.latest`; `node.info.access.checks`.

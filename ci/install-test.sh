@@ -499,6 +499,72 @@ PY
   /usr/local/bin/nightgrid-node deny checks >/dev/null
   test ! -e /etc/systemd/system/nightgrid-node-checks.service || fail "runner unit left after deny"
   systemctl is-active --quiet nightgrid-node-checks && fail "runner still running after deny"
+
+  say "jobs: backup units and paths, the app's scheduled jobs, failed and stale backups alert"
+  sed -i '/^\[jobs\]/,/^\[/ s/^interval_secs = 60$/interval_secs = 30/' /etc/nightgrid-node/config.toml
+  /usr/local/bin/nightgrid-node allow journal >/dev/null
+  systemctl restart nightgrid-node
+  i=0; until q node.info >/dev/null 2>&1; do i=$((i+1)); [ $i -lt 30 ] || fail "not back after restart"; sleep 1; done
+  q node.info | grep -q '"jobs":1' || { q node.info; fail "no jobs cap"; }
+  cat > /etc/systemd/system/ngn-backup.service <<'UNIT'
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'echo "Added to the repository: 12.500 MiB (3.402 MiB stored)"; echo "processed 3 files, 1.000 KiB in 0:01"; echo "snapshot 1a2b3c4d saved"'
+UNIT
+  cat > /etc/systemd/system/ngn-backup.timer <<'UNIT'
+[Timer]
+OnCalendar=*-01-01 00:00:00
+UNIT
+  cat > /etc/systemd/system/ngn-failing.service <<'UNIT'
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'echo "Fatal: repository is locked"; exit 1'
+UNIT
+  cat > /etc/systemd/system/nightgrid-job-e2e.service <<'UNIT'
+# nightgrid {"name":"e2e test"}
+[Unit]
+Description=Nightgrid job: e2e test
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'echo working; echo "rsync error: e2e failure"; exit 3'
+UNIT
+  systemctl daemon-reload
+  mkdir -p /srv/ngn-backup/a /srv/ngn-old
+  head -c 20000 /dev/zero > /srv/ngn-backup/a/data
+  touch -d '3 days ago' /srv/ngn-old/file /srv/ngn-old
+  q "jobs.set '{\"backups\":[{\"id\":1,\"name\":\"nightly\",\"tool\":\"restic\",\"source\":\"unit\",\"target\":\"ngn-backup.timer\",\"staleHours\":26},{\"id\":2,\"name\":\"copy\",\"tool\":\"rsync\",\"source\":\"path\",\"target\":\"/srv/ngn-backup\",\"staleHours\":26},{\"id\":3,\"name\":\"old\",\"tool\":\"borg\",\"source\":\"path\",\"target\":\"/srv/ngn-old\",\"staleHours\":24},{\"id\":4,\"name\":\"locked\",\"tool\":\"restic\",\"source\":\"unit\",\"target\":\"ngn-failing.service\",\"staleHours\":26}]}'" | grep -q '"interval":30' || fail "jobs.set"
+  q "jobs.set '{\"backups\":[{\"id\":9,\"name\":\"x\",\"tool\":\"restic\",\"source\":\"unit\",\"target\":\"x; rm -rf /\",\"staleHours\":26}]}'" 2>&1 | grep -q "isn't a systemd unit" || fail "a bad unit name was accepted"
+  i=0; until q jobs.latest | grep -q '"jobId":4'; do
+    i=$((i+1)); [ $i -lt 30 ] || { q jobs.latest; fail "jobs never read"; }; sleep 1; done
+  systemctl start ngn-backup.service
+  systemctl start ngn-failing.service nightgrid-job-e2e.service 2>/dev/null || true
+  i=0; until ev | grep -q '"title":"job e2e test failed (exit 3)"'; do
+    i=$((i+1)); [ $i -lt 90 ] || { ev | tr '}' '\n' | grep -i job | tail -5; q jobs.latest; fail "no scheduled job event"; }; sleep 1; done
+  ev | grep -q '"title":"backup nightly finished"' || { q jobs.latest; fail "no backup finished event"; }
+  ev | grep -q '"title":"backup locked failed"' || fail "no backup failed event"
+  ev | tr '}' '\n' | grep -E 'backup nightly|job e2e' | head -2
+  q jobs.latest | tee /tmp/ngn-jobs.json
+  python3 - /tmp/ngn-jobs.json <<'PY' || fail "job results"
+import json, sys
+d = json.load(open(sys.argv[1]))
+b = {x["jobId"]: x for x in d["backups"]}
+assert b[1]["result"] == "ok" and b[1]["summary"] == "snapshot 1a2b3c4d saved" and b[1]["size"] == 1024, b[1]
+assert b[1]["added"] == 13107200 and not b[1]["stale"], b[1]
+assert b[2]["result"] == "ok" and b[2]["size"] >= 20000 and not b[2]["stale"], b[2]
+assert b[3]["stale"], b[3]
+assert b[4]["result"] == "failed" and b[4]["summary"] == "Fatal: repository is locked", b[4]
+r = {x["unit"]: x for x in d["runs"]}["nightgrid-job-e2e"]
+assert r["result"] == "failed" and r["exitCode"] == 3 and r["description"] == "e2e test", r
+assert r["summary"] == "rsync error: e2e failure", r
+PY
+  i=0; until q alerts.active | grep -q '"key":"backup:4"'; do
+    i=$((i+1)); [ $i -lt 150 ] || { q alerts.active; fail "no backup-failed alert"; }; sleep 1; done
+  q alerts.active | grep -q '"key":"backup:3"' || { q alerts.active; fail "no stale-backup alert"; }
+  q alerts.active | grep -q '"key":"backup:1"' && fail "a good backup alerted"
+  /usr/local/bin/nightgrid-node deny journal >/dev/null
+  rm -f /etc/systemd/system/ngn-backup.* /etc/systemd/system/ngn-failing.service /etc/systemd/system/nightgrid-job-e2e.service
+  systemctl daemon-reload
 fi
 
 say "reinstall (upgrade in place) keeps the node id"
