@@ -27,6 +27,54 @@ pub struct Config {
     pub block: BlockConfig,
     pub checks: ChecksConfig,
     pub jobs: JobsConfig,
+    pub ups: UpsConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct UpsConfig {
+    /// Power this host off when the UPS has been on battery too long. Also
+    /// needs `power.poweroff` in `[actions] allow`, the root helper, `allow
+    /// health` and the UPS in `[health] ups`. Off by default.
+    pub shutdown: bool,
+    /// The `[health] ups` entry to follow (empty: the first).
+    pub target: String,
+    /// Minutes on battery before the countdown starts (0: no time limit; 0-1440).
+    pub on_battery_minutes: u32,
+    /// Battery charge below which the countdown starts (0: off; 0-95).
+    pub below_percent: u8,
+    /// Start the countdown when the UPS reports low battery (`LB`).
+    pub low_battery: bool,
+    /// Seconds between announcing the shutdown and requesting it (0-600).
+    /// The power-off itself follows a minute later.
+    pub countdown_secs: u32,
+    /// Only log the power-off, to try the settings.
+    pub dry_run: bool,
+}
+
+impl Default for UpsConfig {
+    fn default() -> Self {
+        Self {
+            shutdown: false,
+            target: String::new(),
+            on_battery_minutes: 5,
+            below_percent: 0,
+            low_battery: true,
+            countdown_secs: 60,
+            dry_run: false,
+        }
+    }
+}
+
+impl UpsConfig {
+    /// The UPS to follow.
+    pub fn target<'a>(&'a self, health: &'a HealthConfig) -> Option<&'a str> {
+        if self.target.is_empty() {
+            health.ups.first().map(String::as_str)
+        } else {
+            health.ups.iter().find(|u| **u == self.target).map(String::as_str)
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -403,6 +451,22 @@ impl Config {
         if !(30..=3600).contains(&self.checks.interval_secs) {
             return Err("checks.interval_secs must be 30-3600".into());
         }
+        if self.ups.on_battery_minutes > 1440 {
+            return Err("ups.on_battery_minutes must be 0-1440".into());
+        }
+        if self.ups.below_percent > 95 {
+            return Err("ups.below_percent must be 0-95".into());
+        }
+        if self.ups.countdown_secs > 600 {
+            return Err("ups.countdown_secs must be 0-600".into());
+        }
+        if !self.ups.target.is_empty() && !self.health.ups.contains(&self.ups.target) {
+            return Err("ups.target must be one of [health] ups".into());
+        }
+        if self.ups.shutdown && self.ups.on_battery_minutes == 0 && self.ups.below_percent == 0 && !self.ups.low_battery
+        {
+            return Err("[ups] shutdown needs a limit: on_battery_minutes, below_percent or low_battery".into());
+        }
         if !(30..=3600).contains(&self.jobs.interval_secs) {
             return Err("jobs.interval_secs must be 30-3600".into());
         }
@@ -675,6 +739,28 @@ networks = [
 enabled = true
 # Seconds between reads (30-3600).
 interval_secs = 60
+
+[ups]
+# Power this host off by itself when the UPS has been on battery too long,
+# with the app closed. Each host decides alone from the UPS's own reading, so
+# give the hosts that must stay up longest (storage, the NUT server) larger
+# limits. Also needs "power.poweroff" in [actions] allow,
+# `nightgrid-node allow helper`, `allow health` and the UPS in [health] ups.
+# Every step is in the timeline and the action log. Off by default.
+shutdown = false
+# The [health] ups entry to follow (empty: the first).
+target = ""
+# Minutes on battery before the countdown starts (0: no time limit).
+on_battery_minutes = 5
+# Battery charge (percent) below which the countdown starts (0: off).
+below_percent = 0
+# Start the countdown when the UPS itself reports low battery.
+low_battery = true
+# Seconds to announce the shutdown before requesting it (the app can cancel
+# it; power coming back cancels it). The power-off follows a minute later.
+countdown_secs = 60
+# Only log the power-off, to try the settings.
+dry_run = false
 "#;
 
 #[cfg(test)]

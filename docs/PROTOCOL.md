@@ -104,6 +104,7 @@ The node never buffers without bound for a slow client: each stream keeps a shor
 | `security` 1 | `ports.list`; `port` events; `loginBurst` alerts; the wider file baseline; `ports` on containers | N6b |
 | `block` 1 | `firewall.block` / `firewall.unblock` actions; `block.list`; optional auto-block of failed-login bursts | N6c |
 | `checks` 1 | `checks.set`, `checks.get`, `checks.latest`; `serviceDown` and `certExpiring` alerts (with `allow checks`) | N7a |
+| `ups` 1 | `ups.guard`, `ups.cancel`; the UPS shutdown guard (`[ups] shutdown`) | N7c |
 | `jobs` 1 | `jobs.set`, `jobs.get`, `jobs.latest`; `job` events; `backupFailed` and `backupStale` alerts | N7b |
 
 ### `node.info` (`node` 1)
@@ -514,6 +515,24 @@ Events (`job`, 0.17.0), once per finished run, also for runs while the node was 
 - "scheduled reboot ran" (`info`), recorded at the next start when the previous boot's journal shows a `nightgrid-power-*` unit started (needs a persistent journal and `allow journal`).
 
 Alerts, with the app's keys (no host segment) and its `backupStale` switch: `backupFailed` `backup:<id>` (`critical`, the error line as detail) and `backupStale` `backup:<id>` (`warn`, "no good run in the last 26 hours"). Titles are "<name> on <hostname>", as in the app.
+
+### `ups.guard` / `ups.cancel` (`ups` 1)
+
+`ups.guard`:
+
+```json
+{"enabled": true, "dryRun": false, "target": "ups@nas", "onBatteryMinutes": 5, "belowPercent": 0, "lowBattery": true,
+ "countdownSecs": 60, "phase": "countdown", "since": 1763290000, "deadline": 1763290360,
+ "reason": "on battery for 5 min", "problem": null}
+```
+
+- Settings are root's `[ups]`; `target` is the `[health] ups` entry followed. `problem` says why the guard couldn't power off ("power.poweroff isn't in [actions] allow", no UPS listed), else `null`.
+- `phase`: `idle`, `onBattery`, `countdown` (powers off at `deadline`), `shuttingDown` (the power-off was requested: `power.poweroff` in the action log with source `ups`, a minute ahead), `cancelled` (for the rest of this outage).
+- While on battery the UPS is read every 10 s instead of 30 s.
+
+`ups.cancel` (no params) cancels a countdown, or the watch for this outage, and answers like `ups.guard`. It can't start anything.
+
+Events (`other`): "UPS shutdown in 60 s" (`critical`, with the reason), "UPS shutdown cancelled: power is back" (`ok`), "UPS shutdown cancelled" (`warn`, from the app).
 
 ### `block.list` (`block` 1)
 

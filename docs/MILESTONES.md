@@ -90,6 +90,7 @@ Scope:
 
 - **N7a (0.16.0):** service checks (HTTP(S), TLS expiry, TCP) through a separate network-limited runner (N-039). App spec 0012. Node-to-node probes are TCP checks between nodes.
 - **N7b (0.17.0):** backup status and alerts for the app's backup jobs; `job` events for every run of backup units and the app's scheduled jobs, scheduled reboots included. The node watches systemd's timers instead of scheduling (N-040). App spec 0013.
+- **N7c (0.18.0):** UPS shutdown per host with root's limits and a cancellable countdown, no node-to-node link (N-041). Staged restarts across hosts stay in the app. App spec 0014.
 - Service checks from the node (HTTP(S), TCP, TLS expiry) and node-to-node probes, so the app can tell "really down" from "only unreachable over the tailnet". First outbound network: a systemd drop-in that allows exactly the configured addresses.
 - Scheduled jobs that run with the app closed: backups, test restores, update windows, reboots. Results kept for the app; power jobs opt-in and audited.
 - Backup job status (restic/borg/rsync, moved from N5): last run, result and staleness alerts for the jobs the app defines.

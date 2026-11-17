@@ -36,5 +36,6 @@ pub mod rollback;
 pub mod server;
 pub mod sniff;
 pub mod store;
+pub mod upsguard;
 pub mod uptime;
 pub mod usage;

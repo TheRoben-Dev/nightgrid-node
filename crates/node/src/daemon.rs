@@ -69,6 +69,8 @@ pub struct Shared {
     pub checks: Mutex<crate::checks::ChecksState>,
     /// The app's backup jobs and the latest read of them and its scheduled jobs.
     pub jobs: Mutex<crate::jobs::JobsState>,
+    /// The UPS shutdown guard (`[ups] shutdown`).
+    pub ups_guard: Mutex<crate::upsguard::Guard>,
 }
 
 impl Shared {
@@ -113,6 +115,7 @@ impl Shared {
             autoblock: Mutex::new(None),
             checks: Mutex::new(crate::checks::ChecksState::default()),
             jobs: Mutex::new(crate::jobs::JobsState::default()),
+            ups_guard: Mutex::new(crate::upsguard::Guard::default()),
         })
     }
 }

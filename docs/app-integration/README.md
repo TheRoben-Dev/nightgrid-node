@@ -17,6 +17,7 @@ The Nightgrid app repository is developed elsewhere and is read-only from here. 
 | [0011 · Blocking addresses](0011-blocking.md) | N6c | proposed |
 | [0012 · Service checks](0012-service-checks.md) | N7a | proposed |
 | [0013 · Backups and scheduled jobs](0013-backups-and-jobs.md) | N7b | proposed |
+| [0014 · UPS shutdown](0014-ups-shutdown.md) | N7c | proposed |
 
 Rules every spec follows:
 
