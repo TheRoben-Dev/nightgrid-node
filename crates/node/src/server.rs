@@ -753,6 +753,54 @@ fn dispatch(shared: &Shared, session: &mut Session, req: &Request) -> Result<Res
             }
             Ok(Response::ok(0, Value::Null))
         }
+        method::PEERS_INBOUND => {
+            // Only the link, which runs as the service's own account and has
+            // checked the peer's certificate.
+            // SAFETY: geteuid has no preconditions.
+            let me = unsafe { libc::geteuid() };
+            if session.uid.parse::<u32>().ok() != Some(me) {
+                return Err(Response::err(0, ErrorCode::Forbidden, "only the node-to-node link may pass requests on"));
+            }
+            let p: nightgrid_node_proto::PeerInbound = params(&req.params)?;
+            let peer =
+                shared.peers.lock().unwrap_or_else(|e| e.into_inner()).list.iter().find(|x| x.id == p.from).cloned();
+            let Some(peer) = peer else {
+                return Err(Response::err(0, ErrorCode::Forbidden, "not paired"));
+            };
+            if !shared.config.peers.serve.contains(&p.method) {
+                return Err(Response::err(
+                    0,
+                    ErrorCode::Forbidden,
+                    format!("{:?} isn't served here ([peers] serve)", p.method),
+                ));
+            }
+            match p.method.as_str() {
+                "ups" => {
+                    if !peer.follow_ups {
+                        return Err(Response::err(0, ErrorCode::Forbidden, "this host doesn't follow that node's UPS"));
+                    }
+                    if !shared.config.ups.shutdown {
+                        return Err(Response::err(
+                            0,
+                            ErrorCode::Forbidden,
+                            "UPS shutdown is off here ([ups] shutdown)",
+                        ));
+                    }
+                    let n: nightgrid_node_proto::UpsNotice = serde_json::from_value(p.params)
+                        .map_err(|e| Response::err(0, ErrorCode::BadRequest, e.to_string()))?;
+                    let steps = shared.ups_guard.lock().unwrap_or_else(|e| e.into_inner()).peer(
+                        &shared.config,
+                        &peer.name,
+                        &n,
+                        crate::daemon::now_secs(),
+                    );
+                    crate::upsguard::apply(shared, steps);
+                    let g = shared.ups_guard.lock().unwrap_or_else(|e| e.into_inner()).status(&shared.config);
+                    Ok(Response::ok(0, serde_json::json!({"phase": g.phase})))
+                }
+                m => Err(Response::err(0, ErrorCode::BadRequest, format!("unknown peer request {m:?}"))),
+            }
+        }
         method::UPS_GUARD => {
             let g = shared.ups_guard.lock().unwrap_or_else(|e| e.into_inner()).status(&shared.config);
             Ok(Response::ok(0, g))

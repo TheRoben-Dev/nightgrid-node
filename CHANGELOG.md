@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.21.0 · N8c (unreleased)
+
+- UPS group shutdown over the node-to-node link (opt-in on each follower): when the host that reads the UPS starts its shutdown countdown, it tells its paired peers right away (and again every minute while it lasts). A peer the app marked `followUps`, whose root lists `"ups"` in `[peers] serve` and turned on `[ups] shutdown`, starts its own countdown with its own `countdown_secs`, so followers go first and the UPS host last, as in the app's group shutdown. Power coming back or a cancel on the UPS host ends it on the followers too; a cancel on a follower holds only that follower.
+- A follower needs no NUT client or `[health] ups` of its own, only the root helper and `power.poweroff` in `[actions] allow`. Its countdown ends on time even if the UPS host is already gone. A follower's own "on line power" reading doesn't end a shutdown it follows.
+- `ups.guard` gains `ledBy` (the peer followed); `peers.set` entries gain `followUps`. Requests on the link that need the node (`peer.ups`) go to it as internal `peers.inbound`, which checks root's `serve`, the pairing and `followUps` again (N-044).
+
 ## 0.20.0 · N8b (unreleased)
 
 - An opt-in node-to-node link (each node still acts alone by default). `sudo nightgrid-node allow peers` installs `nightgrid-node-peer.service`: the service account, no capabilities, network access only to `[peers] networks` (tailnet ranges by default). It makes an Ed25519 key and self-signed certificate on first start (mode 0600, in `/var/lib/nightgrid-node-peer`) and listens on this host's tailnet address (`[peers] listen`, port 7419), never on every interface.

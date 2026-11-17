@@ -381,3 +381,82 @@ fn paired_nodes_reach_each_other_over_the_link() {
     let v = latest(&b, |v| v["readings"][0]["ok"] == true);
     assert_eq!(v["readings"][0]["id"], id_a.as_str());
 }
+
+#[test]
+fn follows_a_paired_peers_ups_shutdown() {
+    use nightgrid_node::peers;
+    let addr_b = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().to_string();
+    let serve = "[peers]\nserve = [\"ping\", \"ups\"]\nnetworks = [\"127.0.0.0/8\"]\n";
+    let b = start_with(&format!(
+        "[actions]\nallow = [\"power.poweroff\"]\n[ups]\nshutdown = true\ndry_run = true\ncountdown_secs = 300\n{serve}"
+    ));
+    let keys = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(keys.path().join("b")).unwrap();
+    let config = keys.path().join("peer.toml");
+    std::fs::write(
+        &config,
+        format!("[server]\nsocket = {:?}\n{serve}listen = {addr_b:?}\ninterval_secs = 30\n", b.socket),
+    )
+    .unwrap();
+    let _lb = Link(
+        Command::new(BIN)
+            .args(["peer", "--config"])
+            .arg(&config)
+            .env("STATE_DIRECTORY", keys.path().join("b"))
+            .stdin(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let vb = latest(&b, |v| v["listening"].is_string());
+    let fp_b = vb["fingerprint"].as_str().unwrap().to_owned();
+
+    // A is the test itself, with its own link identity.
+    let a = peers::identity(&keys.path().join("a")).unwrap();
+    let id_a = "a".repeat(32);
+    let mut c = Client::connect(&b.socket, "e2e").unwrap();
+    let pair = |c: &mut Client, follow: bool| {
+        c.call(
+            "peers.set",
+            json!({"peers": [{"id": id_a, "name": "nas", "address": "127.0.0.1:9", "fingerprint": a.fingerprint, "followUps": follow}]}),
+        )
+        .unwrap();
+    };
+    let to_b = nightgrid_node_proto::Peer {
+        id: String::new(),
+        name: "b".into(),
+        address: addr_b.clone(),
+        fingerprint: fp_b,
+        follow_ups: false,
+    };
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let tell = |phase: &str| {
+        rt.block_on(peers::request(
+            &a,
+            &to_b,
+            &json!({"method": "peer.ups", "params": {"phase": phase, "reason": "on battery for 5 min", "target": "ups@nas"}}),
+        ))
+    };
+    // Paired, but not followed: refused. (B learns the list within 10 s.)
+    pair(&mut c, false);
+    let t = Instant::now();
+    let err = loop {
+        let e = tell("countdown").unwrap_err();
+        if e != "not paired" && !e.contains("certificate") && !e.contains("refused this node") {
+            break e;
+        }
+        assert!(t.elapsed() < Duration::from_secs(20), "B never took the pairing: {e}");
+        std::thread::sleep(Duration::from_millis(500));
+    };
+    assert!(err.contains("doesn't follow"), "{err}");
+    pair(&mut c, true);
+    std::thread::sleep(Duration::from_secs(11));
+    let r = tell("countdown").unwrap();
+    assert_eq!(r["phase"], "countdown");
+    let g = c.call("ups.guard", Value::Null).unwrap();
+    assert_eq!(g["ledBy"], "nas", "{g}");
+    assert!(g["reason"].as_str().unwrap().starts_with("nas is shutting down for ups@nas"), "{g}");
+    let ev = c.call("events.sync", json!({"after": 0})).unwrap().to_string();
+    assert!(ev.contains("UPS shutdown in 5 min"), "{ev}");
+    assert_eq!(tell("idle").unwrap()["phase"], "idle");
+    assert_eq!(c.call("ups.guard", Value::Null).unwrap()["phase"], "idle");
+}

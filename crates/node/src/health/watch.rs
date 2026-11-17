@@ -336,6 +336,11 @@ fn tick(shared: &Shared, due: &mut [Due; 4]) {
         h.smart.clear();
         h.pools.clear();
         h.ups.clear();
+        drop(h);
+        // A countdown that follows a peer still ends on time without the helper.
+        if shared.ups_guard.lock().unwrap_or_else(|e| e.into_inner()).active() {
+            guard(shared, None, now, &mut due[3]);
+        }
         return;
     }
     if due[0].take(now) {

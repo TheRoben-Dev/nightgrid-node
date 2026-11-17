@@ -51,7 +51,7 @@ pub struct PeersConfig {
 
 pub const DEFAULT_PEER_NETWORKS: &[&str] = &["100.64.0.0/10", "fd7a:115c:a1e0::/48"];
 /// What `[peers] serve` may list.
-pub const PEER_SERVES: &[&str] = &["ping"];
+pub const PEER_SERVES: &[&str] = &["ping", "ups"];
 
 impl Default for PeersConfig {
     fn default() -> Self {
@@ -806,6 +806,8 @@ interval_secs = 60
 # give the hosts that must stay up longest (storage, the NUT server) larger
 # limits. Also needs "power.poweroff" in [actions] allow,
 # `nightgrid-node allow helper`, `allow health` and the UPS in [health] ups.
+# A host that can't read the UPS can follow a paired peer's shutdown instead
+# ("ups" in [peers] serve); it then needs only the helper and the allow.
 # Every step is in the timeline and the action log. Off by default.
 shutdown = false
 # The [health] ups entry to follow (empty: the first).
@@ -835,7 +837,11 @@ listen = "tailnet"
 # Port for "tailnet".
 port = 7419
 networks = ["100.64.0.0/10", "fd7a:115c:a1e0::/48"]
-# What peers may ask this node: "ping" (version, host name, uptime).
+# What paired peers may ask this node:
+#   "ping"  version, host name and uptime (reachability);
+#   "ups"   start this host's UPS shutdown when a peer the app marked
+#           "follow" starts its own, and end it when that peer's power is
+#           back. Also needs [ups] shutdown and its requirements here.
 serve = ["ping"]
 # Seconds between probes of each peer (30-3600).
 interval_secs = 60

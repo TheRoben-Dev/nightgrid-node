@@ -10,8 +10,15 @@
 //! allow it, and it is in the action log. A countdown is announced first;
 //! power coming back or `ups.cancel` stops it, and a cancelled shutdown stays
 //! off for the rest of that outage, like the app's group shutdown (D-112).
+//!
+//! With the node-to-node link (N8c), a host can also follow a paired peer's
+//! guard: when that peer starts its countdown, this host starts its own
+//! (with its own `countdown_secs`), and the peer's power coming back or a
+//! cancel there ends it. That needs root's `[peers] serve` to list "ups"
+//! here, and the app to mark the peer `followUps`. Hosts that can't read
+//! the UPS themselves (no NUT client) can follow the one that can.
 
-use nightgrid_node_proto::{action, ActionRequest, EventKind, Level, UpsGuard, UpsPhase};
+use nightgrid_node_proto::{action, ActionRequest, EventKind, Level, UpsGuard, UpsNotice, UpsPhase};
 
 use crate::config::Config;
 use crate::daemon::Shared;
@@ -32,6 +39,8 @@ pub struct Guard {
     pub since: Option<i64>,
     pub deadline: Option<i64>,
     pub reason: Option<String>,
+    /// The peer whose shutdown this one follows.
+    pub led_by: Option<String>,
 }
 
 impl Guard {
@@ -53,6 +62,8 @@ impl Guard {
             // No answer (the NUT server may have lost power too): keep going.
             Some(r) if r.error.is_some() => {}
             None => {}
+            // Following a peer: its notices decide, not this host's reading.
+            Some(r) if !r.on_battery && self.led_by.is_some() => {}
             Some(r) if !r.on_battery => {
                 if self.phase == UpsPhase::Countdown {
                     out.push(Step::Event(NewEvent::new(
@@ -102,6 +113,72 @@ impl Guard {
         out
     }
 
+    /// A notice from a paired peer this host follows (`name`).
+    pub fn peer(&mut self, cfg: &Config, name: &str, n: &UpsNotice, now: i64) -> Vec<Step> {
+        let mut out = Vec::new();
+        let u = &cfg.ups;
+        if !u.shutdown {
+            return out;
+        }
+        let ours = self.led_by.as_deref() == Some(name);
+        match n.phase {
+            UpsPhase::Countdown | UpsPhase::ShuttingDown => {
+                if !matches!(self.phase, UpsPhase::Idle | UpsPhase::OnBattery) {
+                    return out;
+                }
+                let why = format!(
+                    "{name} is shutting down for {}{}",
+                    n.target.as_deref().unwrap_or("its UPS"),
+                    n.reason.as_deref().map(|r| format!(" ({r})")).unwrap_or_default()
+                );
+                self.since.get_or_insert(now);
+                self.phase = UpsPhase::Countdown;
+                self.deadline = Some(now + i64::from(u.countdown_secs));
+                self.reason = Some(why.clone());
+                self.led_by = Some(name.to_owned());
+                out.push(Step::Event(NewEvent::new(
+                    now,
+                    EventKind::Other,
+                    Level::Critical,
+                    if u.countdown_secs == 0 {
+                        "UPS shutdown now".to_owned()
+                    } else {
+                        format!("UPS shutdown in {}", words(u.countdown_secs))
+                    },
+                    format!(
+                        "{why}. This host follows it and powers off{} unless power returns or it is cancelled in the app.",
+                        if u.dry_run { " (dry run: only logged)" } else { "" }
+                    ),
+                )));
+                if self.deadline.is_some_and(|d| now >= d) {
+                    self.phase = UpsPhase::ShuttingDown;
+                    out.push(Step::PowerOff);
+                }
+            }
+            UpsPhase::Idle | UpsPhase::Cancelled if ours => {
+                let back = n.phase == UpsPhase::Idle;
+                if self.phase == UpsPhase::Countdown {
+                    out.push(Step::Event(NewEvent::new(
+                        now,
+                        EventKind::Other,
+                        if back { Level::Ok } else { Level::Warn },
+                        if back { "UPS shutdown cancelled: power is back" } else { "UPS shutdown cancelled" },
+                        if back {
+                            format!("{name} is on line power again")
+                        } else {
+                            format!("{name} cancelled its shutdown, so this host stays on too")
+                        },
+                    )));
+                }
+                if self.phase != UpsPhase::ShuttingDown || u.dry_run {
+                    *self = Guard::default();
+                }
+            }
+            _ => {}
+        }
+        out
+    }
+
     /// `ups.cancel`: stops a countdown (or the watch) for this outage.
     pub fn cancel(&mut self, now: i64) -> Option<NewEvent> {
         if !matches!(self.phase, UpsPhase::OnBattery | UpsPhase::Countdown) {
@@ -138,6 +215,7 @@ impl Guard {
             deadline: self.deadline,
             reason: self.reason.clone(),
             problem: problem(cfg),
+            led_by: self.led_by.clone(),
         }
     }
 }
@@ -164,8 +242,11 @@ pub fn problem(cfg: &Config) -> Option<String> {
     if !cfg.ups.shutdown {
         return None;
     }
-    if !cfg.health.enabled || cfg.ups.target(&cfg.health).is_none() {
-        return Some("no UPS to follow: list it in [health] ups".into());
+    if !cfg.health.enabled {
+        return Some("[health] enabled is off".into());
+    }
+    if cfg.ups.target(&cfg.health).is_none() && !cfg.peers.serve.iter().any(|s| s == "ups") {
+        return Some("no UPS to follow: list it in [health] ups, or follow a peer's (\"ups\" in [peers] serve)".into());
     }
     if !cfg.actions.allow.iter().any(|a| a == action::POWER_POWEROFF) {
         return Some(format!("{} isn't in [actions] allow", action::POWER_POWEROFF));
@@ -272,6 +353,45 @@ mod tests {
         assert_eq!(g.phase, UpsPhase::OnBattery, "an unreadable UPS changes nothing");
         let s = g.step(&c, Some(&reading("ups.status: OB\nbattery.charge: 45\n")), 20);
         assert_eq!(titles(&s), ["UPS shutdown now", "POWEROFF"]);
+    }
+
+    fn notice(phase: UpsPhase) -> UpsNotice {
+        UpsNotice { phase, reason: Some("on battery for 5 min".into()), target: Some("ups@localhost".into()) }
+    }
+
+    #[test]
+    fn follows_a_peer() {
+        let mut c = cfg();
+        // This host reads no UPS itself.
+        c.health.ups.clear();
+        c.peers.serve = vec!["ping".into(), "ups".into()];
+        assert!(problem(&c).is_none(), "{:?}", problem(&c));
+        let mut g = Guard::default();
+        let s = g.peer(&c, "nas", &notice(UpsPhase::Countdown), 100);
+        assert_eq!(titles(&s), ["UPS shutdown in 60 s"]);
+        assert_eq!(g.led_by.as_deref(), Some("nas"));
+        assert!(g.reason.as_deref().unwrap().starts_with("nas is shutting down for ups@localhost"));
+        assert!(g.peer(&c, "nas", &notice(UpsPhase::ShuttingDown), 120).is_empty(), "already counting down");
+        // Line power here doesn't end it: the peer decides.
+        assert!(g.step(&c, Some(&reading("ups.status: OL\n")), 130).is_empty());
+        assert_eq!(g.phase, UpsPhase::Countdown);
+        // Another peer's "power back" doesn't either.
+        assert!(g.peer(&c, "pi", &notice(UpsPhase::Idle), 140).is_empty());
+        assert_eq!(titles(&g.peer(&c, "nas", &notice(UpsPhase::Idle), 150)), ["UPS shutdown cancelled: power is back"]);
+        assert_eq!(g.phase, UpsPhase::Idle);
+        assert!(g.led_by.is_none());
+        // Again, and this time the clock runs out with no word from the peer.
+        g.peer(&c, "nas", &notice(UpsPhase::Countdown), 200);
+        assert_eq!(titles(&g.step(&c, None, 261)), ["POWEROFF"]);
+        // The peer cancelling ends a countdown too.
+        let mut g = Guard::default();
+        g.peer(&c, "nas", &notice(UpsPhase::Countdown), 0);
+        assert_eq!(titles(&g.peer(&c, "nas", &notice(UpsPhase::Cancelled), 5)), ["UPS shutdown cancelled"]);
+        // Off here: nothing.
+        c.ups.shutdown = false;
+        let mut g = Guard::default();
+        assert!(g.peer(&c, "nas", &notice(UpsPhase::Countdown), 0).is_empty());
+        assert_eq!(g.phase, UpsPhase::Idle);
     }
 
     #[test]

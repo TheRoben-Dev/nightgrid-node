@@ -106,11 +106,7 @@ Scope:
   - mutual TLS 1.3 with certificates pinned per peer, paired through the app, so no trust-on-first-use;
   - every request typed and checked against root's `[peers] serve` on the receiving side;
   - peer reachability: pings, round trip, version, and "unreachable" / "reachable again" events.
-- **N8c:** features on the link, each opt-in on both sides:
-  - peer reachability and health ("is nas up from here?"), so alerts can tell a dead host from a broken path;
-  - UPS group shutdown led by the host that reads the UPS, with the per-host guard (N7c) as the fallback;
-  - staged restarts across hosts (one at a time, each waiting for the last to be healthy);
-  - alerts relayed to a peer while the app is closed, so a host that can't reach its own notifier isn't silent.
+- **N8c (0.21.0):** UPS group shutdown over the link: hosts the app marks as following a UPS host start their own countdown when it starts its own, and stop when its power returns (N-044). App spec 0017. Peer reachability came with N8b. Staged restarts and alert relay stay in the app (N-044).
 - **N8d:** an optional read-only status page over the tailnet only, off by default, auth required.
 - App specs for each part.
 

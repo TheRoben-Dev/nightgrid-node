@@ -114,6 +114,8 @@ pub mod method {
     pub const PEERS_LATEST: &str = "peers.latest";
     /// Internal: the link unit hands over its identity and probes (service account only).
     pub const PEERS_REPORT: &str = "peers.report";
+    /// Internal: a request from a paired peer, passed on by the link.
+    pub const PEERS_INBOUND: &str = "peers.inbound";
     /// Protocol 2: start pushing frames for streams.
     pub const SUBSCRIBE: &str = "subscribe";
     /// Protocol 2: stop pushing frames for streams.
@@ -1307,6 +1309,9 @@ pub struct UpsGuard {
     pub reason: Option<String>,
     /// Why the guard can't act ("power.poweroff isn't in [actions] allow").
     pub problem: Option<String>,
+    /// The peer whose UPS shutdown this host is following (0.21.0).
+    #[serde(default)]
+    pub led_by: Option<String>,
 }
 
 /// A node this one may talk to. The app pairs nodes by giving each the
@@ -1321,6 +1326,34 @@ pub struct Peer {
     pub address: String,
     /// SHA-256 of the peer's link certificate (64 hex digits), from its `peers.latest`.
     pub fingerprint: String,
+    /// This host powers off when that peer's UPS guard does (0.21.0). Also
+    /// needs root's `[peers] serve` to list "ups" and `[ups] shutdown` here.
+    #[serde(default)]
+    pub follow_ups: bool,
+}
+
+/// What a node tells its peers when its UPS guard moves (`peer.ups`, on the link).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpsNotice {
+    /// `countdown` or `shuttingDown`: shut down; `idle`: power is back;
+    /// `cancelled`: the shutdown was cancelled for this outage.
+    pub phase: UpsPhase,
+    pub reason: Option<String>,
+    /// The UPS the sender follows.
+    pub target: Option<String>,
+}
+
+/// `peers.inbound` params (internal): a request a paired peer made on the link.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PeerInbound {
+    /// The peer's id, from the certificate it presented.
+    pub from: String,
+    /// The link method without `peer.` (`ups`).
+    pub method: String,
+    #[serde(default)]
+    pub params: serde_json::Value,
 }
 
 /// `peers.set` params and `peers.get` result.

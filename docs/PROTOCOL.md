@@ -533,6 +533,8 @@ Alerts, with the app's keys (no host segment) and its `backupStale` switch: `bac
 
 `ups.cancel` (no params) cancels a countdown, or the watch for this outage, and answers like `ups.guard`. It can't start anything.
 
+`ledBy` (0.21.0): the paired peer whose shutdown this host follows, with `reason` "nas is shutting down for ups@nas (on battery for 5 min)". `problem` is also `null` without a UPS of its own when `[peers] serve` lists "ups".
+
 Events (`other`): "UPS shutdown in 60 s" (`critical`, with the reason), "UPS shutdown cancelled: power is back" (`ok`), "UPS shutdown cancelled" (`warn`, from the app).
 
 ### `peers.set` / `peers.get` / `peers.latest` (`peers` 1)
@@ -544,6 +546,7 @@ The app pairs nodes. `peers.set` replaces this node's list (at most 64) and answ
  "interval": 60, "serve": ["ping"]}
 ```
 
+- `followUps` (0.21.0, default `false`): this host follows that peer's UPS shutdown (see `ups.guard`). Mark only the host that reads the UPS this host is on.
 - `id` is the peer's `node.info.node.nodeId`; a peer that answers as another id is counted as unreachable. `address` is `ip:port` (`[v6]:port`), normally the peer's `peers.latest.listening`. `fingerprint` is the peer's `peers.latest.fingerprint`. Ids and fingerprints are unique; `name` is 1–80 characters.
 - `interval` and `serve` are root's `[peers] interval_secs` and `[peers] serve` (ignored in `set`).
 
@@ -556,13 +559,13 @@ The app pairs nodes. `peers.set` replaces this node's list (at most 64) and answ
 
 - `access`: `ok` while the link unit reports, `off` when it hasn't since the node started (root hasn't run `allow peers`), `denied` when it stopped reporting.
 - `fingerprint`: this node's link certificate (SHA-256 of its DER), to give to the nodes it is paired with. `null` until the link has started once. `listening`: where the link listens, `null` if it doesn't (no tailnet address yet, or `[peers] listen = ""`).
-- `error` explains a miss: "connection refused (is the link on there?)", "not allowed by [peers] networks", "timed out", "the peer's certificate isn't the paired one (pair the nodes again in the app)", "the peer closed the connection (it may not have this node paired)", "\"peer.ping\" isn't served here ([peers] serve)".
+- `error` explains a miss: "connection refused (is the link on there?)", "not allowed by [peers] networks", "timed out", "the peer's certificate isn't the paired one (pair the nodes again in the app)", "the peer refused this node (it may not have this node paired)", "\"peer.ping\" isn't served here ([peers] serve)".
 
 Events (`other`): "peer nas unreachable" (`warn`, after two misses in a row) and "peer nas reachable again" (`ok`).
 
-`peers.report` is internal (the link's results); only the service's own account may call it.
+`peers.report` is internal (the link's results), and so is `peers.inbound` (a peer's request the link passes on: `{from, method, params}`, with `from` taken from the peer's certificate); only the service's own account may call them.
 
-The link itself (TCP, mutual TLS 1.3, both certificates pinned) carries one JSON request per line, at most 4 KiB: `{"method": "peer.ping"}` → `{"ok": true, "result": {"id", "hostname", "version", "uptime"}}`, or `{"ok": false, "error"}` for anything root's `[peers] serve` doesn't list.
+The link itself (TCP, mutual TLS 1.3, both certificates pinned) carries one JSON request per line, at most 4 KiB: `{"method": "peer.ping"}` → `{"ok": true, "result": {"id", "hostname", "version", "uptime"}}`, or `{"ok": false, "error"}` for anything root's `[peers] serve` doesn't list. `{"method": "peer.ups", "params": {"phase", "reason", "target"}}` (0.21.0) is sent by a host whose UPS guard starts a countdown (`countdown`, `shuttingDown`, repeated every minute) or ends one (`idle`: power is back; `cancelled`); the answer is `{"phase"}` of the receiver's guard, or an error such as "this host doesn't follow that node's UPS".
 
 ### `upgrade.note` (internal)
 
