@@ -1,0 +1,56 @@
+protocol 1-2, max line 4194304
+caps {"actions":2,"alerts":1,"block":1,"changes":1,"checks":1,"containers":1,"disk":1,"events":1,"files":1,"heal":1,"health":1,"jobs":1,"logins":1,"logs":1,"metrics":1,"metrics.sync":1,"net":1,"net.dhcp":1,"node":1,"peers":1,"security":1,"summary":1,"ups":1,"uptime":1,"usage":1}
+streams events metrics containers usage
+errors bad_request unknown_method hello_required unsupported_proto capability_disabled too_large internal forbidden
+hello -> caps caps.actions caps.alerts caps.block caps.changes caps.checks caps.containers caps.disk caps.events caps.files caps.heal caps.health caps.jobs caps.logins caps.logs caps.metrics caps.metrics.sync caps.net caps.net.dhcp caps.node caps.peers caps.security caps.summary caps.ups caps.uptime caps.usage node node.arch node.hostname node.nodeId node.version proto
+actions.log -> more next records verified
+actions.policy -> allowed helper known maxPerHour units
+actions.run !bad_request 
+alerts.active -> 
+alerts.rules.get -> backupStale certDays certExpiring containerDown diskForecast diskFull diskPercent enabled forecastDays logAnomaly loginBurst poolDegraded serviceDown smartWarning
+alerts.rules.set -> backupStale certDays certExpiring containerDown diskForecast diskFull diskPercent enabled forecastDays logAnomaly loginBurst poolDegraded serviceDown smartWarning
+block.list -> auto blocked minutes threshold
+changes.begin !bad_request 
+changes.confirm !bad_request 
+changes.list -> changes
+changes.revert !bad_request 
+checks.get -> checks interval
+checks.latest -> access readings
+checks.report !forbidden 
+checks.set !bad_request 
+containers.list -> access at containers
+disk.sync -> more next rows
+events.sync -> events events[].at events[].detail events[].kind events[].level events[].seq events[].title more next oldest
+heal.rules.get -> rules
+heal.rules.set -> rules
+heal.status -> enabled tracking
+health.latest -> access
+jobs.get -> backups interval
+jobs.latest -> access at backups runs
+jobs.set !bad_request 
+logs.samples !bad_request 
+logs.searches.get -> searches
+logs.searches.set -> searches
+logs.status -> anomaly at containers everySecs journal searches sources
+metrics.history !bad_request 
+metrics.latest -> 
+metrics.sync !bad_request 
+net.devices -> at devices
+net.dhcp -> servers watching
+net.report !forbidden 
+node.info -> access access.checks access.docker access.health access.helper access.jobs access.journal access.netwatch access.peers access.power coverage coverage[].newest coverage[].oldest coverage[].points coverage[].res dbBytes intervalSecs node node.arch node.hostname node.nodeId node.version retention retention.hourlyDays retention.minuteDays retention.rollupDays rssBytes started
+peers.get -> interval peers serve
+peers.inbound !forbidden 
+peers.latest -> access fingerprint listening readings
+peers.report !forbidden 
+peers.set !bad_request 
+ports.list -> at listeners
+subscribe !bad_request 
+summary.daily -> complete facts from host level to
+unsubscribe !bad_request 
+upgrade.note !forbidden 
+ups.cancel -> belowPercent countdownSecs deadline dryRun enabled ledBy lowBattery onBatteryMinutes phase problem reason since target
+ups.guard -> belowPercent countdownSecs deadline dryRun enabled ledBy lowBattery onBatteryMinutes phase problem reason since target
+uptime.sync -> hours more next
+usage.history !bad_request 
+usage.latest -> 

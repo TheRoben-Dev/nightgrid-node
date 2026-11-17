@@ -9,6 +9,7 @@
 - The command-line tools no longer panic when their output pipe closes early (`nightgrid-node events | head`).
 - These use only methods the app already uses (N-048).
 - A damaged history database no longer keeps the service in a restart loop. If SQLite says `node.db` is not a database or fails its quick check at start, it is moved to `node.db.damaged` (replacing an older one), a new one starts with the same node id when that row still reads, and a "history database replaced" warning event says so. Other open errors, such as permissions, a full disk or a newer schema, still stop the start as before (N-050).
+- A test pins the app-facing protocol: method names, capabilities, streams, error codes and the fields each method answers with (`crates/node/tests/frozen-protocol.txt`). Any change to it fails CI until the file is regenerated on purpose and the diff reviewed (N-048).
 - The database's write-ahead log is trimmed back to 4 MiB after checkpoints instead of keeping its largest size.
 
 ## 0.24.0 · N10 refinement (unreleased)
