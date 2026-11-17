@@ -705,6 +705,16 @@ cp "$bin" /tmp/ngn-upgrade && /tmp/ngn-upgrade install --json >/dev/null
 after=$(as_user "/usr/local/bin/nightgrid-node query node.info" | sed 's/.*"nodeId":"\([0-9a-f]*\)".*/\1/')
 [ -n "$before" ] && [ "$before" = "$after" ] || fail "node id changed: $before -> $after"
 
+say "a damaged history database is set aside and the service starts anyway"
+systemctl stop nightgrid-node
+head -c 65536 /dev/urandom > /var/lib/nightgrid-node/node.db
+rm -f /var/lib/nightgrid-node/node.db-wal /var/lib/nightgrid-node/node.db-shm
+systemctl start nightgrid-node
+i=0; until as_user "/usr/local/bin/nightgrid-node events" 2>/dev/null | grep -q "history database replaced"; do
+  i=$((i+1)); [ $i -lt 20 ] || fail "no recovery after a damaged database"; sleep 1; done
+test -f /var/lib/nightgrid-node/node.db.damaged || fail "damaged copy not kept"
+systemctl is-active --quiet nightgrid-node || fail "service not active after recovery"
+
 say "uninstall keeps history"
 /usr/local/bin/nightgrid-node uninstall
 systemctl is-active --quiet nightgrid-node && fail "still running"

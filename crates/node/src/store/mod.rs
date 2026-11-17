@@ -24,6 +24,33 @@ pub struct Store {
     conn: Connection,
 }
 
+/// Why SQLite calls the database at `path` damaged, if it does.
+fn damaged(path: &Path) -> Option<String> {
+    use rusqlite::ErrorCode::{DatabaseCorrupt, NotADatabase};
+    if !path.exists() {
+        return None;
+    }
+    let corrupt = |e: &rusqlite::Error| matches!(e, rusqlite::Error::SqliteFailure(f, _) if matches!(f.code, DatabaseCorrupt | NotADatabase));
+    let conn = match Connection::open(path) {
+        Ok(c) => c,
+        Err(e) if corrupt(&e) => return Some(e.to_string()),
+        Err(_) => return None,
+    };
+    match conn.query_row("PRAGMA quick_check", [], |r| r.get::<_, String>(0)) {
+        Ok(s) if s == "ok" => None,
+        Ok(s) => Some(s.chars().take(200).collect()),
+        Err(e) if corrupt(&e) => Some(e.to_string()),
+        Err(_) => None,
+    }
+}
+
+/// The node id from a damaged database, if that row still reads.
+fn salvage_node_id(path: &Path) -> Option<String> {
+    let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).ok()?;
+    let id: String = conn.query_row("SELECT value FROM meta WHERE key = 'node_id'", [], |r| r.get(0)).ok()?;
+    (id.len() == 32 && id.bytes().all(|b| b.is_ascii_hexdigit())).then_some(id)
+}
+
 fn migrations() -> Migrations<'static> {
     Migrations::new(vec![
         M::up(include_str!("migrations/0001_init.sql")),
@@ -42,6 +69,38 @@ impl Store {
         Self::init(conn)
     }
 
+    /// Opens the history at `path`; if SQLite finds it damaged (not a
+    /// database, or failing its quick check), moves it aside to
+    /// `<path>.damaged` and starts a fresh one with the same node id, so a
+    /// bad sector or a power cut can't keep the service in a restart loop.
+    /// Returns what happened, for the log and an event. Any other error
+    /// (permissions, a full disk, a newer schema) is returned as is.
+    pub fn open_or_recover(path: &Path) -> std::result::Result<(Self, Option<String>), String> {
+        let Some(why) = damaged(path) else {
+            return Self::open(path).map(|s| (s, None));
+        };
+        let id = salvage_node_id(path);
+        let aside = path.with_extension("db.damaged");
+        for (from, to) in [("", ""), ("-wal", "-wal"), ("-shm", "-shm")] {
+            let f = std::path::PathBuf::from(format!("{}{from}", path.display()));
+            let t = std::path::PathBuf::from(format!("{}{to}", aside.display()));
+            let _ = std::fs::remove_file(&t);
+            if f.exists() {
+                std::fs::rename(&f, &t).map_err(|e| format!("move aside {}: {e}", f.display()))?;
+            }
+        }
+        let s = Self::open(path)?;
+        if let Some(id) = &id {
+            s.conn.execute("UPDATE meta SET value = ?1 WHERE key = 'node_id'", [id]).map_err(|e| e.to_string())?;
+        }
+        let note = format!(
+            "the history database was damaged ({why}); it was moved to {} and a new one started{}",
+            aside.display(),
+            if id.is_some() { " with the same node id" } else { "" }
+        );
+        Ok((s, Some(note)))
+    }
+
     pub fn open_in_memory() -> std::result::Result<Self, String> {
         Self::init(Connection::open_in_memory().map_err(|e| e.to_string())?)
     }
@@ -52,6 +111,7 @@ impl Store {
             "PRAGMA auto_vacuum = INCREMENTAL;
              PRAGMA journal_mode = WAL;
              PRAGMA synchronous = NORMAL;
+             PRAGMA journal_size_limit = 4194304;
              PRAGMA cache_size = -1024;
              PRAGMA foreign_keys = ON;",
         )
@@ -272,6 +332,46 @@ pub fn random_id() -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_damaged_database_is_moved_aside_keeping_the_node_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("node.db");
+        // Healthy: opened as is.
+        let id = {
+            let (s, note) = Store::open_or_recover(&db).unwrap();
+            assert!(note.is_none());
+            for i in 0..3000 {
+                s.conn
+                    .execute("INSERT INTO meta (key, value) VALUES (?1, ?2)", params![format!("k{i}"), "x".repeat(200)])
+                    .unwrap();
+            }
+            s.conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);").unwrap();
+            s.meta("node_id").unwrap().unwrap()
+        };
+        assert!(Store::open_or_recover(&db).unwrap().1.is_none());
+
+        // Damage pages past the first ones (meta's root page survives).
+        let mut bytes = std::fs::read(&db).unwrap();
+        let len = bytes.len();
+        for b in &mut bytes[len / 2..len / 2 + 8192] {
+            *b = 0xA5;
+        }
+        std::fs::write(&db, &bytes).unwrap();
+        let (s, note) = Store::open_or_recover(&db).unwrap();
+        let note = note.expect("recovered");
+        assert!(note.contains("node.db.damaged") && note.contains("same node id"), "{note}");
+        assert_eq!(s.meta("node_id").unwrap(), Some(id));
+        assert!(dir.path().join("node.db.damaged").exists());
+        drop(s);
+
+        // Not a database at all: a new id, and the old copy is replaced.
+        std::fs::write(&db, b"this is not sqlite, just some bytes that are long enough to be read as a header")
+            .unwrap();
+        let (s, note) = Store::open_or_recover(&db).unwrap();
+        assert!(note.unwrap().contains("a new one started"));
+        assert_eq!(s.meta("node_id").unwrap().unwrap().len(), 32);
+    }
+
     use super::*;
 
     fn p(ts: i64, cpu: f32) -> Point {

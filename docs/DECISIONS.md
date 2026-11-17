@@ -152,6 +152,9 @@ From 2026-11-17 the app is being built against the socket protocol, the app-inte
 ### N-049 · CI holds the sandbox and memory budget where they are
 Each unit's `systemd-analyze security` score is checked offline against a limit equal to today's score (`ci/sandbox-scores.sh`), so loosening a unit needs a reviewed change to the limit. The real-systemd test also checks the service's peak resident memory (`VmHWM`) after every feature has run, not only right after start.
 
+### N-050 · A damaged history database is set aside, not repaired
+The node's history is a convenience copy. The app keeps its own, and `metrics.sync` refills what the app missed while it was closed. A power cut or a bad sector that corrupts `node.db` used to stop every start, so the node watched nothing until someone deleted the file. Now only SQLite's own verdicts count (`SQLITE_CORRUPT`, `SQLITE_NOTADB`, or a failed `PRAGMA quick_check`). The file and its WAL are renamed to `node.db.damaged`, keeping one copy for inspection, and the new database takes the old node id if that row still reads, so the app sees the same node with a gap. Repair (`.recover`) is left to a person, because a half-recovered action log would break the audit chain silently. Errors that aren't damage, such as permissions, a full disk or a schema from a newer version, still stop the start, since a fresh database would not fix them and would hide the cause.
+
 ## N9
 
 ### N-047 · Wake-on-LAN stays with the app's relay hosts
