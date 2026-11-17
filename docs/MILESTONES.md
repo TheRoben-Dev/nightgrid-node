@@ -120,3 +120,4 @@ Scope:
 App-facing interfaces are frozen (N-048); this milestone polishes the node from the inside.
 
 - **0.24.0:** `nightgrid-node doctor`, a read-only self-check of the install; CI gates for the sandbox scores and peak memory; every method fed malformed input in tests (N-049).
+- **0.25.0:** a readable `status`; `events`, `audit` and `audit verify` (the whole SHA-256 chain); shell completions and a manual page.

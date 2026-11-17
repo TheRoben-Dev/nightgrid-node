@@ -23,8 +23,12 @@ stat -c '%a %U:%G %n' /run/nightgrid-node /run/nightgrid-node/node.sock /var/lib
 [ "$(stat -c %U /var/lib/nightgrid-node/node.db)" = nightgrid-node ] || fail "db owner"
 
 say "allowed user can talk to it (new login picks up the group)"
-as_user "/usr/local/bin/nightgrid-node status" | tee /tmp/ngn-status.json
+as_user "/usr/local/bin/nightgrid-node status --json" | tee /tmp/ngn-status.json
 grep -q '"nodeId"' /tmp/ngn-status.json || fail "status from $user"
+as_user "/usr/local/bin/nightgrid-node status" | tee /tmp/ngn-status.txt
+grep -q "nightgrid-node $(/usr/local/bin/nightgrid-node --version | cut -d' ' -f2)" /tmp/ngn-status.txt || fail "readable status"
+as_user "/usr/local/bin/nightgrid-node events --count 3" | grep -q . || fail "events"
+as_user "/usr/local/bin/nightgrid-node events | head -1" >/dev/null 2>/tmp/ngn-pipe.err; [ ! -s /tmp/ngn-pipe.err ] || { cat /tmp/ngn-pipe.err; fail "events into a closed pipe"; }
 as_user "echo '{\"id\":1,\"method\":\"hello\",\"params\":{\"protoMin\":1,\"protoMax\":1}}' | /usr/local/bin/nightgrid-node bridge" | grep -q '"proto":1' || fail "bridge"
 
 say "other users cannot"
@@ -658,6 +662,11 @@ except urllib.error.HTTPError as e:
   grep -q '"check":"allow peers","level":"warn"' /tmp/ngn-doctor.json || { cat /tmp/ngn-doctor.json; fail "doctor missed the stopped link"; }
   /usr/local/bin/nightgrid-node deny peers >/dev/null
 
+  say "audit verify walks the whole action log the tests filled"
+  as_user "/usr/local/bin/nightgrid-node audit --count 5"
+  as_user "/usr/local/bin/nightgrid-node audit verify" | tee /tmp/ngn-verify.txt || fail "audit verify"
+  grep -q '^ok: ' /tmp/ngn-verify.txt || fail "audit verify found nothing to check"
+
   say "footprint after every feature ran: peak memory stays in budget"
   pid=$(systemctl show -p MainPID --value nightgrid-node)
   grep -E 'VmHWM|VmRSS|Threads' /proc/"$pid"/status
@@ -695,6 +704,16 @@ before=$(as_user "/usr/local/bin/nightgrid-node query node.info" | sed 's/.*"nod
 cp "$bin" /tmp/ngn-upgrade && /tmp/ngn-upgrade install --json >/dev/null
 after=$(as_user "/usr/local/bin/nightgrid-node query node.info" | sed 's/.*"nodeId":"\([0-9a-f]*\)".*/\1/')
 [ -n "$before" ] && [ "$before" = "$after" ] || fail "node id changed: $before -> $after"
+
+say "a damaged history database is set aside and the service starts anyway"
+systemctl stop nightgrid-node
+head -c 65536 /dev/urandom > /var/lib/nightgrid-node/node.db
+rm -f /var/lib/nightgrid-node/node.db-wal /var/lib/nightgrid-node/node.db-shm
+systemctl start nightgrid-node
+i=0; until as_user "/usr/local/bin/nightgrid-node events" 2>/dev/null | grep -q "history database replaced"; do
+  i=$((i+1)); [ $i -lt 20 ] || fail "no recovery after a damaged database"; sleep 1; done
+test -f /var/lib/nightgrid-node/node.db.damaged || fail "damaged copy not kept"
+systemctl is-active --quiet nightgrid-node || fail "service not active after recovery"
 
 say "uninstall keeps history"
 /usr/local/bin/nightgrid-node uninstall
