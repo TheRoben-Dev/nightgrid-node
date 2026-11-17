@@ -627,6 +627,26 @@ PY
   /usr/local/bin/nightgrid-node deny peers >/dev/null
   test ! -e /etc/systemd/system/nightgrid-node-peer.service || fail "link unit left after deny"
   systemctl is-active --quiet nightgrid-node-peer && fail "link still running after deny"
+
+  say "statuspage: a read-only page at a secret link, from [statuspage] networks only"
+  sed -i '/^\[statuspage\]/,$ { s/^listen = "tailnet"$/listen = "127.0.0.1:17420"/; s#^networks = .*#networks = ["127.0.0.0/8"]#; }' /etc/nightgrid-node/config.toml
+  /usr/local/bin/nightgrid-node allow statuspage --json | tee /tmp/ngn-allow-s.json
+  url=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["url"])' /tmp/ngn-allow-s.json)
+  case "$url" in http://127.0.0.1:17420/????????????????????????????????????????????????????????????????) ;; *) fail "bad status page link: $url";; esac
+  stat -c '%U %G %a' /etc/nightgrid-node/status-token | grep -qx 'root nightgrid-node 640' || fail "token not root:nightgrid-node 0640"
+  page() { python3 -c 'import sys,urllib.request,urllib.error
+try:
+    r = urllib.request.urlopen(sys.argv[1], timeout=10); print(r.status); print(r.read().decode())
+except urllib.error.HTTPError as e:
+    print(e.code)' "$1"; }
+  i=0; until page "$url" | head -1 | grep -qx 200; do
+    i=$((i+1)); [ $i -lt 30 ] || { journalctl -u nightgrid-node-status --no-pager -n 20; fail "status page never served"; }; sleep 1; done
+  page "$url" | grep -q "Nightgrid Node" || fail "status page content"
+  page "http://127.0.0.1:17420/" | head -1 | grep -qx 404 || fail "status page answered without the token"
+  /usr/local/bin/nightgrid-node allow statuspage --json | grep -q "$url" || fail "allow again changed the link"
+  /usr/local/bin/nightgrid-node deny statuspage >/dev/null
+  test ! -e /etc/nightgrid-node/status-token || fail "token left after deny"
+  systemctl is-active --quiet nightgrid-node-status && fail "status page still running after deny"
 fi
 
 say "upgrade: a wrong checksum changes nothing; a good one upgrades; a new binary that won't start is reverted"

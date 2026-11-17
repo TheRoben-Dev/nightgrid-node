@@ -38,7 +38,7 @@ The app already holds one multiplexed russh connection per host. It reaches the 
 
 Who may connect is decided by file permissions: the socket is `0660` and its directory `0750`, both group `nightgrid-node`. `install --user NAME` (default: the user who ran sudo) adds the SSH login user to that group. Group membership applies from the next login, so the app reconnects after installing (or uses `sg nightgrid-node -c 'nightgrid-node bridge'` for the current session). The node logs the peer uid of every `hello`.
 
-Node-to-node link (N8b, off by default, decision N-043): a separate unit (`nightgrid-node peer`) bound only to the host's tailnet address, with mutual TLS 1.3 and certificates pinned per peer by the app, which pairs nodes over its SSH connections. The main service stays offline and only receives the link's results over its socket. Later parts (N8c, N8d) build peer features and an optional status page on it; none is on unless chosen.
+Node-to-node link (N8b, off by default, decision N-043): a separate unit (`nightgrid-node peer`) bound only to the host's tailnet address, with mutual TLS 1.3 and certificates pinned per peer by the app, which pairs nodes over its SSH connections. The main service stays offline and only receives the link's results over its socket. N8c adds UPS group shutdown on it. N8d adds an optional read-only status page, a separate unit on the tailnet address behind a secret link (N-045). None is on unless chosen.
 
 ## 3. Protocol
 

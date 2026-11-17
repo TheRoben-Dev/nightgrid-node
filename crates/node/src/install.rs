@@ -29,6 +29,9 @@ pub const CHECKS_SERVICE: &str = "nightgrid-node-checks";
 /// The opt-in node-to-node link (`allow peers`).
 pub const PEER_UNIT: &str = include_str!("../../../dist/systemd/nightgrid-node-peer.service");
 pub const PEER_SERVICE: &str = "nightgrid-node-peer";
+/// The opt-in status page (`allow statuspage`).
+pub const STATUS_UNIT: &str = include_str!("../../../dist/systemd/nightgrid-node-status.service");
+pub const STATUS_SERVICE: &str = "nightgrid-node-status";
 /// The opt-in root helper (`allow helper`): a socket and a per-connection service.
 pub const HELPER_SOCKET_UNIT: &str = include_str!("../../../dist/systemd/nightgrid-node-helper.socket");
 pub const HELPER_SERVICE_UNIT: &str = include_str!("../../../dist/systemd/nightgrid-node-helper@.service");
@@ -199,9 +202,57 @@ fn peers_dropin(layout: &Layout) -> String {
     s
 }
 
-const EXTRAS: [&Extra; 5] = [&NETWATCH, &HELPER, &HEALTH, &CHECKS, &PEERS];
+const STATUSPAGE: Extra = Extra {
+    name: "statuspage",
+    files: &[("nightgrid-node-status.service", STATUS_UNIT)],
+    unit: STATUS_SERVICE,
+    warning: "a read-only status page now listens on [statuspage] listen (the tailnet address by default) for \
+              [statuspage] networks. It is plain HTTP inside the tailnet's encryption, at a secret link: \
+              anyone with the link and tailnet access can read this host's status, alerts and linked hosts. \
+              Run deny statuspage to remove it and the link.",
+    what: "status page",
+    dropin: Some(("networks.conf", statuspage_dropin)),
+};
+
+fn statuspage_dropin(layout: &Layout) -> String {
+    let nets = crate::config::Config::load(&layout.config()).map(|c| c.statuspage.networks).unwrap_or_default();
+    let mut s = String::from(
+        "# Written by `nightgrid-node allow statuspage` from [statuspage] networks in /etc/nightgrid-node/config.toml.\n\
+         # Run that command again after changing the list.\n[Service]\n",
+    );
+    for n in nets.iter().filter(|n| crate::firewall::parse_cidr(n).is_some()) {
+        s.push_str(&format!("IPAddressAllow={}\n", n.trim()));
+    }
+    s
+}
+
+const EXTRAS: [&Extra; 6] = [&NETWATCH, &HELPER, &HEALTH, &CHECKS, &PEERS, &STATUSPAGE];
 pub const SYSUSERS: &str = "# Nightgrid Node service account (no login shell, no password).\n\
                             u nightgrid-node - \"Nightgrid Node\" /var/lib/nightgrid-node\n";
+
+/// Keeps the status page's token (or makes one) and returns its link.
+fn status_token(layout: &Layout, sys: &mut dyn Sys, rep: &mut Report) -> Result<String, String> {
+    let path = layout.at(crate::statuspage::TOKEN_FILE);
+    let old =
+        std::fs::read_to_string(&path).ok().map(|t| t.trim().to_owned()).filter(|t| crate::statuspage::token_ok(t));
+    let token = match old {
+        Some(t) => {
+            rep.step(format!("kept the link in {}", path.display()));
+            t
+        }
+        None => {
+            let t = crate::statuspage::new_token().map_err(|e| format!("random token: {e}"))?;
+            write_file(&path, &format!("{t}\n"), 0o640)?;
+            if layout.is_system() {
+                sys.run("chgrp", &[USER, &path.to_string_lossy()])?;
+            }
+            rep.step(format!("wrote a new link to {}", path.display()));
+            t
+        }
+    };
+    let cfg = crate::config::Config::load(&layout.config()).unwrap_or_default();
+    Ok(crate::statuspage::url(&cfg, &token))
+}
 
 /// Where things go, under `root` ("/" for real).
 #[derive(Debug, Clone)]
@@ -291,6 +342,9 @@ pub struct Report {
     pub users: Vec<String>,
     /// Problems that didn't stop the action.
     pub warnings: Vec<String>,
+    /// `allow statuspage`: the page's secret link.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
 }
 
 impl Report {
@@ -446,6 +500,9 @@ pub fn uninstall(layout: &Layout, sys: &mut dyn Sys, purge: bool) -> Result<Repo
         if std::ptr::eq(e, &HELPER) {
             drop_blocks(sys, &mut rep);
         }
+        if std::ptr::eq(e, &STATUSPAGE) {
+            remove(&layout.at(crate::statuspage::TOKEN_FILE), &mut rep)?;
+        }
     }
     match sys.run("systemctl", &["disable", "--now", SERVICE]) {
         Ok(_) => rep.step("service stopped and disabled".to_string()),
@@ -510,6 +567,8 @@ pub enum Grant {
     /// The node-to-node link: a separate unit, mutual TLS with paired nodes,
     /// network access to `[peers] networks` only.
     Peers,
+    /// The read-only status page on the tailnet.
+    StatusPage,
 }
 
 impl Grant {
@@ -523,6 +582,7 @@ impl Grant {
             "power" => Some(Self::Power),
             "checks" => Some(Self::Checks),
             "peers" => Some(Self::Peers),
+            "statuspage" => Some(Self::StatusPage),
             _ => None,
         }
     }
@@ -536,6 +596,7 @@ impl Grant {
             Self::Power => "power",
             Self::Checks => "checks",
             Self::Peers => "peers",
+            Self::StatusPage => "statuspage",
         }
     }
     fn extra(self) -> Option<&'static Extra> {
@@ -545,6 +606,7 @@ impl Grant {
             Self::Health => Some(&HEALTH),
             Self::Checks => Some(&CHECKS),
             Self::Peers => Some(&PEERS),
+            Self::StatusPage => Some(&STATUSPAGE),
             _ => None,
         }
     }
@@ -583,13 +645,16 @@ pub fn allow(
     if let Some(e) = grant.extra() {
         rep.warnings.push(e.warning.into());
         layout.write_extra(e, &mut rep, "wrote")?;
+        if std::ptr::eq(e, &STATUSPAGE) {
+            rep.url = Some(status_token(layout, sys, &mut rep)?);
+        }
         sys.run("systemctl", &["daemon-reload"])?;
         if no_start {
             sys.run("systemctl", &["enable", e.unit])?;
             rep.step("enabled at boot, not started".to_string());
         } else {
             sys.run("systemctl", &["enable", "--now", e.unit])?;
-            if std::ptr::eq(e, &CHECKS) {
+            if [&CHECKS, &PEERS, &STATUSPAGE].iter().any(|x| std::ptr::eq(e, *x)) {
                 // Already running: pick up new networks.
                 sys.run("systemctl", &["restart", e.unit])?;
             }
@@ -614,7 +679,13 @@ pub fn allow(
         return Ok(rep);
     }
     let body = match grant {
-        Grant::Netwatch | Grant::Helper | Grant::Health | Grant::Power | Grant::Checks | Grant::Peers => {
+        Grant::Netwatch
+        | Grant::Helper
+        | Grant::Health
+        | Grant::Power
+        | Grant::Checks
+        | Grant::Peers
+        | Grant::StatusPage => {
             unreachable!("handled above")
         }
         Grant::Docker => {
@@ -671,6 +742,9 @@ pub fn deny(layout: &Layout, sys: &mut dyn Sys, grant: Grant, no_start: bool) ->
         layout.remove_extra(e, &mut rep)?;
         if std::ptr::eq(e, &HELPER) {
             drop_blocks(sys, &mut rep);
+        }
+        if std::ptr::eq(e, &STATUSPAGE) {
+            remove(&layout.at(crate::statuspage::TOKEN_FILE), &mut rep)?;
         }
         sys.run("systemctl", &["daemon-reload"])?;
         rep.step(format!("{} stopped", e.what));
@@ -865,6 +939,34 @@ mod tests {
         deny(&layout, &mut sys, Grant::Peers, false).unwrap();
         assert!(!layout.system_unit("nightgrid-node-peer.service").exists());
         assert!(!layout.extra_dropin(&PEERS).exists());
+    }
+
+    #[test]
+    fn allow_and_deny_statuspage() {
+        let (_d, layout, exe) = setup();
+        let mut sys = FakeSys::default();
+        install(&layout, &mut sys, &exe, &InstallOptions::default()).unwrap();
+        let cfg = std::fs::read_to_string(layout.config()).unwrap().replace(
+            "listen = \"tailnet\"\n# Port for \"tailnet\".\nport = 7420",
+            "listen = \"127.0.0.1:7420\"\n# Port for \"tailnet\".\nport = 7420",
+        );
+        std::fs::write(layout.config(), cfg).unwrap();
+        let rep = allow(&layout, &mut sys, Grant::StatusPage, Path::new("/x"), false).unwrap();
+        let url = rep.url.clone().unwrap();
+        assert!(url.starts_with("http://127.0.0.1:7420/") && url.len() == "http://127.0.0.1:7420/".len() + 64, "{url}");
+        let token = layout.at(crate::statuspage::TOKEN_FILE);
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(std::fs::metadata(&token).unwrap().permissions().mode() & 0o777, 0o640);
+        // Again: same link.
+        assert_eq!(allow(&layout, &mut sys, Grant::StatusPage, Path::new("/x"), false).unwrap().url.unwrap(), url);
+        let unit = std::fs::read_to_string(layout.system_unit("nightgrid-node-status.service")).unwrap();
+        assert!(
+            unit.contains("IPAddressDeny=any")
+                && unit.contains("ExecStart=/usr/local/bin/nightgrid-node status-page\n")
+        );
+        deny(&layout, &mut sys, Grant::StatusPage, false).unwrap();
+        assert!(!token.exists(), "deny kills the link");
+        assert!(!layout.system_unit("nightgrid-node-status.service").exists());
     }
 
     #[test]

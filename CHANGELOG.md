@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.22.0 · N8d (unreleased)
+
+- An optional read-only status page for a phone on the tailnet. `sudo nightgrid-node allow statuspage` installs `nightgrid-node-status.service` (the service account, no capabilities, reachable only from `[statuspage] networks`) and prints the page's secret link, `http://<tailnet address>:7420/<token>`. Running it again prints the same link; `deny statuspage` removes the page and the token, so the link stops working.
+- The page shows the host's state (CPU, memory, load, uptime, disks), active alerts, the UPS guard and linked hosts, refreshes every 30 s, has no scripts or forms and changes nothing. Light and dark follow the phone. It reads the node at most every 10 s.
+- Plain HTTP, so it listens only on the tailnet address (WireGuard encrypts it) or loopback; config validation refuses anything else. Any other path is a 404, and the token (256 random bits, in `/etc/nightgrid-node/status-token`, root and the service's group) is compared in constant time (N-045).
+
 ## 0.21.0 · N8c (unreleased)
 
 - UPS group shutdown over the node-to-node link (opt-in on each follower): when the host that reads the UPS starts its shutdown countdown, it tells its paired peers right away (and again every minute while it lasts). A peer the app marked `followUps`, whose root lists `"ups"` in `[peers] serve` and turned on `[ups] shutdown`, starts its own countdown with its own `countdown_secs`, so followers go first and the UPS host last, as in the app's group shutdown. Power coming back or a cancel on the UPS host ends it on the followers too; a cancel on a follower holds only that follower.

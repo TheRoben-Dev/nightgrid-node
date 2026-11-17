@@ -1,0 +1,61 @@
+# Nightgrid Node status page (optional, off by default).
+# Installed by `nightgrid-node allow statuspage`; removed by `nightgrid-node deny statuspage`.
+# A read-only page about this host for a phone on the tailnet, at a secret
+# path (the token in /etc/nightgrid-node/status-token). Plain HTTP, so it
+# listens only on the tailnet address or loopback ([statuspage] listen), and
+# only [statuspage] networks may connect (networks.conf next to this unit).
+# It runs as the service's account with no capabilities and reads the main
+# service over its unix socket. The main service stays offline.
+
+[Unit]
+Description=Nightgrid Node status page (read-only, tailnet)
+Documentation=https://github.com/TheRoben-Dev/nightgrid-node
+After=nightgrid-node.service network-online.target
+Wants=network-online.target
+PartOf=nightgrid-node.service
+
+[Service]
+Type=simple
+User=nightgrid-node
+Group=nightgrid-node
+ExecStart=/usr/local/bin/nightgrid-node status-page
+Restart=on-failure
+RestartSec=30s
+TimeoutStopSec=5s
+
+CapabilityBoundingSet=
+NoNewPrivileges=yes
+
+# IP sockets, but only from the addresses networks.conf allows.
+# AF_NETLINK finds the tailnet address.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+IPAddressDeny=any
+
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+UMask=0077
+
+MemoryMax=32M
+TasksMax=8
+CPUWeight=20
+Nice=10
+
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+
+[Install]
+WantedBy=multi-user.target

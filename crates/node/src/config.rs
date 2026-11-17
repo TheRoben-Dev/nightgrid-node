@@ -29,6 +29,38 @@ pub struct Config {
     pub jobs: JobsConfig,
     pub ups: UpsConfig,
     pub peers: PeersConfig,
+    pub statuspage: StatusPageConfig,
+}
+
+/// The optional read-only status page (`allow statuspage`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct StatusPageConfig {
+    /// `tailnet` (this host's tailnet address) or an `ip:port` on the
+    /// tailnet or loopback. Plain HTTP, so never a LAN or public address.
+    pub listen: String,
+    /// Port for `listen = "tailnet"`.
+    pub port: u16,
+    /// Who may open it (tailnet ranges by default).
+    pub networks: Vec<String>,
+}
+
+impl Default for StatusPageConfig {
+    fn default() -> Self {
+        Self {
+            listen: "tailnet".into(),
+            port: 7420,
+            networks: DEFAULT_PEER_NETWORKS.iter().map(|s| (*s).to_owned()).collect(),
+        }
+    }
+}
+
+/// Whether plain HTTP may listen on `ip`: tailnet (WireGuard-encrypted) or loopback.
+pub fn statuspage_ip_ok(ip: std::net::IpAddr) -> bool {
+    ip.is_loopback()
+        || DEFAULT_PEER_NETWORKS
+            .iter()
+            .any(|n| crate::firewall::parse_cidr(n).is_some_and(|c| crate::firewall::in_cidr(ip, c)))
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -42,8 +74,7 @@ pub struct PeersConfig {
     pub port: u16,
     /// The only addresses the link may talk to, in and out (tailnet ranges by default).
     pub networks: Vec<String>,
-    /// What peers may ask this node. `ping` (version, host name, uptime) is
-    /// always answered once a peer is paired.
+    /// What paired peers may ask this node (`ping`, `ups`).
     pub serve: Vec<String>,
     /// Seconds between probes of each peer (30-3600).
     pub interval_secs: u32,
@@ -527,6 +558,22 @@ impl Config {
         if let Some(s) = self.peers.serve.iter().find(|s| !PEER_SERVES.contains(&s.as_str())) {
             return Err(format!("peers.serve: unknown {s:?} (one of {})", PEER_SERVES.join(", ")));
         }
+        if self.statuspage.listen != "tailnet" {
+            match self.statuspage.listen.parse::<std::net::SocketAddr>() {
+                Ok(a) if statuspage_ip_ok(a.ip()) && a.port() != 0 => {}
+                _ => {
+                    return Err("statuspage.listen must be \"tailnet\" or an ip:port on the tailnet or loopback \
+                                (it is plain HTTP)"
+                        .into())
+                }
+            }
+        }
+        if self.statuspage.networks.is_empty()
+            || self.statuspage.networks.len() > 64
+            || self.statuspage.networks.iter().any(|c| crate::firewall::parse_cidr(c).is_none())
+        {
+            return Err("statuspage.networks takes 1-64 addresses or CIDR ranges".into());
+        }
         if !(30..=3600).contains(&self.jobs.interval_secs) {
             return Err("jobs.interval_secs must be 30-3600".into());
         }
@@ -845,6 +892,17 @@ networks = ["100.64.0.0/10", "fd7a:115c:a1e0::/48"]
 serve = ["ping"]
 # Seconds between probes of each peer (30-3600).
 interval_secs = 60
+
+[statuspage]
+# A read-only status page for your phone, off until root runs
+# `nightgrid-node allow statuspage`, which prints its address with a secret
+# link. A separate unit serves it. Plain HTTP, so it listens only on the
+# tailnet (WireGuard encrypts it) or loopback: "tailnet" or "ip:port".
+listen = "tailnet"
+# Port for "tailnet".
+port = 7420
+# Who may open it (run `allow statuspage` again after changing them).
+networks = ["100.64.0.0/10", "fd7a:115c:a1e0::/48"]
 "#;
 
 #[cfg(test)]

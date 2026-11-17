@@ -35,6 +35,7 @@ While the app is closed, the node:
 | 📊 | **Measures per service, container and process**: CPU, memory, disk and network per systemd service and container (from cgroups), the busiest processes, and power draw from the CPU's energy counters (opt-in). Every second while you watch, every 10 s otherwise, with a day of one-minute history. | 0.13 |
 | ⬆️ | **Upgrades safely**: the app hands over a new release with its checksum; the node installs it only if the checksum matches, checks that the new version comes up and stays up, and puts the old one back by itself if not. | 0.19 |
 | 🔗 | **Links nodes** (opt-in, off by default): nodes you pair in the app check each other over the tailnet with mutual TLS, so a dead host is told from a broken path, with the app closed. Hosts without a UPS reading can follow the UPS host's shutdown. Each node still acts alone unless you pair it; it answers only what you allow and listens only on the tailnet address. | 0.20 / 0.21 |
+| 📱 | **Shows a status page** (opt-in, off by default): a read-only page for your phone on the tailnet, with the host's state, alerts, UPS and linked hosts, at a secret link. No scripts, nothing it can change. | 0.22 |
 | ⚡ | **Pushes live**: while the app is connected, new events, alerts, container changes and metrics every 2 s are pushed as they happen, instead of the app polling over SSH. | 0.4 |
 
 When the app reconnects, it asks for everything after its last cursor and merges it in. The node keeps no per-app state, so several computers running Nightgrid can sync from the same node.
@@ -43,8 +44,7 @@ When the app reconnects, it asks for everything after its last cursor and merges
 
 See [docs/MILESTONES.md](docs/MILESTONES.md) for detail. The order is:
 
-1. **An optional status page** over the tailnet.
-2. **Daily summaries** for the app's DRIFT helper.
+1. **Daily summaries** for the app's DRIFT helper.
 
 Anything that acts on its own (self-healing, auto-block, scheduled power) is off unless you turn it on, and every run is logged.
 
@@ -101,7 +101,8 @@ nightgrid-node allow health        install the read-only SMART/pools/updates/UPS
 nightgrid-node allow power         let it read the CPU energy counters for power draw (root)
 nightgrid-node allow checks        start the check runner for the app's service checks (root)
 nightgrid-node allow peers         start the node-to-node link for nodes the app pairs (root)
-nightgrid-node deny docker|journal|netwatch|helper|health|power|checks|peers   take that away again
+nightgrid-node allow statuspage    start the read-only status page and print its link (root)
+nightgrid-node deny docker|journal|netwatch|helper|health|power|checks|peers|statuspage   take that away again
 nightgrid-node netwatch            the helper (its unit starts it)
 nightgrid-node upgrade FILE --sha256 HEX   verified upgrade that reverts itself (root)
 nightgrid-node status              what the running node reports

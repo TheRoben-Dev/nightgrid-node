@@ -35,13 +35,16 @@ COMMANDS:
                             with network access to [checks] networks only (root)
     allow peers             Start the node-to-node link: mutual TLS with the nodes the
                             app paired, on the tailnet address only (root)
-    deny docker|journal|netwatch|helper|health|power|checks|peers
+    allow statuspage        Start a read-only status page on the tailnet address and print
+                            its secret link (root; again to see the link)
+    deny docker|journal|netwatch|helper|health|power|checks|peers|statuspage
                             Take that access away again (root)
     netwatch                Run the network watch helper (its unit starts this)
     helper                  Serve one root helper request (its socket unit starts this)
     health-helper           Serve one health read (its socket unit starts this)
     checker                 Run the service checks (its unit starts this)
     peer                    Run the node-to-node link (its unit starts this)
+    status-page             Serve the status page (its unit starts this)
     status                  Show what the running node reports
     query METHOD [JSON]     Send one request and print the answer
     watch STREAM... [--count N]
@@ -128,6 +131,9 @@ fn print_report(r: &install::Report, json: bool) {
             eprintln!("warning: {w}");
         }
         println!("{} done (nightgrid-node {})", r.action, r.version);
+        if let Some(u) = &r.url {
+            println!("status page: {u}");
+        }
     }
 }
 
@@ -162,12 +168,11 @@ fn real_main() -> Result<(), String> {
             Ok(())
         }
         "allow" | "deny" => {
-            let what = a
-                .rest
-                .first()
-                .ok_or("allow/deny what? (docker, journal, netwatch, helper, health, power, checks, peers)")?;
+            let what = a.rest.first().ok_or(
+                "allow/deny what? (docker, journal, netwatch, helper, health, power, checks, peers, statuspage)",
+            )?;
             let grant = install::Grant::parse(what).ok_or_else(|| {
-                format!("unknown access {what:?} (docker, journal, netwatch, helper, health, power, checks, peers)")
+                format!("unknown access {what:?} (docker, journal, netwatch, helper, health, power, checks, peers, statuspage)")
             })?;
             let layout = install::Layout::system();
             let r = if a.cmd == "allow" {
@@ -183,6 +188,7 @@ fn real_main() -> Result<(), String> {
         "health-helper" => nightgrid_node::health::watch::serve(&a.config),
         "checker" => nightgrid_node::checks::checker(&a.config),
         "peer" => nightgrid_node::peers::link(&a.config),
+        "status-page" => nightgrid_node::statuspage::serve(&a.config),
         "netwatch" => {
             let mut config = Config::load(&a.config)?;
             if let Some(s) = &a.socket {

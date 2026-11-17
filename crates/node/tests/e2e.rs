@@ -460,3 +460,48 @@ fn follows_a_paired_peers_ups_shutdown() {
     assert_eq!(tell("idle").unwrap()["phase"], "idle");
     assert_eq!(c.call("ups.guard", Value::Null).unwrap()["phase"], "idle");
 }
+
+fn http_get(addr: &str, path: &str) -> String {
+    let mut s = std::net::TcpStream::connect(addr).unwrap();
+    s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    write!(s, "GET {path} HTTP/1.1\r\nHost: x\r\n\r\n").unwrap();
+    let mut out = String::new();
+    std::io::Read::read_to_string(&mut s, &mut out).unwrap();
+    out
+}
+
+#[test]
+fn status_page_at_its_secret_path_only() {
+    let svc = start();
+    let dir = tempfile::tempdir().unwrap();
+    let addr = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().to_string();
+    let token = "0123456789abcdef".repeat(4);
+    std::fs::write(dir.path().join("token"), format!("{token}\n")).unwrap();
+    let config = dir.path().join("page.toml");
+    std::fs::write(&config, format!("[server]\nsocket = {:?}\n[statuspage]\nlisten = {addr:?}\n", svc.socket)).unwrap();
+    let _page = Link(
+        Command::new(BIN)
+            .args(["status-page", "--config"])
+            .arg(&config)
+            .env("NIGHTGRID_STATUS_TOKEN", dir.path().join("token"))
+            .stdin(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let t = Instant::now();
+    while std::net::TcpStream::connect(&addr).is_err() {
+        assert!(t.elapsed() < Duration::from_secs(10), "status page never listened");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let page = http_get(&addr, &format!("/{token}"));
+    assert!(page.starts_with("HTTP/1.1 200 OK\r\n"), "{page}");
+    assert!(page.contains("Content-Security-Policy: default-src 'none'"));
+    assert!(page.contains("Nightgrid Node ") && page.contains("Alerts"), "{page}");
+    assert!(http_get(&addr, "/").starts_with("HTTP/1.1 404"));
+    assert!(http_get(&addr, &format!("/{}", &token[..63])).starts_with("HTTP/1.1 404"));
+    let mut s = std::net::TcpStream::connect(&addr).unwrap();
+    write!(s, "POST /{token} HTTP/1.1\r\n\r\n").unwrap();
+    let mut out = String::new();
+    std::io::Read::read_to_string(&mut s, &mut out).unwrap();
+    assert!(out.starts_with("HTTP/1.1 405"), "{out}");
+}

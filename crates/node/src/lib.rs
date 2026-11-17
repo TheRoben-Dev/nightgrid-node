@@ -36,6 +36,7 @@ pub mod redact;
 pub mod rollback;
 pub mod server;
 pub mod sniff;
+pub mod statuspage;
 pub mod store;
 pub mod upgrade;
 pub mod upsguard;

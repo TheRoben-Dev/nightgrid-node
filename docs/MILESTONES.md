@@ -107,7 +107,7 @@ Scope:
   - every request typed and checked against root's `[peers] serve` on the receiving side;
   - peer reachability: pings, round trip, version, and "unreachable" / "reachable again" events.
 - **N8c (0.21.0):** UPS group shutdown over the link: hosts the app marks as following a UPS host start their own countdown when it starts its own, and stop when its power returns (N-044). App spec 0017. Peer reachability came with N8b. Staged restarts and alert relay stay in the app (N-044).
-- **N8d:** an optional read-only status page over the tailnet only, off by default, auth required.
+- **N8d (0.22.0):** an optional read-only status page over the tailnet only, off by default, at a secret link (N-045). App spec 0018.
 - App specs for each part.
 
 ## N9 · DRIFT helpers

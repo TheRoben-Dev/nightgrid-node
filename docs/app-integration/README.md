@@ -21,6 +21,7 @@ The Nightgrid app repository is developed elsewhere and is read-only from here. 
 | [0015 · Upgrades](0015-upgrades.md) | N8a | proposed |
 | [0016 · Pairing nodes](0016-pairing-nodes.md) | N8b | proposed |
 | [0017 · UPS group shutdown over the link](0017-ups-group-over-link.md) | N8c | proposed |
+| [0018 · Status page link](0018-status-page.md) | N8d | proposed |
 
 Rules every spec follows:
 
