@@ -195,7 +195,9 @@ impl Sampler {
                     let every = if shared.bus.metrics_watched() { interval.min(LIVE_INTERVAL) } else { interval };
                     let left = every.saturating_sub(started.elapsed());
                     if left.is_zero() {
-                        break false;
+                        // A slow sample (a hung sensor costs a second) must
+                        // still see a stop.
+                        break !matches!(rx.try_recv(), Err(mpsc::TryRecvError::Empty));
                     }
                     match rx.recv_timeout(left.min(Duration::from_secs(1))) {
                         Err(RecvTimeoutError::Timeout) => continue,
@@ -420,5 +422,35 @@ mod tests {
     #[test]
     fn rss_is_measured() {
         assert!(rss_bytes() > 0);
+    }
+}
+
+#[cfg(test)]
+mod slow_sensor {
+    use super::*;
+    use crate::store::Store;
+
+    #[test]
+    fn sampler_stops_with_a_hung_sensor() {
+        use std::os::unix::ffi::OsStrExt;
+        let d = tempfile::tempdir().unwrap();
+        let w = |rel: &str, body: &str| {
+            let p = d.path().join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, body).unwrap();
+        };
+        w("proc/stat", "cpu  1 0 1 10 0 0 0 0 0 0\n");
+        w("proc/meminfo", "MemTotal: 1000 kB\nMemAvailable: 600 kB\n");
+        w("sys/class/hwmon/hwmon0/name", "nvme\n");
+        let fifo = d.path().join("sys/class/hwmon/hwmon0/temp1_input");
+        let c = std::ffi::CString::new(fifo.as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        let shared = Shared::new(Config::default(), Store::open_in_memory().unwrap());
+        let s = Sampler::start(shared.clone(), Reader::at(d.path()), Duration::from_millis(80)).unwrap();
+        std::thread::sleep(Duration::from_millis(400));
+        let t = std::time::Instant::now();
+        s.stop();
+        assert!(t.elapsed() < Duration::from_secs(3), "{:?}", t.elapsed());
+        drop(std::fs::OpenOptions::new().write(true).open(&fifo).unwrap());
     }
 }
