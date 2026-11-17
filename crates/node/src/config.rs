@@ -22,6 +22,20 @@ pub struct Config {
     pub rollback: RollbackConfig,
     pub health: HealthConfig,
     pub logs: LogsConfig,
+    pub usage: UsageConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct UsageConfig {
+    /// Per-service, per-container and per-process usage, and power draw.
+    pub enabled: bool,
+}
+
+impl Default for UsageConfig {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -418,6 +432,13 @@ ups = []
 enabled = true
 # Seconds between rounds (30-3600); each reads what was logged since the last.
 interval_secs = 600
+
+[usage]
+# CPU, memory, disk and network per systemd service and per container (from
+# cgroups), the busiest processes, and power draw from the CPU's energy
+# counters (RAPL, after root runs: nightgrid-node allow power). Every 10 s,
+# every second while the app watches; one-minute averages are kept a day.
+enabled = true
 "#;
 
 #[cfg(test)]

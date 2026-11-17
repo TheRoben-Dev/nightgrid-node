@@ -354,6 +354,24 @@ PY
   q "alerts.rules.set '{\"logAnomaly\":false}'" >/dev/null
   sed -i 's/^interval_secs = 30$/interval_secs = 600/' /etc/nightgrid-node/config.toml
   /usr/local/bin/nightgrid-node deny journal >/dev/null
+
+  say "usage: services from cgroups, live every second, minute history, power grant"
+  i=0; until q usage.latest | grep -q '"name":"nightgrid-node.service"'; do
+    i=$((i+1)); [ $i -lt 30 ] || { q usage.latest | head -c 2000; fail "the node's own service not in usage"; }; sleep 1; done
+  q usage.latest | grep -q '"cgroups":true' || fail "cgroup v2 not detected"
+  t0=$(date +%s)
+  as_user "timeout 15 /usr/local/bin/nightgrid-node watch usage --count 4" > /tmp/ngn-usage.jsonl || fail "usage stream"
+  [ "$(wc -l < /tmp/ngn-usage.jsonl)" -eq 4 ] && [ $(( $(date +%s) - t0 )) -le 8 ] || { cat /tmp/ngn-usage.jsonl | head -c 500; fail "usage stream not live"; }
+  i=0; until q "usage.history '{\"kind\":\"service\",\"name\":\"nightgrid-node.service\"}'" | grep -q '"mem":'; do
+    i=$((i+1)); [ $i -lt 90 ] || fail "no usage minute stored"; sleep 1; done
+  q node.info | grep -oE '"power":"[a-z]+"'
+  /usr/local/bin/nightgrid-node allow power --json | grep -q 'energy counters' || fail "no power warning"
+  test -f /etc/udev/rules.d/70-nightgrid-node-power.rules || fail "no power udev rule"
+  if ls /sys/class/powercap/intel-rapl:*/energy_uj >/dev/null 2>&1; then
+    i=0; until q node.info | grep -q '"power":"ok"'; do i=$((i+1)); [ $i -lt 30 ] || fail "power not readable after allow"; sleep 1; done
+  fi
+  /usr/local/bin/nightgrid-node deny power >/dev/null
+  test ! -e /etc/udev/rules.d/70-nightgrid-node-power.rules || fail "power rule left after deny"
 fi
 
 say "reinstall (upgrade in place) keeps the node id"

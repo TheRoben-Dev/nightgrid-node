@@ -78,6 +78,7 @@ struct Subs {
     events: Option<broadcast::Receiver<Event>>,
     metrics: Option<broadcast::Receiver<Sample>>,
     containers: Option<broadcast::Receiver<ContainersResult>>,
+    usage: Option<broadcast::Receiver<nightgrid_node_proto::UsageSample>>,
 }
 
 impl Subs {
@@ -93,6 +94,7 @@ impl Subs {
         one(&mut self.events, want.contains(stream::EVENTS), &shared.bus.events);
         one(&mut self.metrics, want.contains(stream::METRICS), &shared.bus.metrics);
         one(&mut self.containers, want.contains(stream::CONTAINERS), &shared.bus.containers);
+        one(&mut self.usage, want.contains(stream::USAGE), &shared.bus.usage);
     }
 }
 
@@ -168,6 +170,7 @@ async fn connection(stream: UnixStream, shared: &Arc<Shared>, uid: String) -> st
             e = next(&mut subs.events) => pushed(stream::EVENTS, e),
             m = next(&mut subs.metrics) => pushed(stream::METRICS, m),
             c = next(&mut subs.containers) => pushed(stream::CONTAINERS, c),
+            u = next(&mut subs.usage) => pushed(stream::USAGE, u),
         };
         if let Some(f) = out {
             send(&mut w, &f).await?;
@@ -229,9 +232,17 @@ fn access(shared: &Shared) -> std::collections::BTreeMap<String, String> {
         ("netwatch".to_owned(), netwatch.to_owned()),
         ("helper".to_owned(), if crate::helper::installed(&shared.helper_socket) { "ok" } else { "denied" }.to_owned()),
         ("health".to_owned(), health_access(shared).to_owned()),
+        ("power".to_owned(), power_access(shared)),
     ]
     .into_iter()
     .collect()
+}
+
+fn power_access(shared: &Shared) -> String {
+    if !shared.config.usage.enabled {
+        return "off".into();
+    }
+    shared.usage.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map_or_else(String::new, |u| u.power.access.clone())
 }
 
 fn health_access(shared: &Shared) -> &'static str {
@@ -311,6 +322,7 @@ pub fn caps() -> Caps {
         (cap::CHANGES, 1),
         (cap::HEALTH, 1),
         (cap::LOGS, 1),
+        (cap::USAGE, 1),
     ]
     .into_iter()
     .map(|(k, v)| (k.to_owned(), v))
@@ -545,6 +557,18 @@ fn dispatch(shared: &Shared, session: &mut Session, req: &Request) -> Result<Res
             let mut r = shared.health.lock().unwrap_or_else(|e| e.into_inner()).result.clone();
             r.access = health_access(shared).to_owned();
             Ok(Response::ok(0, r))
+        }
+        method::USAGE_LATEST => {
+            let u = shared.usage.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            Ok(Response::ok(0, u))
+        }
+        method::USAGE_HISTORY => {
+            let p: nightgrid_node_proto::UsageHistoryParams = params(&req.params)?;
+            let now = crate::daemon::now_secs();
+            let since = p.since.unwrap_or(now - crate::usage::KEEP_SECS).max(now - crate::usage::KEEP_SECS);
+            let st = shared.store.lock().unwrap_or_else(|e| e.into_inner());
+            let points = st.usage_history(&p.kind, &p.name, since).map_err(internal)?;
+            Ok(Response::ok(0, nightgrid_node_proto::UsageHistoryResult { points }))
         }
         method::LOGS_STATUS => {
             let mut s = shared.logs.lock().unwrap_or_else(|e| e.into_inner()).status.clone();

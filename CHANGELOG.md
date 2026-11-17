@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.13.0 · N6a (unreleased)
+
+- Usage per systemd service and per container (CPU, memory, disk read/write and, for containers with their own network, traffic) from cgroup v2, and the 15 busiest process names (CPU, resident memory, how many) from `/proc`. Every 10 s, every second while anyone subscribes to the new `usage` stream.
+- Power draw from the CPU's energy counters (RAPL: package, core, uncore, dram, psys), after root runs `nightgrid-node allow power` (a udev rule that lets the service's group read `energy_uj`). `node.info.access.power`.
+- `usage.latest` and `usage.history` (one-minute averages per service, container, process name and power domain, kept 24 hours).
+- `[usage] enabled` in the config.
+
 ## 0.12.0 · N5b (unreleased)
 
 - Log watching with the app's detector: every 10 minutes (`[logs] interval_secs`) the node reads what the journal logged at priority err and worse (after `allow journal`) and the last lines of up to 60 running containers (after `allow docker`), and raises `logBurst` (several times the usual error count) and `logNewError` (an error pattern not seen before) alerts, when the app turns `logAnomaly` on in its alert rules. The first round for a source only learns.

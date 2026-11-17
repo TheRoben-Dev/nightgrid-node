@@ -32,6 +32,7 @@ fn migrations() -> Migrations<'static> {
         M::up(include_str!("migrations/0004_net_names.sql")),
         M::up(include_str!("migrations/0005_action_log.sql")),
         M::up(include_str!("migrations/0006_changes.sql")),
+        M::up(include_str!("migrations/0007_usage.sql")),
     ])
 }
 
@@ -192,6 +193,58 @@ impl Store {
             self.conn.execute_batch("PRAGMA incremental_vacuum;")?;
         }
         Ok(n)
+    }
+
+    /// One minute of usage points (kind, name, point).
+    pub fn insert_usage(&mut self, points: &[&(String, String, nightgrid_node_proto::UsagePoint)]) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        {
+            let mut q = tx.prepare(
+                "INSERT OR REPLACE INTO usage_minute (kind, name, ts, cpu, mem, io_read, io_write, net_rx, net_tx, watts) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            )?;
+            for (kind, name, p) in points {
+                q.execute(params![
+                    kind,
+                    name,
+                    p.ts,
+                    p.cpu.map(f64::from),
+                    p.mem.map(|m| m.min(i64::MAX as u64) as i64),
+                    p.io_read,
+                    p.io_write,
+                    p.net_rx,
+                    p.net_tx,
+                    p.watts
+                ])?;
+            }
+        }
+        tx.commit()
+    }
+
+    /// Minute points of one entity since `since`, oldest first.
+    pub fn usage_history(&self, kind: &str, name: &str, since: i64) -> Result<Vec<nightgrid_node_proto::UsagePoint>> {
+        let mut q = self.conn.prepare(
+            "SELECT ts, cpu, mem, io_read, io_write, net_rx, net_tx, watts FROM usage_minute \
+             WHERE kind = ?1 AND name = ?2 AND ts >= ?3 ORDER BY ts LIMIT 1440",
+        )?;
+        let rows = q.query_map(params![kind, name, since], |r| {
+            Ok(nightgrid_node_proto::UsagePoint {
+                ts: r.get(0)?,
+                cpu: r.get::<_, Option<f64>>(1)?.map(|v| v as f32),
+                mem: r.get::<_, Option<i64>>(2)?.map(|v| v.max(0) as u64),
+                io_read: r.get(3)?,
+                io_write: r.get(4)?,
+                net_rx: r.get(5)?,
+                net_tx: r.get(6)?,
+                watts: r.get(7)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    /// Drops usage minutes older than `before`.
+    pub fn prune_usage(&self, before: i64) -> Result<usize> {
+        self.conn.execute("DELETE FROM usage_minute WHERE ts < ?1", params![before])
     }
 
     /// Database size in bytes (main file, without the WAL).

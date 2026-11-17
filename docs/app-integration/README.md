@@ -12,6 +12,7 @@ The Nightgrid app repository is developed elsewhere and is read-only from here. 
 | [0006 · Network watch](0006-network-watch.md) | N3a, N3b | proposed |
 | [0007 · Actions and self-healing](0007-actions-and-self-healing.md) | N4a, N4b, N4c | proposed |
 | [0008 · Host health and logs](0008-health-and-logs.md) | N5a, N5b | proposed |
+| [0009 · Usage and power](0009-usage-and-power.md) | N6a | proposed |
 
 Rules every spec follows:
 

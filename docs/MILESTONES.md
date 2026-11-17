@@ -76,6 +76,8 @@ Scope:
 
 ## N6 · Fine-grained stats and host security
 
+- **N6a (0.13.0):** per-service, per-container and per-process usage and RAPL power (N-036). App spec 0009.
+
 - Per-process and per-container CPU, I/O and network at 1 s while the app watches, 10 s otherwise, kept 24 h and downsampled into minutes.
 - Power draw from RAPL (powercap, needs read access root grants) or the UPS.
 - File integrity baselines for `/etc`, compose files and `authorized_keys`; newly listening ports; failed-login bursts as alerts.

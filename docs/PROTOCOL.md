@@ -100,6 +100,7 @@ The node never buffers without bound for a slow client: each stream keeps a shor
 | `changes` 1 | `changes.begin`, `changes.confirm`, `changes.revert`, `changes.list` | N4c |
 | `health` 1 | `health.latest`; SMART, pool and UPS alerts; update events (with `allow health`) | N5a |
 | `logs` 1 | `logs.status`, `logs.samples`, `logs.searches.get`, `logs.searches.set`; log alerts | N5b |
+| `usage` 1 | `usage.latest`, `usage.history`, the `usage` stream; power (with `allow power`) | N6a |
 
 ### `node.info` (`node` 1)
 
@@ -120,7 +121,7 @@ The node never buffers without bound for a slow client: each stream keeps a shor
 }
 ```
 
-`access` (0.5.0+; `netwatch` 0.7.0+; `helper` 0.9.0+, `ok` when the root helper's socket is installed; `health` 0.11.0+, `ok` when the health helper's socket is installed; `ok` while the helper has reported in the last 2½ minutes) says which optional access root has granted: `ok`, `denied` (root hasn't run `nightgrid-node allow <name>`), `absent` (nothing to read on this host) or `off` (disabled in the config).
+`access` (0.5.0+; `netwatch` 0.7.0+; `helper` 0.9.0+, `ok` when the root helper's socket is installed; `health` 0.11.0+, `ok` when the health helper's socket is installed; `power` 0.13.0+, from RAPL: `ok`, `denied` or `absent`; `ok` while the helper has reported in the last 2½ minutes) says which optional access root has granted: `ok`, `denied` (root hasn't run `nightgrid-node allow <name>`), `absent` (nothing to read on this host) or `off` (disabled in the config).
 
 ### `metrics.latest` (`metrics` 1)
 
@@ -411,6 +412,32 @@ Alerts, every round, with the app's keys minus the host id:
 | `logMatch` | `logsearch:<id>` | a saved search matched lines since the last round |
 
 A finding stays active for at least 150 s, then clears at the next round without it.
+
+### `usage.latest` (`usage` 1) and the `usage` stream
+
+```json
+{
+  "ts": 1763290000123.0, "cgroups": true,
+  "items": [
+    {"kind": "service", "name": "nginx.service", "cpu": 1.8, "mem": 52428800, "ioRead": 0.0, "ioWrite": 4096.0},
+    {"kind": "container", "name": "web", "cpu": 0.4, "mem": 1048576, "ioRead": 0.0, "ioWrite": 0.0, "netRx": 812.5, "netTx": 2210.0},
+    {"kind": "process", "name": "postgres", "cpu": 3.1, "mem": 210763776, "count": 9}
+  ],
+  "power": {"access": "ok", "watts": 14.2, "domains": [{"name": "package-0", "watts": 14.2}, {"name": "core (intel-rapl:0:0)", "watts": 9.8}]}
+}
+```
+
+- `cpu` is a share of the whole machine (0-100), like `Sample.cpu`. `mem` is bytes: cgroup `memory.current` for services and containers, resident memory for processes.
+- Rates are bytes per second since the previous sample. The first sample after a start has zero rates.
+- Services are the units under `system.slice` and containers the Docker or Podman scopes. Containers are named when `allow docker` lets the node list them, and otherwise get the first 12 characters of their id. `netRx`/`netTx` are only there for containers with their own network namespace.
+- Processes are grouped by name (`comm`); only the 15 busiest are listed, and they have no I/O (the kernel shows another user's process I/O only to root).
+- `cgroups` is `false` on cgroup v1 hosts, where only processes are listed.
+- `power.watts` is `psys` (the whole platform) where it exists, and otherwise the sum of the packages.
+- The `usage` stream pushes a sample every second while anyone subscribes; otherwise the node samples every 10 s.
+
+### `usage.history` (`usage` 1)
+
+Params `{"kind": "service", "name": "nginx.service", "since": 1763200000}` (`since` defaults to, and is at most, a day ago) → `{"points": [{"ts", "cpu", "mem", "ioRead", "ioWrite", "netRx", "netTx", "watts"}]}`: one-minute averages, oldest first. Power is `{"kind": "power", "name": "total"}` or a domain name. A minute is stored for services and containers that used any CPU or memory, the listed process names and power.
 
 ## Planned (not in version 1 yet)
 
