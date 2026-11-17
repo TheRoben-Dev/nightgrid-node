@@ -74,6 +74,13 @@ pub mod method {
     /// Disk SMART, storage pools, pending updates and UPS status, as the
     /// health helper last read them.
     pub const HEALTH_LATEST: &str = "health.latest";
+    /// The log watcher's last round: sources, error counts and findings.
+    pub const LOGS_STATUS: &str = "logs.status";
+    /// Recent error lines of one source (lines that look like secrets left out).
+    pub const LOGS_SAMPLES: &str = "logs.samples";
+    /// Saved log searches the node checks every round (`logMatch` alerts).
+    pub const LOGS_SEARCHES_GET: &str = "logs.searches.get";
+    pub const LOGS_SEARCHES_SET: &str = "logs.searches.set";
     /// Protocol 2: start pushing frames for streams.
     pub const SUBSCRIBE: &str = "subscribe";
     /// Protocol 2: stop pushing frames for streams.
@@ -128,6 +135,9 @@ pub mod cap {
     pub const CHANGES: &str = "changes";
     /// `health.latest`; SMART, pool and UPS alerts (needs `allow health`).
     pub const HEALTH: &str = "health";
+    /// `logs.status`, `logs.samples`, `logs.searches.*`; log anomaly and
+    /// saved-search alerts (needs `allow journal` and/or `allow docker`).
+    pub const LOGS: &str = "logs";
 }
 
 /// Typed actions (N4). Root lists the ones the node may run in
@@ -830,6 +840,9 @@ pub struct AlertRules {
     pub smart_warning: bool,
     /// ZFS, mdraid or btrfs not healthy (needs `allow health`).
     pub pool_degraded: bool,
+    /// Error bursts and new error patterns in the journal and container
+    /// logs. Off by default, like the app.
+    pub log_anomaly: bool,
 }
 
 impl Default for AlertRules {
@@ -843,6 +856,7 @@ impl Default for AlertRules {
             container_down: true,
             smart_warning: true,
             pool_degraded: true,
+            log_anomaly: false,
         }
     }
 }
@@ -1262,4 +1276,157 @@ pub struct Change {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChangesResult {
     pub changes: Vec<Change>,
+}
+
+/// Most saved searches the node checks.
+pub const MAX_LOG_SEARCHES: usize = 32;
+
+/// One saved log search with alerts on, as the app keeps it (the app's
+/// `LogSearchQuery` without hosts and time range, which the node sets).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct LogSearch {
+    /// The app's id for it, used in the alert key.
+    pub id: String,
+    pub name: String,
+    /// Text to find; empty matches every line (with a unit or container filter).
+    pub text: String,
+    pub regex: bool,
+    pub case_sensitive: bool,
+    pub journal: bool,
+    pub containers: bool,
+    /// Only this systemd unit (journal).
+    pub unit: Option<String>,
+    /// Only containers whose name contains this.
+    pub container: Option<String>,
+    /// Most verbose journal priority, 0 (emerg) to 7 (debug).
+    pub priority: Option<u8>,
+}
+
+impl Default for LogSearch {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            name: String::new(),
+            text: String::new(),
+            regex: false,
+            case_sensitive: false,
+            journal: true,
+            containers: true,
+            unit: None,
+            container: None,
+            priority: None,
+        }
+    }
+}
+
+impl LogSearch {
+    /// Shape checks; the node also compiles the pattern before saving.
+    pub fn validate(&self) -> Result<(), String> {
+        let ok_id = |s: &str| {
+            !s.is_empty() && s.len() <= 64 && s.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c))
+        };
+        if !ok_id(&self.id) {
+            return Err(format!("search id {:?}: 1-64 letters, digits, - _ .", self.id));
+        }
+        if self.name.trim().is_empty() || self.name.len() > 120 {
+            return Err(format!("search {}: name must be 1-120 characters", self.id));
+        }
+        if self.text.trim().len() > 500 {
+            return Err(format!("search {}: text is at most 500 characters", self.id));
+        }
+        if !self.journal && !self.containers {
+            return Err(format!("search {}: pick the journal, containers or both", self.id));
+        }
+        if let Some(u) = self.unit.as_deref().filter(|u| !u.trim().is_empty()) {
+            if u.len() > 256 || !u.chars().all(|c| c.is_ascii_alphanumeric() || ":-_.@\\".contains(c)) {
+                return Err(format!("search {}: unit is not a unit name", self.id));
+            }
+        }
+        if self.container.as_deref().is_some_and(|c| c.len() > 128) {
+            return Err(format!("search {}: container filter is at most 128 characters", self.id));
+        }
+        if self.priority.is_some_and(|p| p > 7) {
+            return Err(format!("search {}: priority is 0 to 7", self.id));
+        }
+        Ok(())
+    }
+}
+
+/// `logs.searches.get` / `logs.searches.set`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct LogSearches {
+    pub searches: Vec<LogSearch>,
+}
+
+impl LogSearches {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.searches.len() > MAX_LOG_SEARCHES {
+            return Err(format!("at most {MAX_LOG_SEARCHES} searches"));
+        }
+        let mut ids = std::collections::BTreeSet::new();
+        for q in &self.searches {
+            q.validate()?;
+            if !ids.insert(q.id.as_str()) {
+                return Err(format!("search id {:?} is used twice", q.id));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// One log source in `logs.status`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LogSource {
+    /// `journal/<identifier>` or `container/<name>`.
+    pub source: String,
+    /// Error lines in the last round.
+    pub errors: u32,
+    /// The usual count per round, when the last round was a burst.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub burst_usual: Option<f64>,
+    /// Error patterns first seen in the last round.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub new_patterns: Vec<String>,
+}
+
+/// `logs.status`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LogsStatus {
+    /// Unix seconds of the last round (0 before the first).
+    pub at: i64,
+    /// Seconds between rounds.
+    pub every_secs: u32,
+    /// Whether the anomaly check runs (`logAnomaly` in the alert rules).
+    pub anomaly: bool,
+    /// `ok`, `denied`, `absent` or `off`, per kind of log.
+    pub journal: String,
+    pub containers: String,
+    pub sources: Vec<LogSource>,
+    /// Saved searches and the matching lines in the last round.
+    pub searches: Vec<LogSearchHits>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LogSearchHits {
+    pub id: String,
+    pub hits: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// `logs.samples` params.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LogSamplesParams {
+    pub source: String,
+}
+
+/// `logs.samples`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LogSamplesResult {
+    pub lines: Vec<String>,
 }

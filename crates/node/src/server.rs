@@ -310,6 +310,7 @@ pub fn caps() -> Caps {
         (cap::HEAL, 1),
         (cap::CHANGES, 1),
         (cap::HEALTH, 1),
+        (cap::LOGS, 1),
     ]
     .into_iter()
     .map(|(k, v)| (k.to_owned(), v))
@@ -544,6 +545,33 @@ fn dispatch(shared: &Shared, session: &mut Session, req: &Request) -> Result<Res
             let mut r = shared.health.lock().unwrap_or_else(|e| e.into_inner()).result.clone();
             r.access = health_access(shared).to_owned();
             Ok(Response::ok(0, r))
+        }
+        method::LOGS_STATUS => {
+            let mut s = shared.logs.lock().unwrap_or_else(|e| e.into_inner()).status.clone();
+            if !shared.config.logs.enabled {
+                s.journal = "off".into();
+                s.containers = "off".into();
+            }
+            Ok(Response::ok(0, s))
+        }
+        method::LOGS_SAMPLES => {
+            let p: nightgrid_node_proto::LogSamplesParams = params(&req.params)?;
+            let lines = shared.logs.lock().unwrap_or_else(|e| e.into_inner()).detector.samples(&p.source);
+            Ok(Response::ok(0, nightgrid_node_proto::LogSamplesResult { lines }))
+        }
+        method::LOGS_SEARCHES_GET => {
+            let s = shared.logs.lock().unwrap_or_else(|e| e.into_inner()).searches.clone();
+            Ok(Response::ok(0, s))
+        }
+        method::LOGS_SEARCHES_SET => {
+            let s: nightgrid_node_proto::LogSearches = params(&req.params)?;
+            crate::logs::compile(&s).map_err(|e| Response::err(0, ErrorCode::BadRequest, e))?;
+            let st = shared.store.lock().unwrap_or_else(|e| e.into_inner());
+            st.set_meta(crate::logs::META_SEARCHES, &serde_json::to_string(&s).unwrap_or_default())
+                .map_err(internal)?;
+            crate::info!("saved log searches updated by uid {} ({})", session.uid, s.searches.len());
+            shared.logs.lock().unwrap_or_else(|e| e.into_inner()).searches = s.clone();
+            Ok(Response::ok(0, s))
         }
         method::HEAL_STATUS => {
             let r = shared.heal.lock().unwrap_or_else(|e| e.into_inner()).status();

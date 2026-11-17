@@ -99,6 +99,7 @@ The node never buffers without bound for a slow client: each stream keeps a shor
 | `heal` 1 | `heal.rules.get`, `heal.rules.set`, `heal.status` | N4a |
 | `changes` 1 | `changes.begin`, `changes.confirm`, `changes.revert`, `changes.list` | N4c |
 | `health` 1 | `health.latest`; SMART, pool and UPS alerts; update events (with `allow health`) | N5a |
+| `logs` 1 | `logs.status`, `logs.samples`, `logs.searches.get`, `logs.searches.set`; log alerts | N5b |
 
 ### `node.info` (`node` 1)
 
@@ -377,9 +378,42 @@ Alerts (`alerts.active`, `alert` events), with the app's keys and switches:
 
 Info events (`other`): "N package update(s) available" when the count goes from zero to some, and "reboot required" when it becomes required.
 
+### `logs.status` (`logs` 1)
+
+The log watcher's last round:
+
+```json
+{
+  "at": 1763290600, "everySecs": 600, "anomaly": true,
+  "journal": "ok", "containers": "denied",
+  "sources": [{"source": "journal/nginx", "errors": 3, "newPatterns": ["upstream timed out (#) while …"]},
+              {"source": "container/web", "errors": 41, "burstUsual": 6.5}],
+  "searches": [{"id": "s1", "hits": 2}]
+}
+```
+
+`journal` and `containers` are the access words of `node.info` (`ok`, `denied`, `absent`, `off`). `sources` lists what the anomaly check followed (only with `anomaly`, which is `logAnomaly` in the alert rules); sources are `journal/<identifier>` and `container/<name>`, at most 64.
+
+### `logs.samples` (`logs` 1)
+
+Params `{"source": "journal/nginx"}` → `{"lines": [...]}`: up to 40 recent error lines of that source, newest last, without lines that look like they hold a secret (the app's `redact::line_has_secret`). Kept in memory only.
+
+### `logs.searches.get` / `logs.searches.set` (`logs` 1)
+
+`{"searches": [LogSearch]}`, at most 32, replacing the whole list. `LogSearch` is the app's saved search with alerts on, minus hosts and time range: `id` (1-64 of `A-Za-z0-9-_.`, unique), `name`, `text` (≤500; empty matches every line), `regex`, `caseSensitive`, `journal`, `containers`, `unit`, `container` (name contains), `priority` (0-7, most verbose). A bad regular expression is `bad_request`. Regular expressions use the `regex-lite` syntax (Rust `regex` without Unicode classes) and run in linear time.
+
+Alerts, every round, with the app's keys minus the host id:
+
+| Kind | Key | When |
+|---|---|---|
+| `logBurst` | `logs:<source>:burst` | at least 20 error lines and 4× the usual count (`anomaly`) |
+| `logNewError` | `logs:<source>:new` | an error pattern not seen before in that source (`anomaly`) |
+| `logMatch` | `logsearch:<id>` | a saved search matched lines since the last round |
+
+A finding stays active for at least 150 s, then clears at the next round without it.
+
 ## Planned (not in version 1 yet)
 
 | Capability | Methods | Milestone |
 |---|---|---|
-| `logs` | `logs.rules.set`, `logs.findings` | N5 |
 | `checks` | `checks.set`, `checks.latest` | N7 |

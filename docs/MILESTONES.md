@@ -71,7 +71,7 @@ Scope:
 ## N5 · Health that needs root, and logs
 
 - **N5a (0.11.0):** read-only health helper (N-034) for SMART, ZFS/mdadm/btrfs pools, package updates and reboot-required, UPS (NUT), with the app's scripts and parsers; alerts and `health.latest`. Backup job status moves to N7 with scheduled jobs.
-- **N5b:** journal and container log watchers with the app's log rules (levels, trace grouping, 404 handling, fingerprints, bursts, new patterns, grace periods), secret filter on every stored line.
+- **N5b (0.12.0):** journal and container log watchers (N-035) with the app's log rules (levels, trace grouping, 404 handling, fingerprints, bursts, new patterns, grace periods), secret filter on every stored line.
 - App spec 0008.
 
 ## N6 · Fine-grained stats and host security

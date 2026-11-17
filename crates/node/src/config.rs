@@ -21,6 +21,24 @@ pub struct Config {
     pub actions: ActionsConfig,
     pub rollback: RollbackConfig,
     pub health: HealthConfig,
+    pub logs: LogsConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct LogsConfig {
+    /// Watch the journal and container logs for error bursts, new errors and
+    /// the app's saved searches (needs `allow journal` and/or `allow docker`;
+    /// the anomaly check also needs `logAnomaly` on in the app's alert rules).
+    pub enabled: bool,
+    /// Seconds between rounds (30-3600).
+    pub interval_secs: u32,
+}
+
+impl Default for LogsConfig {
+    fn default() -> Self {
+        Self { enabled: true, interval_secs: 600 }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -269,6 +287,9 @@ impl Config {
                 "actions.units: {u:?} is not a full unit name like nginx.service (the node's own units can't be listed)"
             ));
         }
+        if !(30..=3600).contains(&self.logs.interval_secs) {
+            return Err("logs.interval_secs must be 30-3600".into());
+        }
         if self.health.ups.len() > 16 {
             return Err("health.ups takes at most 16 targets".into());
         }
@@ -388,6 +409,15 @@ paths = []
 enabled = true
 # NUT UPS targets to poll with upsc, e.g. ["ups@localhost"].
 ups = []
+
+[logs]
+# Look through the journal (after allow journal) and running containers'
+# logs (after allow docker) for error bursts and new kinds of errors, when
+# the app turns that alert on, and for the app's saved searches with alerts.
+# Lines are only kept in memory; ones that look like secrets are dropped.
+enabled = true
+# Seconds between rounds (30-3600); each reads what was logged since the last.
+interval_secs = 600
 "#;
 
 #[cfg(test)]

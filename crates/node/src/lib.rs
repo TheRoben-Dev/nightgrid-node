@@ -22,6 +22,8 @@ pub mod health;
 pub mod helper;
 pub mod install;
 pub mod logins;
+pub mod logs;
+pub mod logwatch;
 pub mod metrics;
 pub mod netwatch;
 pub mod redact;
