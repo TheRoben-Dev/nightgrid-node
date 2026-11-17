@@ -693,7 +693,7 @@ impl Leader {
             _ if shutting(self.sent) => UpsPhase::Idle,
             _ => return None,
         };
-        let again = self.at.map_or(true, |t| now.duration_since(t) >= NOTICE_AGAIN);
+        let again = self.at.is_none_or(|t| now.duration_since(t) >= NOTICE_AGAIN);
         if self.sent == Some(phase) && !(shutting(Some(phase)) && again) {
             return None;
         }

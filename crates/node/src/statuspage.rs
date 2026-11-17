@@ -359,7 +359,7 @@ async fn serve_one(mut tcp: tokio::net::TcpStream, token: Arc<String>, socket: A
         let head = String::from_utf8_lossy(&buf).into_owned();
         let need = {
             let c = cache.lock().unwrap_or_else(|e| e.into_inner());
-            c.at.map_or(true, |t| t.elapsed() >= FRESH)
+            c.at.is_none_or(|t| t.elapsed() >= FRESH)
         };
         let ok_path = route(&head, &token, String::new).0.starts_with("200");
         if ok_path && need {
