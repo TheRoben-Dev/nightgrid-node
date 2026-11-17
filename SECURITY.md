@@ -52,6 +52,10 @@ Service checks need outbound connections, and the main service has none (`IPAddr
 
 The node schedules and runs nothing for jobs: the app's timers are systemd's (`nightgrid-job-*`, `nightgrid-power-*`, installed by the app with the person's sudo confirmation), and the node only reads their state with `systemctl show`, their output with `journalctl` (with `allow journal`) and backup paths with the service account's read access. Unit names and paths from the app are validated before use and passed as arguments, never through a shell. Output lines that look like they carry a secret are hidden before they are stored (decision N-040).
 
+## UPS shutdown (`[ups] shutdown`)
+
+Off by default. It powers the host off only when root has turned it on, listed `power.poweroff` in `[actions] allow`, installed the root helper and listed the UPS in `[health] ups`. The limits are root's. The power-off goes through the same checked action path as one from the app, so it is in the hash-chained action log, and it is announced in the timeline first. Nothing from the socket can start it or change its limits: the app can only read the state and cancel a countdown. An unreadable UPS never starts a countdown (decision N-041).
+
 ## Root helper (`allow helper`)
 
 Unit and power actions need root. `sudo nightgrid-node allow helper` installs a socket that only the service account can reach; each request starts one short-lived root process that re-reads the root-owned config, runs `systemctl` on a unit root listed in `[actions] units` or schedules `shutdown` a minute ahead, answers and exits. A compromised service can ask only for what root listed. The helper has no network, no new privileges, a read-only system and only `CAP_SYS_BOOT` (decision N-032). `sudo nightgrid-node deny helper` removes it.

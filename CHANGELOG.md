@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.18.0 · N7c (unreleased)
+
+- UPS shutdown with the app closed (opt-in, `[ups] shutdown`): when the UPS this host follows (`[health] ups`) has been on battery for `on_battery_minutes` (5), drops below `below_percent`, or reports low battery, the node announces a countdown (`countdown_secs`, 60) in the timeline and then requests `power.poweroff` through the root helper, in the action log as source `ups`. Power coming back cancels the countdown, and `ups.cancel` holds it for the rest of the outage. `dry_run` only logs the power-off.
+- There is no node-to-node link: each host decides alone with its own limits, so a group shutdown is ordered by giving the hosts that must stay up longest larger limits (N-041). `ups.guard` shows settings, phase and any problem. Capability `ups` 1.
+
 ## 0.17.0 · N7b (unreleased)
 
 - Backup status with the app closed: the app pushes its backup jobs (`jobs.set`: restic, borg, rsync or rclone, a systemd unit or a path, with a stale limit). The node reads them every minute with the app's own rules (last run, result, size, what was added, the run's error line) and raises `backupFailed` and `backupStale` alerts with the app's keys and its `backupStale` switch. Paths are walked at most every 10 minutes, and their size is read again only when the newest file changes.

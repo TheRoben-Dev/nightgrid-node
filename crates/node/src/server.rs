@@ -342,6 +342,7 @@ pub fn caps() -> Caps {
         (cap::BLOCK, 1),
         (cap::CHECKS, 1),
         (cap::JOBS, 1),
+        (cap::UPS, 1),
     ]
     .into_iter()
     .map(|(k, v)| (k.to_owned(), v))
@@ -649,6 +650,19 @@ fn dispatch(shared: &Shared, session: &mut Session, req: &Request) -> Result<Res
             let mut l = shared.jobs.lock().unwrap_or_else(|e| e.into_inner()).latest.clone();
             l.access = if shared.config.jobs.enabled { "ok" } else { "off" }.into();
             Ok(Response::ok(0, l))
+        }
+        method::UPS_GUARD => {
+            let g = shared.ups_guard.lock().unwrap_or_else(|e| e.into_inner()).status(&shared.config);
+            Ok(Response::ok(0, g))
+        }
+        method::UPS_CANCEL => {
+            let e = shared.ups_guard.lock().unwrap_or_else(|e| e.into_inner()).cancel(crate::daemon::now_secs());
+            if let Some(e) = &e {
+                let st = shared.store.lock().unwrap_or_else(|e| e.into_inner());
+                shared.bus.record(&st, e).map_err(internal)?;
+            }
+            let g = shared.ups_guard.lock().unwrap_or_else(|e| e.into_inner()).status(&shared.config);
+            Ok(Response::ok(0, g))
         }
         method::BLOCK_LIST => {
             let c = &shared.config;

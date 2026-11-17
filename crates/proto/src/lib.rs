@@ -101,6 +101,10 @@ pub mod method {
     pub const JOBS_GET: &str = "jobs.get";
     /// Backup status and the last run of each of the app's scheduled jobs.
     pub const JOBS_LATEST: &str = "jobs.latest";
+    /// The UPS shutdown guard's settings and state.
+    pub const UPS_GUARD: &str = "ups.guard";
+    /// Cancel a UPS shutdown countdown (for the rest of this outage).
+    pub const UPS_CANCEL: &str = "ups.cancel";
     /// Protocol 2: start pushing frames for streams.
     pub const SUBSCRIBE: &str = "subscribe";
     /// Protocol 2: stop pushing frames for streams.
@@ -176,6 +180,9 @@ pub mod cap {
     /// `jobs.set`, `jobs.get`, `jobs.latest`; backup failed/stale alerts and
     /// `job` events for backup units and the app's scheduled jobs (0.17.0).
     pub const JOBS: &str = "jobs";
+    /// `ups.guard`, `ups.cancel`: this host powers itself off when the UPS
+    /// has been on battery too long (root's `[ups] shutdown`, 0.18.0).
+    pub const UPS: &str = "ups";
 }
 
 /// Typed actions (N4). Root lists the ones the node may run in
@@ -1244,6 +1251,50 @@ pub struct JobsLatest {
     pub at: i64,
     pub backups: Vec<BackupStatus>,
     pub runs: Vec<JobRun>,
+}
+
+/// Where the UPS shutdown guard is.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum UpsPhase {
+    /// On line power (or the guard is off).
+    #[default]
+    Idle,
+    /// On battery, not yet past root's limits.
+    OnBattery,
+    /// Past a limit: the host powers off at `deadline` unless cancelled or power returns.
+    Countdown,
+    /// The power-off was requested (or dry-run).
+    ShuttingDown,
+    /// Cancelled for the rest of this outage.
+    Cancelled,
+}
+
+/// `ups.guard`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpsGuard {
+    /// Root's `[ups] shutdown`.
+    pub enabled: bool,
+    /// Root's `[ups] dry_run`: the power-off is only logged.
+    pub dry_run: bool,
+    /// The NUT target watched (`ups@host`).
+    pub target: Option<String>,
+    /// Root's limits: minutes on battery (0: off), charge percent (0: off),
+    /// the UPS's own low-battery flag, and the countdown in seconds.
+    pub on_battery_minutes: u32,
+    pub below_percent: u8,
+    pub low_battery: bool,
+    pub countdown_secs: u32,
+    pub phase: UpsPhase,
+    /// When the UPS went on battery (unix seconds).
+    pub since: Option<i64>,
+    /// When the countdown ends.
+    pub deadline: Option<i64>,
+    /// Which limit was passed ("on battery for 5 min", "battery at 18%").
+    pub reason: Option<String>,
+    /// Why the guard can't act ("power.poweroff isn't in [actions] allow").
+    pub problem: Option<String>,
 }
 
 /// One blocked address.

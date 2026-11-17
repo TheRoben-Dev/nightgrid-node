@@ -387,10 +387,31 @@ fn tick(shared: &Shared, due: &mut [Due; 4]) {
             conds.extend(ups_conditions(&host, t, &reading));
             statuses.push(UpsStatus { target: t.clone(), at: now, reading });
         }
-        let mut h = shared.health.lock().unwrap_or_else(|e| e.into_inner());
-        h.ups = conds;
-        h.result.ups = statuses;
+        let target = shared.config.ups.target(&shared.config.health);
+        let followed = statuses.iter().find(|s| Some(s.target.as_str()) == target).map(|s| s.reading.clone());
+        {
+            let mut h = shared.health.lock().unwrap_or_else(|e| e.into_inner());
+            h.ups = conds;
+            h.result.ups = statuses;
+        }
+        guard(shared, followed.as_ref(), now, &mut due[3]);
+    } else if shared.ups_guard.lock().unwrap_or_else(|e| e.into_inner()).active() {
+        // Between reads: the countdown still ends on time.
+        guard(shared, None, now, &mut due[3]);
     }
+}
+
+/// Steps the UPS shutdown guard; reads the UPS every tick while it is on battery.
+fn guard(shared: &Shared, r: Option<&UpsReading>, now: i64, due: &mut Due) {
+    let steps = {
+        let mut g = shared.ups_guard.lock().unwrap_or_else(|e| e.into_inner());
+        let steps = g.step(&shared.config, r, now);
+        if g.active() {
+            due.next = due.next.min(now + 10);
+        }
+        steps
+    };
+    crate::upsguard::apply(shared, steps);
 }
 
 /// Handle to the health thread.

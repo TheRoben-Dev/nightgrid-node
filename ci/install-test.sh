@@ -568,6 +568,39 @@ PY
   /usr/local/bin/nightgrid-node deny journal >/dev/null
   rm -f /etc/systemd/system/ngn-backup.* /etc/systemd/system/ngn-failing.service /etc/systemd/system/nightgrid-job-e2e.service
   systemctl daemon-reload
+
+  say "ups: on battery past root's limit counts down and requests a power-off (dry run); cancel holds it"
+  q ups.guard | grep -q '"enabled":false' || { q ups.guard; fail "UPS guard should be off by default"; }
+  mkdir -p /run/ngn-ups && echo "ups.status: OL" > /run/ngn-ups/state
+  printf '#!/bin/sh\ncat /run/ngn-ups/state\n' > /usr/local/sbin/upsc && chmod 755 /usr/local/sbin/upsc
+  sed -i 's/^allow = .*/allow = ["power.poweroff"]/; s/^ups = \[\]$/ups = ["ups@localhost"]/' /etc/nightgrid-node/config.toml
+  sed -i '/^\[ups\]/,$ { s/^shutdown = false$/shutdown = true/; s/^countdown_secs = 60$/countdown_secs = 10/; s/^dry_run = false$/dry_run = true/; }' /etc/nightgrid-node/config.toml
+  /usr/local/bin/nightgrid-node allow health >/dev/null
+  /usr/local/bin/nightgrid-node allow helper >/dev/null
+  systemctl restart nightgrid-node
+  i=0; until q node.info >/dev/null 2>&1; do i=$((i+1)); [ $i -lt 30 ] || fail "not back after restart"; sleep 1; done
+  q ups.guard | tee /dev/stderr | grep -q '"enabled":true' || fail "UPS guard not on"
+  q ups.guard | grep -q '"problem":null' || fail "UPS guard reports a problem"
+  echo "ups.status: OB DISCHRG LB" > /run/ngn-ups/state
+  i=0; until ev | grep -q '"title":"UPS shutdown in 10 s"'; do
+    i=$((i+1)); [ $i -lt 90 ] || { q ups.guard; q health.latest | head -c 600; fail "no UPS countdown"; }; sleep 1; done
+  i=0; until q "actions.log '{\"after\":0}'" | grep -q '"source":"ups"'; do
+    i=$((i+1)); [ $i -lt 60 ] || { q ups.guard; fail "no power-off request from the UPS guard"; }; sleep 1; done
+  q "actions.log '{\"after\":0}'" | tr '}' '\n' | grep '"source":"ups"' | grep -q '"outcome":"dryRun"' || { q "actions.log '{\"after\":0}'"; fail "UPS power-off wasn't a dry run"; }
+  q ups.guard | grep -q '"phase":"shuttingDown"' || { q ups.guard; fail "guard not shutting down"; }
+  shutdown --show 2>&1 | grep -qi 'power-off' && fail "a real power-off was scheduled in dry run"
+  echo "ups.status: OL CHRG" > /run/ngn-ups/state
+  i=0; until q ups.guard | grep -q '"phase":"idle"'; do
+    i=$((i+1)); [ $i -lt 60 ] || { q ups.guard; fail "guard not back to idle on line power"; }; sleep 1; done
+  echo "ups.status: OB DISCHRG" > /run/ngn-ups/state
+  i=0; until q ups.guard | grep -q '"phase":"onBattery"'; do
+    i=$((i+1)); [ $i -lt 60 ] || { q ups.guard; fail "guard didn't see on-battery"; }; sleep 1; done
+  q ups.cancel | grep -q '"phase":"cancelled"' || fail "ups.cancel"
+  ev | grep -q '"title":"UPS shutdown cancelled"' || fail "no cancel event"
+  echo "ups.status: OL" > /run/ngn-ups/state
+  /usr/local/bin/nightgrid-node deny helper >/dev/null
+  /usr/local/bin/nightgrid-node deny health >/dev/null
+  rm -f /usr/local/sbin/upsc
 fi
 
 say "reinstall (upgrade in place) keeps the node id"
