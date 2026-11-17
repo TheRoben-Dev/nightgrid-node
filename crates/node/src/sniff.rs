@@ -140,7 +140,7 @@ pub fn parse_dhcp(b: &[u8], at: i64, iface: &str) -> Option<DhcpSeen> {
             53 if len == 1 => d.msg = MSG.get(usize::from(v[0])).copied().unwrap_or("").to_owned(),
             54 if len == 4 => d.server = Some(ip4(v).to_string()),
             3 if len >= 4 => d.router = Some(ip4(v).to_string()),
-            6 => d.dns = v.chunks_exact(4).take(4).map(|c| ip4(c).to_string()).collect(),
+            6 => d.dns = v.as_chunks::<4>().0.iter().take(4).map(|c| ip4(c).to_string()).collect(),
             1 if len == 4 => d.subnet = Some(ip4(v).to_string()),
             51 if len == 4 => d.lease_secs = Some(u32::from_be_bytes([v[0], v[1], v[2], v[3]])),
             12 => d.hostname = host_name(v),
