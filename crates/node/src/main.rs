@@ -400,7 +400,7 @@ fn real_main() -> Result<(), String> {
                 .map_err(|e| format!("{}: {e}", path.display()))?;
             c.call("subscribe", serde_json::json!({ "streams": streams })).map_err(|e| e.to_string())?;
             let mut seen = 0;
-            while count.map_or(true, |n| seen < n) {
+            while count.is_none_or(|n| seen < n) {
                 let f = c.next_frame().map_err(|e| e.to_string())?;
                 println!("{}", serde_json::to_string(&f).unwrap_or_default());
                 seen += 1;

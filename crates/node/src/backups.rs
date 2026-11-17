@@ -25,7 +25,7 @@ pub const MAX_JOBS: usize = 100;
 
 /// "26 hours", "3 days".
 pub fn stale_words(hours: u32) -> String {
-    if hours % 24 == 0 && hours >= 48 {
+    if hours.is_multiple_of(24) && hours >= 48 {
         format!("{} days", hours / 24)
     } else if hours == 1 {
         "hour".into()

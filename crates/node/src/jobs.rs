@@ -211,7 +211,7 @@ pub fn power_from_journal(out: &str) -> Option<(String, i64)> {
         let unit = ["UNIT", "_SYSTEMD_UNIT"].iter().find_map(|k| v[*k].as_str()).unwrap_or_default();
         let Some(name) = unit.strip_suffix(".service").filter(|u| u.starts_with(POWER_PREFIX)) else { continue };
         let at = v["__REALTIME_TIMESTAMP"].as_str().and_then(|t| t.parse::<i64>().ok()).unwrap_or(0) / 1_000_000;
-        if best.as_ref().map_or(true, |b| at >= b.1) {
+        if best.as_ref().is_none_or(|b| at >= b.1) {
             best = Some((name.to_owned(), at));
         }
     }
@@ -386,7 +386,7 @@ fn round(shared: &Shared, cache: &mut Cache, first: bool) -> (JobsLatest, Vec<Ne
                 st
             }
             BackupSource::Path => {
-                let due = cache.paths.get(&j.id).map_or(true, |(at, _, _)| now - at >= PATH_EVERY);
+                let due = cache.paths.get(&j.id).is_none_or(|(at, _, _)| now - at >= PATH_EVERY);
                 if due {
                     let prev = cache.paths.get(&j.id).cloned();
                     let quick = backups::read_path(Path::new(&j.target), false);

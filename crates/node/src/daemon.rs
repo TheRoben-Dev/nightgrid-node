@@ -182,7 +182,7 @@ impl Sampler {
                     let _ = shared.bus.metrics.send(sample.clone());
                 }
                 *shared.latest.lock().unwrap_or_else(|e| e.into_inner()) = Some(sample);
-                if last_prune.map_or(true, |t| t.elapsed() >= PRUNE_EVERY) {
+                if last_prune.is_none_or(|t| t.elapsed() >= PRUNE_EVERY) {
                     last_prune = Some(std::time::Instant::now());
                     let mut st = shared.store.lock().unwrap_or_else(|e| e.into_inner());
                     match st.prune(now_secs(), minute_days) {

@@ -3,11 +3,11 @@ resolver = "2"
 members = ["crates/proto", "crates/node"]
 
 [workspace.package]
-version = "0.25.0"
+version = "0.25.1"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/TheRoben-Dev/nightgrid-node"
-rust-version = "1.80"
+rust-version = "1.89"
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }

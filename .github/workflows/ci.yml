@@ -31,6 +31,24 @@ jobs:
       - run: cargo clippy --all-targets --locked -- -D warnings
       - run: sh ci/test-or-dump.sh
 
+  hygiene:
+    name: Scripts, dependencies and MSRV
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Shell scripts pass shellcheck
+        run: shellcheck -s sh -S warning dist/uninstall.sh ci/*.sh
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+      - name: No dependency with a known advisory (RustSec)
+        run: cargo audit --deny warnings
+      - uses: dtolnay/rust-toolchain@1.89
+      - name: Builds on the minimum supported Rust (1.89, from rusqlite)
+        run: cargo +1.89 check --locked --all-targets
+
   build:
     name: Static build (${{ matrix.target }})
     needs: check

@@ -233,7 +233,7 @@ struct Ifaces {
 
 impl Ifaces {
     fn name(&mut self, index: i32) -> Option<&str> {
-        if !self.names.contains_key(&index) && self.read.map_or(true, |t| t.elapsed() > Duration::from_secs(10)) {
+        if !self.names.contains_key(&index) && self.read.is_none_or(|t| t.elapsed() > Duration::from_secs(10)) {
             self.read = Some(Instant::now());
             self.names = std::fs::read_dir("/sys/class/net")
                 .into_iter()

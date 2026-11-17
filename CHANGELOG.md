@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.25.1 · N10 refinement (unreleased)
+
+- The minimum supported Rust is 1.89, which the locked `rusqlite` 0.41 requires. The old 1.80 was never checked, and a CI job now builds with 1.89.
+- CI also runs `shellcheck` on the install, test and uninstall scripts, and `cargo audit` against the RustSec advisory database for the locked dependencies.
+
 ## 0.25.0 · N10 refinement (unreleased)
 
 - `nightgrid-node status` is now a readable summary: host, version, uptime, CPU, memory, swap, disks, active alerts and which access is on. `status --json` prints the raw `node.info` as before.

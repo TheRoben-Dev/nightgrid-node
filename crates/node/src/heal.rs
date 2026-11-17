@@ -215,7 +215,7 @@ impl Healer {
                 // The rollback timer every 5 s, the rules every 15 s.
                 crate::rollback::tick(&shared);
                 n = n.wrapping_add(1);
-                if n % 3 == 0 {
+                if n.is_multiple_of(3) {
                     tick(&shared);
                 }
             }
