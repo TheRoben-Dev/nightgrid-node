@@ -46,7 +46,7 @@ pub struct ReadReply {
 }
 
 /// Runs `prog args` with a time limit; stdout (capped), or why not.
-fn run_capped(prog: &str, args: &[&str], limit: Duration) -> Result<String, String> {
+pub(crate) fn run_capped(prog: &str, args: &[&str], limit: Duration) -> Result<String, String> {
     let mut child = Command::new(prog)
         .args(args)
         .env("LANG", "C")

@@ -53,6 +53,8 @@ pub struct Shared {
     pub health: Mutex<crate::health::watch::HealthState>,
     /// The health helper's socket (tests point it elsewhere).
     pub health_socket: PathBuf,
+    /// The log watcher's state, saved searches and alert conditions.
+    pub logs: Mutex<crate::logs::LogsState>,
 }
 
 impl Shared {
@@ -66,6 +68,7 @@ impl Shared {
         let rules = crate::engine::load_rules(&store);
         let dhcp = crate::dhcp::Dhcp::load(&store, &config.network.dhcp_servers);
         let heal = crate::heal::Heal::load(&store);
+        let logs = crate::logs::LogsState::load(&store);
         let docker_access = if config.docker.enabled {
             nightgrid_node_proto::ContainerAccess::Absent
         } else {
@@ -88,6 +91,7 @@ impl Shared {
             helper_socket: PathBuf::from(crate::helper::SOCKET),
             health: Mutex::new(crate::health::watch::HealthState::default()),
             health_socket: PathBuf::from(crate::health::watch::SOCKET),
+            logs: Mutex::new(logs),
         })
     }
 }
@@ -264,6 +268,11 @@ pub fn run(config: Config, paths: Paths) -> Result<(), String> {
         None
     };
     let healer = crate::heal::Healer::start(shared.clone()).map_err(|e| format!("self-healing: {e}"))?;
+    let logs = if config.logs.enabled {
+        Some(crate::logs::LogWatcher::start(shared.clone()).map_err(|e| format!("log watcher: {e}"))?)
+    } else {
+        None
+    };
     let health = if config.health.enabled {
         Some(crate::health::watch::HealthWatcher::start(shared.clone()).map_err(|e| format!("health watcher: {e}"))?)
     } else {
@@ -305,6 +314,9 @@ pub fn run(config: Config, paths: Paths) -> Result<(), String> {
         w.stop();
     }
     if let Some(w) = health {
+        w.stop();
+    }
+    if let Some(w) = logs {
         w.stop();
     }
     let _ = std::fs::remove_file(&config.server.socket);

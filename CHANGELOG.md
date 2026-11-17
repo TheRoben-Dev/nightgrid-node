@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.12.0 · N5b (unreleased)
+
+- Log watching with the app's detector: every 10 minutes (`[logs] interval_secs`) the node reads what the journal logged at priority err and worse (after `allow journal`) and the last lines of up to 60 running containers (after `allow docker`), and raises `logBurst` (several times the usual error count) and `logNewError` (an error pattern not seen before) alerts, when the app turns `logAnomaly` on in its alert rules. The first round for a source only learns.
+- The app's saved log searches with alerts: `logs.searches.set` (plain text or regular expression, unit, container and priority filters; at most 32), checked every round, raising `logMatch` alerts.
+- `logs.status` (sources, error counts, findings and search hits of the last round) and `logs.samples` (recent error lines of a source). Lines are only kept in memory, and lines that look like they hold a secret are never kept or shown.
+- `[logs]` in the config: `enabled`, `interval_secs`.
+
 ## 0.11.0 · N5a (unreleased)
 
 - Host health, off until root runs `nightgrid-node allow health`: a read-only root helper (socket-activated per read, like the root helper) runs the app's own checks with the app's parsers: disk SMART (every hour), ZFS/mdadm/Btrfs pools (every 5 minutes), pending updates and reboot-required from the package manager's local cache (every 6 hours; the node never fetches package lists) and NUT UPS status (every 30 s, only for targets root lists in `[health] ups`).

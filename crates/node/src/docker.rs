@@ -37,15 +37,20 @@ impl std::fmt::Display for DockerError {
 
 /// `GET path` and the body of a 200 response.
 pub fn get(socket: &Path, path: &str) -> Result<Vec<u8>, DockerError> {
-    request(socket, "GET", path)
+    request(socket, "GET", path, MAX_BODY)
+}
+
+/// `GET path`, reading at most `max` bytes of the response (log tails).
+pub fn get_capped(socket: &Path, path: &str, max: u64) -> Result<Vec<u8>, DockerError> {
+    request(socket, "GET", path, max)
 }
 
 /// `POST path` with no body. A 2xx or 304 ("already in that state") is success.
 pub fn post(socket: &Path, path: &str) -> Result<Vec<u8>, DockerError> {
-    request(socket, "POST", path)
+    request(socket, "POST", path, MAX_BODY)
 }
 
-fn request(socket: &Path, method: &str, path: &str) -> Result<Vec<u8>, DockerError> {
+fn request(socket: &Path, method: &str, path: &str, max: u64) -> Result<Vec<u8>, DockerError> {
     // Actions such as a restart wait for the container to stop (up to 10 s).
     let timeout = if method == "GET" { TIMEOUT } else { TIMEOUT * 3 };
     let mut s = UnixStream::connect(socket).map_err(|e| {
@@ -62,7 +67,7 @@ fn request(socket: &Path, method: &str, path: &str) -> Result<Vec<u8>, DockerErr
     write!(s, "{method} {path} HTTP/1.0\r\nHost: docker\r\nUser-Agent: nightgrid-node\r\n{len}\r\n")
         .map_err(|e| DockerError::error(format!("write: {e}")))?;
     let mut buf = Vec::new();
-    s.take(MAX_BODY).read_to_end(&mut buf).map_err(|e| DockerError::error(format!("read: {e}")))?;
+    s.take(max).read_to_end(&mut buf).map_err(|e| DockerError::error(format!("read: {e}")))?;
     parse_response(&buf)
 }
 
@@ -134,6 +139,44 @@ fn health_from_status(status: &str) -> Option<String> {
         .into_iter()
         .find(|h| status.contains(&format!("({h})")))
         .map(|h| h.trim_start_matches("health: ").to_owned())
+}
+
+/// A container's log lines since `since` (unix seconds), the last `tail` of
+/// them, stdout and stderr together. Handles both the multiplexed stream of a
+/// container without a TTY and the raw one of a container with a TTY.
+pub fn logs(socket: &Path, id: &str, since: i64, tail: u32) -> Result<Vec<String>, DockerError> {
+    if id.is_empty() || !id.chars().all(|c| c.is_ascii_alphanumeric()) {
+        return Err(DockerError::error("bad container id"));
+    }
+    let body = get_capped(
+        socket,
+        &format!("/containers/{id}/logs?stdout=1&stderr=1&since={}&tail={tail}", since.max(0)),
+        2 << 20,
+    )?;
+    Ok(demux_logs(&body))
+}
+
+/// Splits a logs body into lines (see [`logs`]).
+pub fn demux_logs(body: &[u8]) -> Vec<String> {
+    let framed = body.len() >= 8 && body[0] <= 2 && body[1..4] == [0, 0, 0];
+    let mut text = Vec::with_capacity(body.len());
+    if framed {
+        let mut b = body;
+        while b.len() >= 8 {
+            let n = u32::from_be_bytes([b[4], b[5], b[6], b[7]]) as usize;
+            let end = (8 + n).min(b.len());
+            text.extend_from_slice(&b[8..end]);
+            b = &b[end..];
+        }
+    } else {
+        text.extend_from_slice(body);
+    }
+    String::from_utf8_lossy(&text)
+        .lines()
+        .map(|l| l.trim_end_matches('\r'))
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| l.chars().take(2000).collect())
+        .collect()
 }
 
 /// Every container, running or not.

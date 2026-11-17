@@ -93,6 +93,8 @@ impl Engine {
                 conds.extend(h.pools.iter().cloned());
             }
             conds.extend(h.ups.iter().cloned());
+            drop(h);
+            conds.extend(shared.logs.lock().unwrap_or_else(|e| e.into_inner()).conditions.iter().cloned());
         }
         let changes = self.tracker.report(conds, now);
         if !changes.is_empty() {

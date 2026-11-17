@@ -327,6 +327,33 @@ PY
   /usr/local/bin/nightgrid-node deny health >/dev/null
   test ! -e /run/nightgrid-node-health.sock || fail "health socket left after deny"
   q node.info | grep -q '"health":"denied"' || fail "health still ok after deny"
+
+  say "logs: saved-search alerts, then a new kind of error after the learning round"
+  /usr/local/bin/nightgrid-node allow journal >/dev/null
+  sed -i 's/^interval_secs = 600$/interval_secs = 30/' /etc/nightgrid-node/config.toml
+  grep -q '^interval_secs = 30$' /etc/nightgrid-node/config.toml || fail "no [logs] interval in the config"
+  systemctl restart nightgrid-node
+  i=0; until q node.info >/dev/null 2>&1; do i=$((i+1)); [ $i -lt 30 ] || fail "not back after restart"; sleep 1; done
+  q "alerts.rules.set '{\"logAnomaly\":true}'" | grep -q '"logAnomaly":true' || fail "logAnomaly rule"
+  q "logs.searches.set '{\"searches\":[{\"id\":\"s1\",\"name\":\"ngn hits\",\"text\":\"ngn-logsearch-hit\"}]}'" | grep -q '"id":"s1"' || fail "searches.set"
+  q "logs.searches.set '{\"searches\":[{\"id\":\"b\",\"name\":\"bad\",\"text\":\"(\",\"regex\":true}]}'" 2>&1 | grep -q 'not a valid regular expression' || fail "a bad regex was accepted"
+  logger -p user.err -t ngn-app "ERROR ngn first failure 1"
+  logger -t ngn-app "ngn-logsearch-hit one"
+  i=0; until q logs.status | grep -q '"hits":1,"id":"s1"'; do
+    i=$((i+1)); [ $i -lt 90 ] || { q logs.status; journalctl -u nightgrid-node --no-pager -n 20; fail "saved search never matched"; }; sleep 1; done
+  q logs.status | tee /tmp/ngn-logs.json
+  grep -q '"journal":"ok"' /tmp/ngn-logs.json || fail "logs.status journal access"
+  grep -q '"source":"journal/ngn-app"' /tmp/ngn-logs.json || fail "journal/ngn-app not followed"
+  i=0; until q alerts.active | grep -q '"key":"logsearch:s1"'; do
+    i=$((i+1)); [ $i -lt 90 ] || { q alerts.active; fail "no saved-search alert"; }; sleep 1; done
+  logger -p user.err -t ngn-app "fatal: a completely different breakage in module x"
+  i=0; until q alerts.active | grep -q '"key":"logs:journal/ngn-app:new"'; do
+    i=$((i+1)); [ $i -lt 120 ] || { q alerts.active; q logs.status; fail "no new-error alert"; }; sleep 1; done
+  q "logs.samples '{\"source\":\"journal/ngn-app\"}'" | grep -q 'completely different breakage' || fail "no samples"
+  q "logs.searches.set '{\"searches\":[]}'" >/dev/null
+  q "alerts.rules.set '{\"logAnomaly\":false}'" >/dev/null
+  sed -i 's/^interval_secs = 30$/interval_secs = 600/' /etc/nightgrid-node/config.toml
+  /usr/local/bin/nightgrid-node deny journal >/dev/null
 fi
 
 say "reinstall (upgrade in place) keeps the node id"

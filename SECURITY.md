@@ -46,4 +46,8 @@ For rollbacks (`files.rollback`), the helper also copies and puts back files und
 
 Disk SMART needs raw device commands, so `sudo nightgrid-node allow health` installs a second, read-only helper the same way: a socket only the service account can reach, one short-lived root process per read. It runs fixed scripts (smartctl, zpool, `/proc/mdstat`, Btrfs sysfs, the package manager's local cache, and `upsc` only for targets in `[health] ups`), never a command from the service. Its unit has only `CAP_SYS_RAWIO`, `CAP_SYS_ADMIN` and `CAP_DAC_READ_SEARCH`, a read-only file system, no new privileges, and network only to localhost and private LAN ranges (for a NUT server), never the internet (decision N-034). `sudo nightgrid-node deny health` removes it.
 
+## Logs
+
+Log watching reads only what `allow journal` and `allow docker` already grant. Lines are kept in memory (up to 40 recent error lines per source, for the app's "what broke" view) and never written to disk; lines that look like they carry a secret (private keys, tokens, `password=` and similar, the app's own check) are dropped before they are kept and are never put in an alert (decision N-035).
+
 Full details: [docs/DESIGN.md §7](docs/DESIGN.md#7-security-model).
