@@ -24,6 +24,33 @@ pub struct Config {
     pub logs: LogsConfig,
     pub usage: UsageConfig,
     pub ports: PortsConfig,
+    pub block: BlockConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct BlockConfig {
+    /// Block addresses that keep failing SSH logins, by themselves. Also
+    /// needs `firewall.block` in `[actions] allow`, the root helper and
+    /// journal access. Off by default.
+    pub auto: bool,
+    /// Failed logins from one address within 5 minutes that block it (3-1000).
+    pub threshold: u32,
+    /// How long a block lasts, manual or automatic (5-10080).
+    pub minutes: u32,
+    /// Addresses blocked at the same time by auto-block, at most (1-10000).
+    pub max_active: u32,
+    /// Allow blocking local, private, link-local and CGNAT/Tailscale
+    /// addresses too. Off: those are never blocked.
+    pub private: bool,
+    /// Addresses or CIDR ranges never to block (your office, a monitor).
+    pub never: Vec<String>,
+}
+
+impl Default for BlockConfig {
+    fn default() -> Self {
+        Self { auto: false, threshold: 10, minutes: 60, max_active: 200, private: false, never: Vec::new() }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -322,6 +349,18 @@ impl Config {
         if !(5..=300).contains(&self.docker.interval_secs) {
             return Err("docker.interval_secs must be 5-300".into());
         }
+        if !(3..=1000).contains(&self.block.threshold) {
+            return Err("block.threshold must be 3-1000".into());
+        }
+        if !(5..=10_080).contains(&self.block.minutes) {
+            return Err("block.minutes must be 5-10080".into());
+        }
+        if !(1..=10_000).contains(&self.block.max_active) {
+            return Err("block.max_active must be 1-10000".into());
+        }
+        if self.block.never.len() > 256 || self.block.never.iter().any(|c| crate::firewall::parse_cidr(c).is_none()) {
+            return Err("block.never takes at most 256 addresses or CIDR ranges".into());
+        }
         if !(5..=300).contains(&self.ports.interval_secs) {
             return Err("ports.interval_secs must be 5-300".into());
         }
@@ -525,6 +564,25 @@ enabled = true
 enabled = true
 # Seconds between reads (5-300). A change is reported after two reads agree.
 interval_secs = 15
+
+[block]
+# Block addresses that keep failing SSH logins, by themselves: all their
+# traffic is dropped for `minutes` (an nftables table of the node's own, with
+# timeouts, so blocks end even if the node stops). Also needs
+# "firewall.block" in [actions] allow, `nightgrid-node allow helper` and
+# `nightgrid-node allow journal`. Every block is in the action log.
+auto = false
+# Failed logins from one address within 5 minutes that block it (3-1000).
+threshold = 10
+# How long a block lasts, from auto-block or the app (5-10080).
+minutes = 60
+# Addresses auto-blocked at the same time, at most.
+max_active = 200
+# Local, private, link-local and CGNAT/Tailscale addresses are never blocked
+# unless this is true.
+private = false
+# Addresses or ranges never to block, e.g. ["203.0.113.0/24"].
+never = []
 "#;
 
 #[cfg(test)]

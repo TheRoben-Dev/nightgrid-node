@@ -61,6 +61,10 @@ pub struct Shared {
     pub logins: Mutex<crate::logins::Recent>,
     /// The latest read of listening sockets.
     pub ports: Mutex<nightgrid_node_proto::PortsResult>,
+    /// Addresses blocked through `firewall.block`.
+    pub blocks: Mutex<crate::firewall::Blocks>,
+    /// Where the login watcher sends addresses past `[block] threshold`.
+    pub autoblock: Mutex<Option<std::sync::mpsc::Sender<String>>>,
 }
 
 impl Shared {
@@ -101,6 +105,8 @@ impl Shared {
             usage: Mutex::new(None),
             logins: Mutex::new(crate::logins::Recent::default()),
             ports: Mutex::new(nightgrid_node_proto::PortsResult::default()),
+            blocks: Mutex::new(crate::firewall::Blocks::default()),
+            autoblock: Mutex::new(None),
         })
     }
 }
@@ -263,6 +269,19 @@ pub fn run(config: Config, paths: Paths) -> Result<(), String> {
     } else {
         None
     };
+    crate::firewall::load(&shared);
+    let autoblock = if crate::firewall::auto_enabled(&shared) && config.logins.enabled {
+        let (b, tx) = crate::firewall::AutoBlocker::start(shared.clone()).map_err(|e| format!("auto-block: {e}"))?;
+        *shared.autoblock.lock().unwrap_or_else(|e| e.into_inner()) = Some(tx);
+        crate::info!(
+            "auto-block is on: {} failed logins in 5 minutes block an address for {} minutes",
+            config.block.threshold,
+            config.block.minutes
+        );
+        Some(b)
+    } else {
+        None
+    };
     let logins = if config.logins.enabled {
         Some(crate::logins::LoginWatcher::start(shared.clone()).map_err(|e| format!("login watcher: {e}"))?)
     } else {
@@ -334,6 +353,9 @@ pub fn run(config: Config, paths: Paths) -> Result<(), String> {
     }
     if let Some(w) = logins {
         w.stop();
+    }
+    if let Some(b) = autoblock {
+        b.stop();
     }
     if let Some(w) = network {
         w.stop();

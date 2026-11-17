@@ -13,6 +13,10 @@ rm -f /etc/systemd/system/nightgrid-node.service /etc/systemd/system/nightgrid-n
   /etc/systemd/system/nightgrid-node-helper.socket /etc/systemd/system/nightgrid-node-helper@.service \
   /etc/systemd/system/nightgrid-node-health.socket /etc/systemd/system/nightgrid-node-health@.service
 rm -rf /etc/systemd/system/nightgrid-node.service.d /etc/systemd/system/nightgrid-node-helper@.service.d
+# Blocks from firewall.block live in the node's own nftables table.
+if command -v nft >/dev/null 2>&1 && nft list table inet nightgrid_node >/dev/null 2>&1; then
+  nft delete table inet nightgrid_node
+fi
 if [ -e /etc/udev/rules.d/70-nightgrid-node-power.rules ]; then
   rm -f /etc/udev/rules.d/70-nightgrid-node-power.rules
   for f in /sys/class/powercap/intel-rapl:*/energy_uj; do [ -e "$f" ] && chgrp root "$f" && chmod 0400 "$f"; done

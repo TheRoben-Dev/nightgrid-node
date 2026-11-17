@@ -87,6 +87,8 @@ pub mod method {
     pub const USAGE_HISTORY: &str = "usage.history";
     /// The sockets listening on this host now, with the containers publishing them.
     pub const PORTS_LIST: &str = "ports.list";
+    /// Addresses blocked now, and the auto-block settings.
+    pub const BLOCK_LIST: &str = "block.list";
     /// Protocol 2: start pushing frames for streams.
     pub const SUBSCRIBE: &str = "subscribe";
     /// Protocol 2: stop pushing frames for streams.
@@ -153,6 +155,9 @@ pub mod cap {
     /// `ports.list` and `port` events for sockets that start or stop
     /// listening; login-burst alerts; the wider file baseline (0.14.0).
     pub const SECURITY: &str = "security";
+    /// `firewall.block` / `firewall.unblock` actions, `block.list`, and the
+    /// optional auto-block of failed-login bursts (0.15.0).
+    pub const BLOCK: &str = "block";
 }
 
 /// Typed actions (N4). Root lists the ones the node may run in
@@ -175,7 +180,12 @@ pub mod action {
     /// Snapshot files under `[rollback] paths` and put them back unless the
     /// change is confirmed in time (`changes.*`, root helper).
     pub const FILES_ROLLBACK: &str = "files.rollback";
-    pub const ALL: [&str; 10] = [
+    /// Drop all traffic from one address for `[block] minutes` (nftables,
+    /// root helper). Never local, private or VPN addresses.
+    pub const FIREWALL_BLOCK: &str = "firewall.block";
+    /// End a block early.
+    pub const FIREWALL_UNBLOCK: &str = "firewall.unblock";
+    pub const ALL: [&str; 12] = [
         CONTAINER_RESTART,
         CONTAINER_START,
         CONTAINER_STOP,
@@ -186,6 +196,8 @@ pub mod action {
         POWER_REBOOT,
         POWER_POWEROFF,
         FILES_ROLLBACK,
+        FIREWALL_BLOCK,
+        FIREWALL_UNBLOCK,
     ];
     /// Whether the action works on one named container.
     pub fn takes_container(a: &str) -> bool {
@@ -197,7 +209,11 @@ pub mod action {
     }
     /// Whether the root helper carries the action out.
     pub fn needs_helper(a: &str) -> bool {
-        takes_unit(a) || matches!(a, POWER_REBOOT | POWER_POWEROFF | FILES_ROLLBACK)
+        takes_unit(a) || takes_address(a) || matches!(a, POWER_REBOOT | POWER_POWEROFF | FILES_ROLLBACK)
+    }
+    /// Whether the action works on one IP address.
+    pub fn takes_address(a: &str) -> bool {
+        matches!(a, FIREWALL_BLOCK | FIREWALL_UNBLOCK)
     }
     /// Whether self-healing rules may run it (not units or power, for now).
     pub fn for_rules(a: &str) -> bool {
@@ -1012,6 +1028,32 @@ pub struct Listener {
     /// Well-known service on this port (`ssh`, `postgres`).
     #[serde(default)]
     pub service: Option<String>,
+}
+
+/// One blocked address.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BlockEntry {
+    pub addr: String,
+    pub since: i64,
+    /// When the kernel drops the block by itself.
+    pub until: i64,
+    /// `auto-block`, or who ran the action.
+    pub source: String,
+}
+
+/// `block.list`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BlockList {
+    /// Root turned auto-block on (`[block] auto`), allowed `firewall.block`
+    /// and installed the root helper.
+    pub auto: bool,
+    /// Failed logins from one address within 5 minutes that block it.
+    pub threshold: u32,
+    /// How long a block lasts.
+    pub minutes: u32,
+    pub blocked: Vec<BlockEntry>,
 }
 
 /// `ports.list`.

@@ -1,8 +1,8 @@
 # Nightgrid Node root helper (one process per request; see the .socket).
 # Installed by `nightgrid-node allow helper`; removed by `nightgrid-node deny helper`.
 # It re-reads the root-owned config, accepts only unit.* on the units root
-# listed and power.* if allowed, runs systemctl or shutdown with fixed
-# arguments (no shell), answers and exits.
+# listed, power.* and firewall.* if allowed, runs systemctl, shutdown or nft
+# with fixed arguments (no shell), answers and exits.
 
 [Unit]
 Description=Nightgrid Node root helper (one request)
@@ -22,11 +22,13 @@ RuntimeMaxSec=120
 # file capabilities let it snapshot and put back files under [rollback]
 # paths with their owner and mode; it can write only there and in its own
 # snapshot directory (rollback.conf next to this unit lists the paths).
+# CAP_NET_ADMIN and netlink are for nft: firewall.block adds addresses (with
+# a timeout) to the node's own table, inet nightgrid_node, and nothing else.
 NoNewPrivileges=yes
-CapabilityBoundingSet=CAP_SYS_BOOT CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH CAP_CHOWN CAP_FOWNER
+CapabilityBoundingSet=CAP_SYS_BOOT CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH CAP_CHOWN CAP_FOWNER CAP_NET_ADMIN
 StateDirectory=nightgrid-node-rollback
 StateDirectoryMode=0700
-RestrictAddressFamilies=AF_UNIX
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
 IPAddressDeny=any
 ProtectSystem=strict
 ProtectHome=yes

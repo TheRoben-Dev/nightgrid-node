@@ -40,6 +40,10 @@ DHCP and ARP from other devices can only be seen with a packet socket. `sudo nig
 
 The node changes nothing on the host unless root lists an action type in `[actions] allow` in `/etc/nightgrid-node/config.toml` (empty by default). Actions are typed (`container.restart` and so on, with the container name checked against the engine's list), never shell strings, and container actions go through the engine socket that `allow docker` already grants. Self-healing rules come from the app, are off and dry-run by default, and can only run allowed actions within a global hourly cap and their own caps. Every request, including dry runs and refusals, is written to a hash-chained audit log (`actions.log`) and the timeline.
 
+## Blocking addresses
+
+`firewall.block` (and auto-block, `[block] auto`) are off unless root lists `firewall.block` in `[actions] allow` and installs the root helper. Blocks go into the node's own nftables table (`inet nightgrid_node`) with a kernel timeout, so they end by themselves even if the node stops, and nothing else in the firewall is touched. The helper refuses loopback, private, link-local and CGNAT/Tailscale addresses (unless root sets `[block] private`) and anything in `[block] never`, and uses root's duration, so a compromised service can't lock you out from your LAN or tailnet. Addresses with a successful login in the last day are never auto-blocked. `deny helper` and `uninstall` delete the table (decision N-038).
+
 ## Root helper (`allow helper`)
 
 Unit and power actions need root. `sudo nightgrid-node allow helper` installs a socket that only the service account can reach; each request starts one short-lived root process that re-reads the root-owned config, runs `systemctl` on a unit root listed in `[actions] units` or schedules `shutdown` a minute ahead, answers and exits. A compromised service can ask only for what root listed. The helper has no network, no new privileges, a read-only system and only `CAP_SYS_BOOT` (decision N-032). `sudo nightgrid-node deny helper` removes it.

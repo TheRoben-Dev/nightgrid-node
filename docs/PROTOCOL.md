@@ -102,6 +102,7 @@ The node never buffers without bound for a slow client: each stream keeps a shor
 | `logs` 1 | `logs.status`, `logs.samples`, `logs.searches.get`, `logs.searches.set`; log alerts | N5b |
 | `usage` 1 | `usage.latest`, `usage.history`, the `usage` stream; power (with `allow power`) | N6a |
 | `security` 1 | `ports.list`; `port` events; `loginBurst` alerts; the wider file baseline; `ports` on containers | N6b |
+| `block` 1 | `firewall.block` / `firewall.unblock` actions; `block.list`; optional auto-block of failed-login bursts | N6c |
 
 ### `node.info` (`node` 1)
 
@@ -286,6 +287,8 @@ What root allows in `[actions]`, so the app can grey out the rest:
 
 Params: `{"action": "container.restart", "target": "web", "dryRun": false}`. `target` is the container name for `container.*`, the full unit name (from the policy's `units`) for `unit.*`, and absent for `images.prune` and `power.*`. Answers with the logged record (see `actions.log`); a refusal is a normal answer with `outcome: "refused"` and the reason in `detail`, not an error. The node refuses an action root didn't allow, an unknown container, any action without engine access, and real runs past `max_per_hour` (all sources together; dry runs and refusals don't count). Container actions can take up to ~10 s; the node answers other clients meanwhile.
 
+`firewall.block` and `firewall.unblock` (`block` 1, 0.15.0) take an IP address as `target`. A block drops all traffic from that address (input and forwarded, so published container ports too) for root's `[block] minutes`, in the node's own nftables table `inet nightgrid_node`, with a kernel timeout so it ends even if the node stops. Loopback, private, link-local and CGNAT/Tailscale addresses are refused unless root sets `[block] private`, and so is anything in `[block] never`; the root helper checks both again. Blocks don't count toward `max_per_hour`.
+
 Unit and power actions (`actions` 2) are carried out by the root helper, which re-checks root's config itself. `power.reboot` and `power.poweroff` are scheduled one minute ahead with `shutdown`, so the record and its event reach the app first; root can cancel with `shutdown -c`. Self-healing rules can't use unit or power actions.
 
 Outcomes: `ok`, `dryRun`, `failed` (the engine said no), `refused`. Every call also adds an `action` event: "restarted web" (`info`), "dry run: would restart web" (`info`), "could not restart web" / "refused to restart web" (`warn`). The event detail starts with who asked: `app (uid 1000)` or `rule <id>`.
@@ -444,6 +447,16 @@ A finding stays active for at least 150 s, then clears at the next round without
 ### `usage.history` (`usage` 1)
 
 Params `{"kind": "service", "name": "nginx.service", "since": 1763200000}` (`since` defaults to, and is at most, a day ago) → `{"points": [{"ts", "cpu", "mem", "ioRead", "ioWrite", "netRx", "netTx", "watts"}]}`: one-minute averages, oldest first. Power is `{"kind": "power", "name": "total"}` or a domain name. A minute is stored for services and containers that used any CPU or memory, the listed process names and power.
+
+### `block.list` (`block` 1)
+
+```json
+{"auto": true, "threshold": 10, "minutes": 60,
+ "blocked": [{"addr": "203.0.113.7", "since": 1763290000, "until": 1763293600, "source": "auto-block"}]}
+```
+
+- `auto`: root turned on `[block] auto`, allowed `firewall.block` and installed the root helper. Then an address with `threshold` failed SSH logins within 5 minutes is blocked by itself (source `auto-block`), unless it logged in successfully in the last day, it's protected (see `actions.run`), or `[block] max_active` addresses are blocked already. Needs `allow journal`.
+- `blocked`: what the node blocked and hasn't seen end, newest first; `source` is `auto-block` or who ran the action. Every block and unblock is also an `actions.log` record and an `action` event ("blocked 203.0.113.7 for 60 minutes").
 
 ### `ports.list` (`security` 1)
 
