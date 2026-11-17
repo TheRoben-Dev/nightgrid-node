@@ -30,6 +30,7 @@ pub mod logs;
 pub mod logwatch;
 pub mod metrics;
 pub mod netwatch;
+pub mod peers;
 pub mod ports;
 pub mod redact;
 pub mod rollback;

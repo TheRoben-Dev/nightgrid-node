@@ -107,6 +107,13 @@ pub mod method {
     pub const UPS_CANCEL: &str = "ups.cancel";
     /// Internal: `nightgrid-node upgrade` (root) reports what happened.
     pub const UPGRADE_NOTE: &str = "upgrade.note";
+    /// The nodes this one may talk to over the node-to-node link (replaces the list).
+    pub const PEERS_SET: &str = "peers.set";
+    pub const PEERS_GET: &str = "peers.get";
+    /// This node's link identity (fingerprint, address) and each peer's last probe.
+    pub const PEERS_LATEST: &str = "peers.latest";
+    /// Internal: the link unit hands over its identity and probes (service account only).
+    pub const PEERS_REPORT: &str = "peers.report";
     /// Protocol 2: start pushing frames for streams.
     pub const SUBSCRIBE: &str = "subscribe";
     /// Protocol 2: stop pushing frames for streams.
@@ -185,6 +192,9 @@ pub mod cap {
     /// `ups.guard`, `ups.cancel`: this host powers itself off when the UPS
     /// has been on battery too long (root's `[ups] shutdown`, 0.18.0).
     pub const UPS: &str = "ups";
+    /// `peers.set`, `peers.get`, `peers.latest`: the opt-in node-to-node
+    /// link (with `allow peers`, 0.20.0).
+    pub const PEERS: &str = "peers";
 }
 
 /// Typed actions (N4). Root lists the ones the node may run in
@@ -1297,6 +1307,71 @@ pub struct UpsGuard {
     pub reason: Option<String>,
     /// Why the guard can't act ("power.poweroff isn't in [actions] allow").
     pub problem: Option<String>,
+}
+
+/// A node this one may talk to. The app pairs nodes by giving each the
+/// other's fingerprint.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Peer {
+    /// The peer's node id (32 hex digits).
+    pub id: String,
+    pub name: String,
+    /// `ip:port` or `[ipv6]:port` of the peer's link (its tailnet address).
+    pub address: String,
+    /// SHA-256 of the peer's link certificate (64 hex digits), from its `peers.latest`.
+    pub fingerprint: String,
+}
+
+/// `peers.set` params and `peers.get` result.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PeersList {
+    pub peers: Vec<Peer>,
+    /// Seconds between probes (root's `[peers] interval_secs`; ignored in `set`).
+    #[serde(default)]
+    pub interval: u32,
+    /// What peers may ask this node (root's `[peers] serve`; ignored in `set`).
+    #[serde(default)]
+    pub serve: Vec<String>,
+}
+
+/// One peer's last probe.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PeerReading {
+    pub id: String,
+    pub at: i64,
+    pub ok: bool,
+    /// Round trip of the ping, TLS handshake included.
+    pub rtt_ms: Option<u32>,
+    /// The peer's node version and host name, as it answered.
+    pub version: Option<String>,
+    pub hostname: Option<String>,
+    pub error: Option<String>,
+}
+
+/// `peers.report` params (internal).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PeersReport {
+    pub fingerprint: String,
+    /// The address the link listens on, if any.
+    pub listening: Option<String>,
+    pub readings: Vec<PeerReading>,
+}
+
+/// `peers.latest`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PeersLatest {
+    /// `ok` (the link unit reports), `off` (no report since the node
+    /// started: root hasn't run `allow peers`) or `denied` (it stopped reporting).
+    pub access: String,
+    /// This node's link fingerprint, for the app to give to its peers.
+    pub fingerprint: Option<String>,
+    pub listening: Option<String>,
+    pub readings: Vec<PeerReading>,
 }
 
 /// One blocked address.

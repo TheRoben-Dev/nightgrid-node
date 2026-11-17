@@ -106,6 +106,7 @@ The node never buffers without bound for a slow client: each stream keeps a shor
 | `checks` 1 | `checks.set`, `checks.get`, `checks.latest`; `serviceDown` and `certExpiring` alerts (with `allow checks`) | N7a |
 | `ups` 1 | `ups.guard`, `ups.cancel`; the UPS shutdown guard (`[ups] shutdown`) | N7c |
 | `jobs` 1 | `jobs.set`, `jobs.get`, `jobs.latest`; `job` events; `backupFailed` and `backupStale` alerts | N7b |
+| `peers` 1 | `peers.set`, `peers.get`, `peers.latest`; peer reachability events (with `allow peers`) | N8b |
 
 ### `node.info` (`node` 1)
 
@@ -533,6 +534,35 @@ Alerts, with the app's keys (no host segment) and its `backupStale` switch: `bac
 `ups.cancel` (no params) cancels a countdown, or the watch for this outage, and answers like `ups.guard`. It can't start anything.
 
 Events (`other`): "UPS shutdown in 60 s" (`critical`, with the reason), "UPS shutdown cancelled: power is back" (`ok`), "UPS shutdown cancelled" (`warn`, from the app).
+
+### `peers.set` / `peers.get` / `peers.latest` (`peers` 1)
+
+The app pairs nodes. `peers.set` replaces this node's list (at most 64) and answers like `peers.get`:
+
+```json
+{"peers": [{"id": "9f1c…32 hex", "name": "nas", "address": "100.101.102.103:7419", "fingerprint": "…64 hex"}],
+ "interval": 60, "serve": ["ping"]}
+```
+
+- `id` is the peer's `node.info.node.nodeId`; a peer that answers as another id is counted as unreachable. `address` is `ip:port` (`[v6]:port`), normally the peer's `peers.latest.listening`. `fingerprint` is the peer's `peers.latest.fingerprint`. Ids and fingerprints are unique; `name` is 1–80 characters.
+- `interval` and `serve` are root's `[peers] interval_secs` and `[peers] serve` (ignored in `set`).
+
+`peers.latest`:
+
+```json
+{"access": "ok", "fingerprint": "…64 hex", "listening": "100.64.0.7:7419",
+ "readings": [{"id": "9f1c…", "at": 1763290000, "ok": true, "rttMs": 4, "version": "0.20.0", "hostname": "nas", "error": null}]}
+```
+
+- `access`: `ok` while the link unit reports, `off` when it hasn't since the node started (root hasn't run `allow peers`), `denied` when it stopped reporting.
+- `fingerprint`: this node's link certificate (SHA-256 of its DER), to give to the nodes it is paired with. `null` until the link has started once. `listening`: where the link listens, `null` if it doesn't (no tailnet address yet, or `[peers] listen = ""`).
+- `error` explains a miss: "connection refused (is the link on there?)", "not allowed by [peers] networks", "timed out", "the peer's certificate isn't the paired one (pair the nodes again in the app)", "the peer closed the connection (it may not have this node paired)", "\"peer.ping\" isn't served here ([peers] serve)".
+
+Events (`other`): "peer nas unreachable" (`warn`, after two misses in a row) and "peer nas reachable again" (`ok`).
+
+`peers.report` is internal (the link's results); only the service's own account may call it.
+
+The link itself (TCP, mutual TLS 1.3, both certificates pinned) carries one JSON request per line, at most 4 KiB: `{"method": "peer.ping"}` → `{"ok": true, "result": {"id", "hostname", "version", "uptime"}}`, or `{"ok": false, "error"}` for anything root's `[peers] serve` doesn't list.
 
 ### `upgrade.note` (internal)
 

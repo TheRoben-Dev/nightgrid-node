@@ -100,11 +100,12 @@ Scope:
 ## N8 · Upgrades, node-to-node link and status page
 
 - **N8a (0.19.0):** `upgrade` with a verified binary, a health check after restart and automatic revert (N-042). App spec 0015.
-- **N8b:** an opt-in node-to-node link (Roben, 2026-11-17: "nodes should be able to communicate in general over Nightgrid Node, but default to each node acting alone"). Planned shape:
-  - off by default, turned on per host by root;
-  - a separate unit that listens only on the tailnet address (or a LAN address root names), never on every interface;
-  - mutual TLS with keys pinned per peer, paired through the app (which already reaches every host over SSH), so no trust-on-first-use;
-  - every request typed and checked against root's `[peers]` policy on the receiving side, and logged.
+- **N8b (0.20.0):** an opt-in node-to-node link (Roben, 2026-11-17: "nodes should be able to communicate in general over Nightgrid Node, but default to each node acting alone"), N-043. App spec 0016.
+  - off by default, turned on per host by root (`allow peers`);
+  - a separate unit that listens only on the tailnet address (or an address root names), never on every interface;
+  - mutual TLS 1.3 with certificates pinned per peer, paired through the app, so no trust-on-first-use;
+  - every request typed and checked against root's `[peers] serve` on the receiving side;
+  - peer reachability: pings, round trip, version, and "unreachable" / "reachable again" events.
 - **N8c:** features on the link, each opt-in on both sides:
   - peer reachability and health ("is nas up from here?"), so alerts can tell a dead host from a broken path;
   - UPS group shutdown led by the host that reads the UPS, with the per-host guard (N7c) as the fallback;

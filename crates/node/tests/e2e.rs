@@ -295,3 +295,89 @@ fn actions_need_roots_allow_and_are_logged() {
     assert_eq!(c.call("heal.rules.get", Value::Null).unwrap(), set);
     assert_eq!(c.call("heal.status", Value::Null).unwrap(), json!({"enabled": 0, "tracking": []}));
 }
+
+struct Link(Child);
+
+impl Drop for Link {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+/// Runs `nightgrid-node peer` for a service, keeping its key in `dir`.
+fn link(svc: &Service, dir: &Path, listen: &str) -> Link {
+    let config = dir.join("peer.toml");
+    std::fs::write(
+        &config,
+        format!(
+            "[server]\nsocket = {:?}\n[peers]\nlisten = {listen:?}\nnetworks = [\"127.0.0.0/8\"]\ninterval_secs = 30\n",
+            svc.socket
+        ),
+    )
+    .unwrap();
+    let child = Command::new(BIN)
+        .args(["peer", "--config"])
+        .arg(&config)
+        .env("STATE_DIRECTORY", dir)
+        .stdin(Stdio::null())
+        .spawn()
+        .unwrap();
+    Link(child)
+}
+
+fn latest(svc: &Service, until: impl Fn(&Value) -> bool) -> Value {
+    let t = Instant::now();
+    loop {
+        let mut c = Client::connect(&svc.socket, "e2e").unwrap();
+        let v = c.call("peers.latest", Value::Null).unwrap();
+        if until(&v) {
+            return v;
+        }
+        assert!(t.elapsed() < Duration::from_secs(40), "peers.latest never got there: {v}");
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
+#[test]
+fn paired_nodes_reach_each_other_over_the_link() {
+    let free = || std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().to_string();
+    let (addr_a, addr_b) = (free(), free());
+    let a = start();
+    let b = start();
+    let mut c = Client::connect(&a.socket, "e2e").unwrap();
+    assert_eq!(c.welcome.caps.get("peers"), Some(&1));
+    let v = c.call("peers.latest", Value::Null).unwrap();
+    assert_eq!(v["access"], "off", "no link until root allows it: {v}");
+    let id_a = c.welcome.node.node_id.clone();
+    let id_b = Client::connect(&b.socket, "e2e").unwrap().welcome.node.node_id.clone();
+
+    let keys = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(keys.path().join("a")).unwrap();
+    std::fs::create_dir_all(keys.path().join("b")).unwrap();
+    let _lb = link(&b, &keys.path().join("b"), &addr_b);
+    let vb = latest(&b, |v| v["listening"].is_string());
+    let _la = link(&a, &keys.path().join("a"), &addr_a);
+    let va = latest(&a, |v| v["listening"].is_string());
+    assert_eq!(va["access"], "ok");
+    let (fp_a, fp_b) = (va["fingerprint"].as_str().unwrap(), vb["fingerprint"].as_str().unwrap());
+    assert_ne!(fp_a, fp_b);
+
+    // The app pairs them: each gets the other's fingerprint.
+    let pair = |svc: &Service, id: &str, addr: &str, fp: &str| {
+        let mut c = Client::connect(&svc.socket, "e2e").unwrap();
+        c.call("peers.set", json!({"peers": [{"id": id, "name": "other", "address": addr, "fingerprint": fp}]}))
+            .unwrap()
+    };
+    pair(&b, &id_a, &addr_a, fp_a);
+    // A pinned the wrong certificate for B first: refused.
+    pair(&a, &id_b, &addr_b, fp_a);
+    let v = latest(&a, |v| v["readings"][0]["at"].is_number());
+    assert_eq!(v["readings"][0]["ok"], false, "{v}");
+    pair(&a, &id_b, &addr_b, fp_b);
+    let v = latest(&a, |v| v["readings"][0]["ok"] == true);
+    assert_eq!(v["readings"][0]["id"], id_b.as_str());
+    assert_eq!(v["readings"][0]["version"], env!("CARGO_PKG_VERSION"));
+    let v = latest(&b, |v| v["readings"][0]["ok"] == true);
+    assert_eq!(v["readings"][0]["id"], id_a.as_str());
+}

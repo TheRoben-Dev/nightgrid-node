@@ -28,6 +28,41 @@ pub struct Config {
     pub checks: ChecksConfig,
     pub jobs: JobsConfig,
     pub ups: UpsConfig,
+    pub peers: PeersConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct PeersConfig {
+    /// Where the link listens: `tailnet` (this host's first 100.64.0.0/10
+    /// address), a specific `ip:port`, or empty (connect out only). Never
+    /// every interface.
+    pub listen: String,
+    /// Port for `listen = "tailnet"`.
+    pub port: u16,
+    /// The only addresses the link may talk to, in and out (tailnet ranges by default).
+    pub networks: Vec<String>,
+    /// What peers may ask this node. `ping` (version, host name, uptime) is
+    /// always answered once a peer is paired.
+    pub serve: Vec<String>,
+    /// Seconds between probes of each peer (30-3600).
+    pub interval_secs: u32,
+}
+
+pub const DEFAULT_PEER_NETWORKS: &[&str] = &["100.64.0.0/10", "fd7a:115c:a1e0::/48"];
+/// What `[peers] serve` may list.
+pub const PEER_SERVES: &[&str] = &["ping"];
+
+impl Default for PeersConfig {
+    fn default() -> Self {
+        Self {
+            listen: "tailnet".into(),
+            port: 7419,
+            networks: DEFAULT_PEER_NETWORKS.iter().map(|s| (*s).to_owned()).collect(),
+            serve: vec!["ping".into()],
+            interval_secs: 60,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -467,6 +502,31 @@ impl Config {
         {
             return Err("[ups] shutdown needs a limit: on_battery_minutes, below_percent or low_battery".into());
         }
+        if !(30..=3600).contains(&self.peers.interval_secs) {
+            return Err("peers.interval_secs must be 30-3600".into());
+        }
+        if self.peers.port == 0 {
+            return Err("peers.port must be 1-65535".into());
+        }
+        match self.peers.listen.as_str() {
+            "" | "tailnet" => {}
+            l => match l.parse::<std::net::SocketAddr>() {
+                Ok(a) if a.ip().is_unspecified() => {
+                    return Err("peers.listen must be one address, not every interface".into())
+                }
+                Ok(_) => {}
+                Err(_) => return Err("peers.listen must be \"tailnet\", \"ip:port\" or empty".into()),
+            },
+        }
+        if self.peers.networks.is_empty()
+            || self.peers.networks.len() > 64
+            || self.peers.networks.iter().any(|c| crate::firewall::parse_cidr(c).is_none())
+        {
+            return Err("peers.networks takes 1-64 addresses or CIDR ranges".into());
+        }
+        if let Some(s) = self.peers.serve.iter().find(|s| !PEER_SERVES.contains(&s.as_str())) {
+            return Err(format!("peers.serve: unknown {s:?} (one of {})", PEER_SERVES.join(", ")));
+        }
         if !(30..=3600).contains(&self.jobs.interval_secs) {
             return Err("jobs.interval_secs must be 30-3600".into());
         }
@@ -761,6 +821,24 @@ low_battery = true
 countdown_secs = 60
 # Only log the power-off, to try the settings.
 dry_run = false
+
+[peers]
+# The node-to-node link, off until root runs `nightgrid-node allow peers`.
+# Each node acts alone by default; the link lets nodes the app paired check
+# each other. A separate unit runs it, with mutual TLS: a peer is accepted
+# only if the app gave this node its certificate fingerprint. It may talk
+# only to `networks` (run `allow peers` again after changing them).
+#
+# Where it listens: "tailnet" (this host's tailnet address), "ip:port", or
+# "" to only connect out. Never every interface.
+listen = "tailnet"
+# Port for "tailnet".
+port = 7419
+networks = ["100.64.0.0/10", "fd7a:115c:a1e0::/48"]
+# What peers may ask this node: "ping" (version, host name, uptime).
+serve = ["ping"]
+# Seconds between probes of each peer (30-3600).
+interval_secs = 60
 "#;
 
 #[cfg(test)]

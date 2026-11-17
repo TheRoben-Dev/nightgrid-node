@@ -601,6 +601,32 @@ PY
   /usr/local/bin/nightgrid-node deny helper >/dev/null
   /usr/local/bin/nightgrid-node deny health >/dev/null
   rm -f /usr/local/sbin/upsc
+
+  say "peers: the link unit pairs with itself over loopback, mutual TLS with a pinned fingerprint"
+  q peers.latest | grep -q '"access":"off"' || { q peers.latest; fail "link should be off by default"; }
+  sed -i '/^\[peers\]/,$ { s/^listen = "tailnet"$/listen = "127.0.0.1:17419"/; s#^networks = .*#networks = ["127.0.0.0/8"]#; s/^interval_secs = 60$/interval_secs = 30/; }' /etc/nightgrid-node/config.toml
+  systemctl restart nightgrid-node
+  i=0; until q node.info >/dev/null 2>&1; do i=$((i+1)); [ $i -lt 30 ] || fail "not back after restart"; sleep 1; done
+  /usr/local/bin/nightgrid-node allow peers --json | tee /tmp/ngn-allow-p.json
+  grep -q 'pinned certificates' /tmp/ngn-allow-p.json || fail "no peers warning"
+  grep -q '^IPAddressAllow=127.0.0.0/8$' /etc/systemd/system/nightgrid-node-peer.service.d/networks.conf || fail "no peers networks drop-in"
+  i=0; until q peers.latest | grep -q '"listening":"127.0.0.1:17419"'; do
+    i=$((i+1)); [ $i -lt 30 ] || { q peers.latest; journalctl -u nightgrid-node-peer --no-pager -n 20; fail "link never reported"; }; sleep 1; done
+  stat -c '%U %a' /var/lib/nightgrid-node-peer/key.pk8 | grep -qx 'nightgrid-node 600' || fail "link key not private to the service"
+  fp=$(q peers.latest | python3 -c 'import json,sys; print(json.load(sys.stdin)["fingerprint"])')
+  nid=$(q node.info | python3 -c 'import json,sys; print(json.load(sys.stdin)["node"]["nodeId"])')
+  q "peers.set '{\"peers\":[{\"id\":\"$nid\",\"name\":\"self\",\"address\":\"127.0.0.1:17419\",\"fingerprint\":\"$fp\"}]}'" | grep -q '"serve":\["ping"\]' || fail "peers.set"
+  i=0; until q peers.latest | grep -q '"ok":true'; do
+    i=$((i+1)); [ $i -lt 40 ] || { q peers.latest; journalctl -u nightgrid-node-peer --no-pager -n 20; fail "the link never reached the paired node"; }; sleep 1; done
+  # Pinning another certificate: refused, and an unreachable event after two misses.
+  q "peers.set '{\"peers\":[{\"id\":\"$nid\",\"name\":\"self\",\"address\":\"127.0.0.1:17419\",\"fingerprint\":\"$(printf 'ab%.0s' $(seq 32))\"}]}'" >/dev/null || fail "peers.set (wrong pin)"
+  i=0; until ev | grep -q '"title":"peer self unreachable"'; do
+    i=$((i+1)); [ $i -lt 60 ] || { q peers.latest; fail "no unreachable event for a wrong pin"; }; sleep 1; done
+  q peers.latest | grep -q 'certificate' || { q peers.latest; fail "wrong pin not explained"; }
+  q "peers.report '{\"readings\":[]}'" 2>&1 | grep -q 'only the node-to-node link' || fail "a login user could report peers"
+  /usr/local/bin/nightgrid-node deny peers >/dev/null
+  test ! -e /etc/systemd/system/nightgrid-node-peer.service || fail "link unit left after deny"
+  systemctl is-active --quiet nightgrid-node-peer && fail "link still running after deny"
 fi
 
 say "upgrade: a wrong checksum changes nothing; a good one upgrades; a new binary that won't start is reverted"
@@ -643,7 +669,7 @@ test -e /var/lib/nightgrid-node/node.db || fail "history removed without --purge
 
 say "purge removes everything"
 "$bin" uninstall --purge
-for p in /var/lib/nightgrid-node /etc/nightgrid-node /etc/sysusers.d/nightgrid-node.conf; do
+for p in /var/lib/nightgrid-node /var/lib/nightgrid-node-peer /etc/nightgrid-node /etc/sysusers.d/nightgrid-node.conf; do
   test ! -e "$p" || fail "$p left"
 done
 if id nightgrid-node >/dev/null 2>&1; then fail "account left"; fi

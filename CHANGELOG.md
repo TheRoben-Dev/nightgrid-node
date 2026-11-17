@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.20.0 · N8b (unreleased)
+
+- An opt-in node-to-node link (each node still acts alone by default). `sudo nightgrid-node allow peers` installs `nightgrid-node-peer.service`: the service account, no capabilities, network access only to `[peers] networks` (tailnet ranges by default). It makes an Ed25519 key and self-signed certificate on first start (mode 0600, in `/var/lib/nightgrid-node-peer`) and listens on this host's tailnet address (`[peers] listen`, port 7419), never on every interface.
+- Pairing goes through the app: it reads each node's `peers.latest.fingerprint` and gives it to the other with `peers.set` (id, name, address, fingerprint). Connections are mutual TLS 1.3 and both sides accept only the certificates the app paired; there is no CA and no trust on first use. A node answers only what root lists in `[peers] serve` (`ping` for now).
+- Peer reachability: every `interval_secs` (60) the link pings each peer (version, host name, round trip) and reports to the node; `peers.latest` shows the readings. A peer that misses two pings in a row is a "peer nas unreachable" event (`warn`), and "reachable again" when it answers. A changed list from the app takes effect within 10 s, and a peer that missed is tried again after 15 s.
+- `peers.set`, `peers.get`, `peers.latest`, internal `peers.report` (the link's account only); capability `peers` 1; `node.info.access.peers`. `deny peers`, `uninstall --purge` and `dist/uninstall.sh` remove it (N-043).
+
 ## 0.19.0 · N8a (unreleased)
 
 - `sudo nightgrid-node upgrade FILE --sha256 HEX`: installs a new binary only when its SHA-256 matches (the app passes the value from the release's `SHA256SUMS`). The check runs on a staged copy next to the installed binary, so the file that runs is the file that was hashed. The new binary must run here, say it is nightgrid-node, and not be older (`--allow-downgrade` to go back).

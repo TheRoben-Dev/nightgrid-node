@@ -34,6 +34,7 @@ While the app is closed, the node:
 | 📡 | **Checks your services from inside the LAN** (opt-in): the app's HTTP(S) and TCP checks, with status codes and certificate expiry, every minute with the app closed, so "down" is told from "unreachable from my laptop". A separate runner does it, allowed to reach only the networks you list; the node itself stays offline. | 0.16 |
 | 📊 | **Measures per service, container and process**: CPU, memory, disk and network per systemd service and container (from cgroups), the busiest processes, and power draw from the CPU's energy counters (opt-in). Every second while you watch, every 10 s otherwise, with a day of one-minute history. | 0.13 |
 | ⬆️ | **Upgrades safely**: the app hands over a new release with its checksum; the node installs it only if the checksum matches, checks that the new version comes up and stays up, and puts the old one back by itself if not. | 0.19 |
+| 🔗 | **Links nodes** (opt-in, off by default): nodes you pair in the app check each other over the tailnet with mutual TLS, so a dead host is told from a broken path, with the app closed. Each node still acts alone unless you pair it; it answers only what you allow and listens only on the tailnet address. | 0.20 |
 | ⚡ | **Pushes live**: while the app is connected, new events, alerts, container changes and metrics every 2 s are pushed as they happen, instead of the app polling over SSH. | 0.4 |
 
 When the app reconnects, it asks for everything after its last cursor and merges it in. The node keeps no per-app state, so several computers running Nightgrid can sync from the same node.
@@ -42,7 +43,7 @@ When the app reconnects, it asks for everything after its last cursor and merges
 
 See [docs/MILESTONES.md](docs/MILESTONES.md) for detail. The order is:
 
-1. **Node-to-node link** (opt-in; by default each node acts alone): nodes paired through the app talk over the tailnet with mutual keys, for peer reachability checks, UPS group shutdowns, staged restarts across hosts and relaying alerts while the app is closed.
+1. **More on the node-to-node link** (each opt-in): UPS group shutdowns led by the host that reads the UPS, staged restarts across hosts and relaying alerts while the app is closed.
 2. **An optional status page** over the tailnet.
 3. **Daily summaries** for the app's DRIFT helper.
 
@@ -99,8 +100,11 @@ nightgrid-node allow netwatch      start the listen-only ARP/DHCP helper (root; 
 nightgrid-node allow helper        install the root helper for unit and power actions (root)
 nightgrid-node allow health        install the read-only SMART/pools/updates/UPS helper (root)
 nightgrid-node allow power         let it read the CPU energy counters for power draw (root)
-nightgrid-node deny docker|journal|netwatch|helper|health|power   take that away again
+nightgrid-node allow checks        start the check runner for the app's service checks (root)
+nightgrid-node allow peers         start the node-to-node link for nodes the app pairs (root)
+nightgrid-node deny docker|journal|netwatch|helper|health|power|checks|peers   take that away again
 nightgrid-node netwatch            the helper (its unit starts it)
+nightgrid-node upgrade FILE --sha256 HEX   verified upgrade that reverts itself (root)
 nightgrid-node status              what the running node reports
 nightgrid-node query METHOD [JSON] one protocol request, e.g. query alerts.active
 nightgrid-node watch STREAM...     live frames: events, metrics, containers, usage

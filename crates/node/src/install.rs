@@ -26,6 +26,9 @@ pub const NETWATCH_UNIT: &str = include_str!("../../../dist/systemd/nightgrid-no
 pub const NETWATCH_SERVICE: &str = "nightgrid-node-netwatch";
 pub const CHECKS_UNIT: &str = include_str!("../../../dist/systemd/nightgrid-node-checks.service");
 pub const CHECKS_SERVICE: &str = "nightgrid-node-checks";
+/// The opt-in node-to-node link (`allow peers`).
+pub const PEER_UNIT: &str = include_str!("../../../dist/systemd/nightgrid-node-peer.service");
+pub const PEER_SERVICE: &str = "nightgrid-node-peer";
 /// The opt-in root helper (`allow helper`): a socket and a per-connection service.
 pub const HELPER_SOCKET_UNIT: &str = include_str!("../../../dist/systemd/nightgrid-node-helper.socket");
 pub const HELPER_SERVICE_UNIT: &str = include_str!("../../../dist/systemd/nightgrid-node-helper@.service");
@@ -170,7 +173,33 @@ fn checks_dropin(layout: &Layout) -> String {
     s
 }
 
-const EXTRAS: [&Extra; 4] = [&NETWATCH, &HELPER, &HEALTH, &CHECKS];
+const PEERS: Extra = Extra {
+    name: "peers",
+    files: &[("nightgrid-node-peer.service", PEER_UNIT)],
+    unit: PEER_SERVICE,
+    warning: "the node-to-node link now listens on [peers] listen (the tailnet address by default) and talks to \
+              the nodes the app pairs with this one, over mutual TLS with pinned certificates. Nothing is \
+              trusted until the app pairs a node. It may reach only [peers] networks and answers only what \
+              [peers] serve allows; the main service still has no network access. Run allow peers again \
+              after changing the networks.",
+    what: "node-to-node link",
+    dropin: Some(("networks.conf", peers_dropin)),
+};
+
+/// The link may reach (and be reached from) exactly root's networks.
+fn peers_dropin(layout: &Layout) -> String {
+    let nets = crate::config::Config::load(&layout.config()).map(|c| c.peers.networks).unwrap_or_default();
+    let mut s = String::from(
+        "# Written by `nightgrid-node allow peers` from [peers] networks in /etc/nightgrid-node/config.toml.\n\
+         # Run that command again after changing the list.\n[Service]\n",
+    );
+    for n in nets.iter().filter(|n| crate::firewall::parse_cidr(n).is_some()) {
+        s.push_str(&format!("IPAddressAllow={}\n", n.trim()));
+    }
+    s
+}
+
+const EXTRAS: [&Extra; 5] = [&NETWATCH, &HELPER, &HEALTH, &CHECKS, &PEERS];
 pub const SYSUSERS: &str = "# Nightgrid Node service account (no login shell, no password).\n\
                             u nightgrid-node - \"Nightgrid Node\" /var/lib/nightgrid-node\n";
 
@@ -438,6 +467,7 @@ pub fn uninstall(layout: &Layout, sys: &mut dyn Sys, purge: bool) -> Result<Repo
     if purge {
         remove_dir(&layout.data_dir(), &mut rep)?;
         remove_dir(&layout.at(crate::helper::ROLLBACK_DIR), &mut rep)?;
+        remove_dir(&layout.at("/var/lib/nightgrid-node-peer"), &mut rep)?;
         remove_dir(&layout.config_dir(), &mut rep)?;
         remove(&layout.sysusers(), &mut rep)?;
         // userdel also drops the group and every membership in it.
@@ -477,6 +507,9 @@ pub enum Grant {
     /// The service check runner: a separate unit with network access to
     /// `[checks] networks` only.
     Checks,
+    /// The node-to-node link: a separate unit, mutual TLS with paired nodes,
+    /// network access to `[peers] networks` only.
+    Peers,
 }
 
 impl Grant {
@@ -489,6 +522,7 @@ impl Grant {
             "health" => Some(Self::Health),
             "power" => Some(Self::Power),
             "checks" => Some(Self::Checks),
+            "peers" => Some(Self::Peers),
             _ => None,
         }
     }
@@ -501,6 +535,7 @@ impl Grant {
             Self::Health => "health",
             Self::Power => "power",
             Self::Checks => "checks",
+            Self::Peers => "peers",
         }
     }
     fn extra(self) -> Option<&'static Extra> {
@@ -509,6 +544,7 @@ impl Grant {
             Self::Helper => Some(&HELPER),
             Self::Health => Some(&HEALTH),
             Self::Checks => Some(&CHECKS),
+            Self::Peers => Some(&PEERS),
             _ => None,
         }
     }
@@ -578,7 +614,7 @@ pub fn allow(
         return Ok(rep);
     }
     let body = match grant {
-        Grant::Netwatch | Grant::Helper | Grant::Health | Grant::Power | Grant::Checks => {
+        Grant::Netwatch | Grant::Helper | Grant::Health | Grant::Power | Grant::Checks | Grant::Peers => {
             unreachable!("handled above")
         }
         Grant::Docker => {
@@ -811,6 +847,24 @@ mod tests {
         deny(&layout, &mut sys, Grant::Checks, false).unwrap();
         assert!(!layout.system_unit("nightgrid-node-checks.service").exists());
         assert!(!layout.extra_dropin(&CHECKS).exists());
+    }
+
+    #[test]
+    fn allow_and_deny_peers() {
+        let (_d, layout, exe) = setup();
+        let mut sys = FakeSys::default();
+        install(&layout, &mut sys, &exe, &InstallOptions::default()).unwrap();
+        let rep = allow(&layout, &mut sys, Grant::Peers, Path::new("/x"), false).unwrap();
+        assert!(rep.warnings[0].contains("pinned certificates"));
+        let unit = std::fs::read_to_string(layout.system_unit("nightgrid-node-peer.service")).unwrap();
+        assert!(unit.contains("CapabilityBoundingSet=\n") && unit.contains("IPAddressDeny=any"));
+        assert!(unit.contains("ExecStart=/usr/local/bin/nightgrid-node peer\n"));
+        let dropin = std::fs::read_to_string(layout.extra_dropin(&PEERS)).unwrap();
+        assert!(dropin.contains("IPAddressAllow=100.64.0.0/10\n"), "{dropin}");
+        assert!(sys.log.contains(&"systemctl enable --now nightgrid-node-peer".to_string()));
+        deny(&layout, &mut sys, Grant::Peers, false).unwrap();
+        assert!(!layout.system_unit("nightgrid-node-peer.service").exists());
+        assert!(!layout.extra_dropin(&PEERS).exists());
     }
 
     #[test]

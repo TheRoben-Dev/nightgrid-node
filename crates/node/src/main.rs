@@ -33,12 +33,15 @@ COMMANDS:
                             for power draw (root)
     allow checks            Install the check runner for the app's service checks,
                             with network access to [checks] networks only (root)
-    deny docker|journal|netwatch|helper|health|power|checks
+    allow peers             Start the node-to-node link: mutual TLS with the nodes the
+                            app paired, on the tailnet address only (root)
+    deny docker|journal|netwatch|helper|health|power|checks|peers
                             Take that access away again (root)
     netwatch                Run the network watch helper (its unit starts this)
     helper                  Serve one root helper request (its socket unit starts this)
     health-helper           Serve one health read (its socket unit starts this)
     checker                 Run the service checks (its unit starts this)
+    peer                    Run the node-to-node link (its unit starts this)
     status                  Show what the running node reports
     query METHOD [JSON]     Send one request and print the answer
     watch STREAM... [--count N]
@@ -159,9 +162,13 @@ fn real_main() -> Result<(), String> {
             Ok(())
         }
         "allow" | "deny" => {
-            let what = a.rest.first().ok_or("allow/deny what? (docker, journal, netwatch, helper, health, power)")?;
-            let grant = install::Grant::parse(what)
-                .ok_or_else(|| format!("unknown access {what:?} (docker, journal, netwatch, helper, health, power)"))?;
+            let what = a
+                .rest
+                .first()
+                .ok_or("allow/deny what? (docker, journal, netwatch, helper, health, power, checks, peers)")?;
+            let grant = install::Grant::parse(what).ok_or_else(|| {
+                format!("unknown access {what:?} (docker, journal, netwatch, helper, health, power, checks, peers)")
+            })?;
             let layout = install::Layout::system();
             let r = if a.cmd == "allow" {
                 let config = Config::load(&a.config)?;
@@ -175,6 +182,7 @@ fn real_main() -> Result<(), String> {
         "helper" => nightgrid_node::helper::serve(&a.config),
         "health-helper" => nightgrid_node::health::watch::serve(&a.config),
         "checker" => nightgrid_node::checks::checker(&a.config),
+        "peer" => nightgrid_node::peers::link(&a.config),
         "netwatch" => {
             let mut config = Config::load(&a.config)?;
             if let Some(s) = &a.socket {

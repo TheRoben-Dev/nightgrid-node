@@ -71,6 +71,7 @@ pub struct Shared {
     pub jobs: Mutex<crate::jobs::JobsState>,
     /// The UPS shutdown guard (`[ups] shutdown`).
     pub ups_guard: Mutex<crate::upsguard::Guard>,
+    pub peers: Mutex<crate::peers::PeersState>,
 }
 
 impl Shared {
@@ -116,6 +117,7 @@ impl Shared {
             checks: Mutex::new(crate::checks::ChecksState::default()),
             jobs: Mutex::new(crate::jobs::JobsState::default()),
             ups_guard: Mutex::new(crate::upsguard::Guard::default()),
+            peers: Mutex::new(crate::peers::PeersState::default()),
         })
     }
 }
@@ -286,6 +288,8 @@ pub fn run(config: Config, paths: Paths) -> Result<(), String> {
         shared.checks.lock().unwrap_or_else(|e| e.into_inner()).list = list;
         let jobs = crate::jobs::load(&shared.store.lock().unwrap_or_else(|e| e.into_inner()));
         shared.jobs.lock().unwrap_or_else(|e| e.into_inner()).list = jobs;
+        let peers = crate::peers::load(&shared.store.lock().unwrap_or_else(|e| e.into_inner()));
+        shared.peers.lock().unwrap_or_else(|e| e.into_inner()).list = peers;
     }
     let autoblock = if crate::firewall::auto_enabled(&shared) && config.logins.enabled {
         let (b, tx) = crate::firewall::AutoBlocker::start(shared.clone()).map_err(|e| format!("auto-block: {e}"))?;

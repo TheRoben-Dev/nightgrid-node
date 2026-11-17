@@ -6,15 +6,16 @@
 set -u
 [ "$(id -u)" = 0 ] || { echo "run as root" >&2; exit 1; }
 # One at a time: systemctl gives up on the whole list if one unit is missing.
-for u in nightgrid-node nightgrid-node-netwatch nightgrid-node-helper.socket nightgrid-node-health.socket nightgrid-node-checks; do
+for u in nightgrid-node nightgrid-node-netwatch nightgrid-node-helper.socket nightgrid-node-health.socket nightgrid-node-checks \
+  nightgrid-node-peer; do
   systemctl disable --now "$u" 2>/dev/null || true
 done
 rm -f /etc/systemd/system/nightgrid-node.service /etc/systemd/system/nightgrid-node-netwatch.service \
   /etc/systemd/system/nightgrid-node-helper.socket /etc/systemd/system/nightgrid-node-helper@.service \
   /etc/systemd/system/nightgrid-node-health.socket /etc/systemd/system/nightgrid-node-health@.service \
-  /etc/systemd/system/nightgrid-node-checks.service
+  /etc/systemd/system/nightgrid-node-checks.service /etc/systemd/system/nightgrid-node-peer.service
 rm -rf /etc/systemd/system/nightgrid-node.service.d /etc/systemd/system/nightgrid-node-helper@.service.d \
-  /etc/systemd/system/nightgrid-node-checks.service.d
+  /etc/systemd/system/nightgrid-node-checks.service.d /etc/systemd/system/nightgrid-node-peer.service.d
 # Blocks from firewall.block live in the node's own nftables table.
 if command -v nft >/dev/null 2>&1 && nft list table inet nightgrid_node >/dev/null 2>&1; then
   nft delete table inet nightgrid_node
@@ -26,7 +27,7 @@ fi
 systemctl daemon-reload 2>/dev/null || true
 rm -f /usr/local/bin/nightgrid-node /usr/local/bin/nightgrid-node.prev
 if [ "${1:-}" = "--purge" ]; then
-  rm -rf /var/lib/nightgrid-node /var/lib/nightgrid-node-rollback /etc/nightgrid-node /run/nightgrid-node
+  rm -rf /var/lib/nightgrid-node /var/lib/nightgrid-node-rollback /var/lib/nightgrid-node-peer /etc/nightgrid-node /run/nightgrid-node
   rm -f /etc/sysusers.d/nightgrid-node.conf
   if id nightgrid-node >/dev/null 2>&1; then userdel nightgrid-node; fi
   if getent group nightgrid-node >/dev/null 2>&1; then groupdel nightgrid-node; fi
