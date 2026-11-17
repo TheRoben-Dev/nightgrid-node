@@ -237,6 +237,7 @@ fn run(prog: &str, args: &[&str]) -> Option<String> {
         .args(args)
         .env("SYSTEMD_PAGER", "")
         .env("SYSTEMD_COLORS", "0")
+        .env_remove("NOTIFY_SOCKET")
         .stdin(Stdio::null())
         .stderr(Stdio::null())
         .output()

@@ -537,6 +537,9 @@ UNIT
   q "jobs.set '{\"backups\":[{\"id\":9,\"name\":\"x\",\"tool\":\"restic\",\"source\":\"unit\",\"target\":\"x; rm -rf /\",\"staleHours\":26}]}'" 2>&1 | grep -q "isn't a systemd unit" || fail "a bad unit name was accepted"
   i=0; until q jobs.latest | grep -q '"jobId":4'; do
     i=$((i+1)); [ $i -lt 30 ] || { q jobs.latest; fail "jobs never read"; }; sleep 1; done
+  # An active timer keeps its service loaded, so the run's state isn't
+  # garbage-collected, as on a real host.
+  systemctl start ngn-backup.timer
   systemctl start ngn-backup.service
   systemctl start ngn-failing.service nightgrid-job-e2e.service 2>/dev/null || true
   i=0; until ev | grep -q '"title":"job e2e test failed (exit 3)"'; do
