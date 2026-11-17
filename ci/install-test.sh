@@ -505,7 +505,7 @@ PY
   /usr/local/bin/nightgrid-node allow journal >/dev/null
   systemctl restart nightgrid-node
   i=0; until q node.info >/dev/null 2>&1; do i=$((i+1)); [ $i -lt 30 ] || fail "not back after restart"; sleep 1; done
-  q node.info | grep -q '"jobs":1' || { q node.info; fail "no jobs cap"; }
+  q node.info | grep -q '"jobs":"ok"' || { q node.info; fail "jobs access not ok"; }
   cat > /etc/systemd/system/ngn-backup.service <<'UNIT'
 [Service]
 Type=oneshot
