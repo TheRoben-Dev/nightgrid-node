@@ -2,7 +2,7 @@
 
 Nightgrid is agentless: the app does everything over SSH while it is open. Nightgrid Node is an **optional** agent for Linux servers that keeps collecting while the app is closed or the computer is offline, and hands everything over when the app reconnects. It is an accelerator, never a requirement: every app feature keeps working over plain SSH on hosts without it.
 
-Status: N0 to N3 are built (metrics, events, uptime, disk usage, offline alerts, containers, live push, logins, watched files, LAN device inventory, DHCP watch); this document describes the whole plan and marks what exists with its milestone in bold. The order after N1 follows the expanded brief of 2026-11-16: real-time push, network watch, self-healing, then the rest. Milestones are in [MILESTONES.md](MILESTONES.md), the wire format in [PROTOCOL.md](PROTOCOL.md), choices and their reasons in [DECISIONS.md](DECISIONS.md), and the app-side work in [app-integration/](app-integration/).
+Status: N0 to N3 are built (metrics, events, uptime, disk usage, offline alerts, containers, live push, logins, watched files, LAN device inventory, DHCP watch); this document describes the whole plan and marks what exists with its milestone in bold. The order after N1 follows the expanded brief of 2026-11-16: real-time push, network watch, self-healing, then the rest. Milestones are in [MILESTONES.md](MILESTONES.md), the wire format in [PROTOCOL.md](PROTOCOL.md), choices and their reasons in [DECISIONS.md](DECISIONS.md), and the app-side work in [app-integration/](app-integration/). An optional, heavier Hub profile for one host per network is proposed in [HUB.md](HUB.md).
 
 ## 1. Shape
 

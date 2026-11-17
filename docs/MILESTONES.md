@@ -121,3 +121,16 @@ App-facing interfaces are frozen (N-048); this milestone polishes the node from 
 
 - **0.24.0:** `nightgrid-node doctor`, a read-only self-check of the install; CI gates for the sandbox scores and peak memory; every method fed malformed input in tests (N-049).
 - **0.25.0:** a readable `status`; `events`, `audit` and `audit verify` (the whole SHA-256 chain); shell completions and a manual page.
+
+## Hub profile (proposed)
+
+A separate, heavier `nightgrid-hub` for one always-on host per network, next to the unchanged Lite agent. Design in [HUB.md](HUB.md), decisions N-051 to N-059, app spec [0020](app-integration/0020-hub-fleet-sync.md) (future). Nothing here changes a frozen interface; Lite additions are additive and wait for Roben's go.
+
+- **H0:** design (this document set). Docs only.
+- **H1:** `nightgrid-hub` binary, install/uninstall/upgrade, store, collector pulling members over the link (`peer.sync`, `hub.member`), `fleet.*` on the hub socket, host-offline alerts, CI budget test with 25 simulated members.
+- **H2:** notifier: ntfy, Discord, webhook, email; folding, grouping, quiet hours, rate limits, heartbeat URL.
+- **H3:** fleet status page; hub checks (HTTP, TLS, TCP, DNS).
+- **H4:** SNMP devices (v3 read-only).
+- **H5:** baselines, anomalies and forecasts.
+- **H6:** log index and search (opt-in per member).
+- **H7:** runbooks, backup verification and restore tests, patch windows with rollback, holds, standby hub.
