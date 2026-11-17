@@ -3,6 +3,9 @@
 # It runs the same fixed, read-only checks as the Nightgrid app (smartctl,
 # zpool/mdstat/btrfs, the package manager's local cache, upsc for the UPS
 # targets listed in [health] ups), answers and exits. It changes nothing.
+# It also takes the file baseline's snapshots (metadata and a short SHA-256,
+# never contents) of the files root's [files] config lists, so the node sees
+# changes to authorized_keys in home directories and root-only files.
 
 [Unit]
 Description=Nightgrid Node health helper (one read)
@@ -27,7 +30,8 @@ RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 IPAddressDeny=any
 IPAddressAllow=localhost 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 fc00::/7 fe80::/10
 ProtectSystem=strict
-ProtectHome=yes
+# Homes read-only, for users' ~/.ssh/authorized_keys (file baseline).
+ProtectHome=read-only
 PrivateTmp=yes
 UMask=0077
 

@@ -132,6 +132,51 @@ struct Summary {
     status: String,
     #[serde(default)]
     labels: Option<std::collections::HashMap<String, String>>,
+    #[serde(default)]
+    ports: Option<Vec<PortSummary>>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct PortSummary {
+    #[serde(default, rename = "IP")]
+    ip: String,
+    #[serde(default)]
+    private_port: u16,
+    #[serde(default)]
+    public_port: Option<u16>,
+    #[serde(default, rename = "Type")]
+    kind: String,
+}
+
+fn published(ports: Option<Vec<PortSummary>>) -> Vec<nightgrid_node_proto::PublishedPort> {
+    let mut out: Vec<nightgrid_node_proto::PublishedPort> = Vec::new();
+    for p in ports.unwrap_or_default() {
+        let Some(port) = p.public_port.filter(|p| *p > 0) else { continue };
+        let addr = if p.ip.is_empty() || p.ip == "::" { "0.0.0.0".to_owned() } else { p.ip };
+        let proto = if p.kind.is_empty() { "tcp".to_owned() } else { p.kind };
+        // The engine lists 0.0.0.0 and :: separately for one published port.
+        if !out.iter().any(|o| o.proto == proto && o.port == port && o.addr == addr) {
+            out.push(nightgrid_node_proto::PublishedPort { proto, addr, port, private_port: p.private_port });
+        }
+    }
+    out.sort_by(|a, b| (a.port, &a.proto, &a.addr).cmp(&(b.port, &b.proto, &b.addr)));
+    out
+}
+
+/// `com.docker.compose.project.config_files`: comma-separated absolute paths.
+fn compose_files(labels: Option<&std::collections::HashMap<String, String>>) -> Vec<String> {
+    labels
+        .and_then(|l| l.get("com.docker.compose.project.config_files"))
+        .map(|v| {
+            v.split(',')
+                .map(str::trim)
+                .filter(|p| p.starts_with('/') && !p.contains("/../") && p.len() < 4096)
+                .take(8)
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn health_from_status(status: &str) -> Option<String> {
@@ -195,7 +240,9 @@ pub fn parse_containers(body: &[u8]) -> Result<Vec<ContainerInfo>, DockerError> 
             name: c.names.first().map(|n| n.trim_start_matches('/').to_owned()).unwrap_or_default(),
             image: c.image,
             health: health_from_status(&c.status),
-            project: c.labels.and_then(|l| l.get("com.docker.compose.project").cloned()),
+            project: c.labels.as_ref().and_then(|l| l.get("com.docker.compose.project").cloned()),
+            compose_files: compose_files(c.labels.as_ref()),
+            ports: published(c.ports),
             state: c.state,
             status: c.status,
         })
@@ -272,12 +319,22 @@ mod tests {
         assert_eq!(parse_response(r).unwrap_err().message, "engine answered 404 page not found");
 
         let list = br#"[{"Id":"0123456789abcdef","Names":["/web"],"Image":"nginx","State":"running",
-            "Status":"Up 2 hours (unhealthy)","Labels":{"com.docker.compose.project":"site"}},
+            "Status":"Up 2 hours (unhealthy)","Labels":{"com.docker.compose.project":"site",
+            "com.docker.compose.project.config_files":"/srv/site/compose.yaml,/srv/site/override.yaml,../x"},
+            "Ports":[{"IP":"0.0.0.0","PrivatePort":80,"PublicPort":8080,"Type":"tcp"},
+            {"IP":"::","PrivatePort":80,"PublicPort":8080,"Type":"tcp"},{"PrivatePort":443,"Type":"tcp"}]},
             {"Id":"ff","Names":["/db"],"Image":"pg","State":"exited","Status":"Exited (137) 5 minutes ago"}]"#;
         let c = parse_containers(list).unwrap();
         assert_eq!((c[0].name.as_str(), c[0].state.as_str()), ("db", "exited"));
         assert_eq!(c[1].id, "0123456789ab");
         assert_eq!((c[1].health.as_deref(), c[1].project.as_deref()), (Some("unhealthy"), Some("site")));
+        assert_eq!(c[1].compose_files, ["/srv/site/compose.yaml", "/srv/site/override.yaml"]);
+        assert_eq!(c[1].ports.len(), 1, "{:?}", c[1].ports);
+        assert_eq!(
+            (c[1].ports[0].addr.as_str(), c[1].ports[0].port, c[1].ports[0].private_port),
+            ("0.0.0.0", 8080, 80)
+        );
+        assert!(c[0].ports.is_empty() && c[0].compose_files.is_empty());
 
         let ev = br#"{"Type":"container","Action":"die","Actor":{"ID":"x","Attributes":{"name":"web","exitCode":"137"}},"time":100}
 {"Type":"network","Action":"connect","Actor":{"Attributes":{"name":"bridge"}},"time":101}

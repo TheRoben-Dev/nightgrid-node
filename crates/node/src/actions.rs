@@ -415,6 +415,8 @@ mod tests {
                 status: "Up".into(),
                 health: None,
                 project: None,
+                ports: vec![],
+                compose_files: vec![],
             }];
         }
         let r = run(&shared, &req("container.restart", Some("db"), true), "rule r1");

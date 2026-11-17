@@ -8,7 +8,7 @@
 //! each; failed ones are summed per minute so a scanned host doesn't flood
 //! the timeline.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io::{BufRead, BufReader};
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
@@ -17,14 +17,73 @@ use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use nightgrid_node_proto::{EventKind, Level};
+use nightgrid_node_proto::{AlertKind, EventKind, Level, Severity};
 
+use crate::alerts::Condition;
 use crate::daemon::Shared;
 use crate::events::NewEvent;
 
 const META_CURSOR: &str = "logins_cursor";
 /// Failed logins are summed over this many seconds.
 const WINDOW: i64 = 60;
+
+/// Failed logins counted for the burst alert, in seconds.
+pub const BURST_WINDOW: i64 = 300;
+/// Failures remembered for the burst alert, at most.
+const BURST_KEEP: usize = 20_000;
+
+/// Recent failed logins (time, address), for the login-burst alert and
+/// (N6c) auto-block.
+#[derive(Debug, Default)]
+pub struct Recent {
+    fails: VecDeque<(i64, String)>,
+}
+
+impl Recent {
+    pub fn add(&mut self, at: i64, from: &str) {
+        if self.fails.len() >= BURST_KEEP {
+            self.fails.pop_front();
+        }
+        self.fails.push_back((at, from.chars().take(64).collect()));
+    }
+
+    fn prune(&mut self, now: i64) {
+        while self.fails.front().is_some_and(|(t, _)| *t <= now - BURST_WINDOW) {
+            self.fails.pop_front();
+        }
+    }
+
+    /// Failures per address in the window, most first.
+    pub fn by_address(&mut self, now: i64) -> Vec<(String, u32)> {
+        self.prune(now);
+        let mut m: BTreeMap<&str, u32> = BTreeMap::new();
+        for (_, a) in &self.fails {
+            *m.entry(a.as_str()).or_default() += 1;
+        }
+        let mut v: Vec<(String, u32)> = m.into_iter().map(|(a, n)| (a.to_owned(), n)).collect();
+        v.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        v
+    }
+
+    /// The login-burst alert while at least `burst` failures fall in the
+    /// last five minutes; critical at ten times that.
+    pub fn condition(&mut self, host: &str, burst: u32, now: i64) -> Option<Condition> {
+        let by = self.by_address(now);
+        let total: u32 = by.iter().map(|(_, n)| n).sum();
+        if total < burst {
+            return None;
+        }
+        let top: Vec<String> = by.iter().take(3).map(|(a, n)| format!("{a} ×{n}")).collect();
+        let more = if by.len() > 3 { format!(" and {} more", by.len() - 3) } else { String::new() };
+        Some(Condition {
+            key: "logins:burst".into(),
+            kind: AlertKind::LoginBurst,
+            severity: if total >= burst.saturating_mul(10) { Severity::Critical } else { Severity::Warn },
+            title: format!("failed SSH logins on {host}"),
+            detail: format!("{total} in the last 5 minutes from {}{more}", top.join(", ")),
+        })
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Line {
@@ -243,6 +302,7 @@ fn run(shared: &Shared, stop: &mpsc::Receiver<()>) {
                                 flush(shared, &mut fails, None);
                             }
                             fails.add(at, &user, &from);
+                            shared.logins.lock().unwrap_or_else(|e| e.into_inner()).add(at, &from);
                         }
                     }
                 }
@@ -312,6 +372,25 @@ fn save_cursor(shared: &Shared, cursor: Option<&str>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn burst_alert_counts_the_last_five_minutes() {
+        let mut r = Recent::default();
+        for i in 0..15 {
+            r.add(1000 + i, "203.0.113.7");
+        }
+        for i in 0..5 {
+            r.add(1100 + i, if i % 2 == 0 { "198.51.100.2" } else { "198.51.100.3" });
+        }
+        assert!(r.condition("nas", 21, 1200).is_none());
+        let c = r.condition("nas", 20, 1200).unwrap();
+        assert_eq!((c.key.as_str(), c.kind, c.severity), ("logins:burst", AlertKind::LoginBurst, Severity::Warn));
+        assert_eq!(c.detail, "20 in the last 5 minutes from 203.0.113.7 ×15, 198.51.100.2 ×3, 198.51.100.3 ×2");
+        assert_eq!(r.condition("nas", 2, 1200).unwrap().severity, Severity::Critical);
+        // Five minutes after the first ones, only the later five are left.
+        assert_eq!(r.by_address(1315).iter().map(|(_, n)| n).sum::<u32>(), 5);
+        assert!(r.condition("nas", 20, 1315).is_none());
+    }
 
     #[test]
     fn parses_sshd_messages() {

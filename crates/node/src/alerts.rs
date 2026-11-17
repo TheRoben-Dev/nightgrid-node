@@ -46,6 +46,7 @@ pub fn label(k: AlertKind) -> &'static str {
         AlertKind::PoolDegraded => "POOL DEGRADED",
         AlertKind::UpsOnBattery => "ON BATTERY",
         AlertKind::LogMatch => "LOG MATCH",
+        AlertKind::LoginBurst => "LOGIN BURST",
     }
 }
 

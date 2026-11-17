@@ -22,7 +22,11 @@ Login events need the system journal. `sudo nightgrid-node allow journal` writes
 
 ## Watched files
 
-The file watcher only records metadata (size, owner, mode, time) and a short SHA-256 of files the service can read. It never stores or sends contents. Root chooses the list in `/etc/nightgrid-node/config.toml`.
+The file watcher only records metadata (size, owner, mode, time) and a short SHA-256 of files the service can read. It never stores or sends contents. Root chooses the list in `/etc/nightgrid-node/config.toml`. With `[files] baseline` on (the default) the list also includes more of `/etc`, `authorized_keys` of root and every login user, and the compose files of running containers. With `allow health`, those snapshots are taken by the read-only health helper (which can read homes and root-only files, read-only), and only the metadata and a 16-hex-digit hash prefix reach the service. The helper works out the paths from root's config and `/etc/passwd` itself; the service can't ask it about other files (decision N-037).
+
+## Listening ports and failed logins
+
+Listening sockets are read from `/proc/net` like any user can; nothing is probed or opened. Login-burst alerts count the failed logins the journal watcher already reads (`allow journal`). Neither adds a privilege.
 
 ## Network watch
 
@@ -44,7 +48,7 @@ For rollbacks (`files.rollback`), the helper also copies and puts back files und
 
 ## Health helper (`allow health`)
 
-Disk SMART needs raw device commands, so `sudo nightgrid-node allow health` installs a second, read-only helper the same way: a socket only the service account can reach, one short-lived root process per read. It runs fixed scripts (smartctl, zpool, `/proc/mdstat`, Btrfs sysfs, the package manager's local cache, and `upsc` only for targets in `[health] ups`), never a command from the service. Its unit has only `CAP_SYS_RAWIO`, `CAP_SYS_ADMIN` and `CAP_DAC_READ_SEARCH`, a read-only file system, no new privileges, and network only to localhost and private LAN ranges (for a NUT server), never the internet (decision N-034). `sudo nightgrid-node deny health` removes it.
+Disk SMART needs raw device commands, so `sudo nightgrid-node allow health` installs a second, read-only helper the same way: a socket only the service account can reach, one short-lived root process per read. It runs fixed scripts (smartctl, zpool, `/proc/mdstat`, Btrfs sysfs, the package manager's local cache, and `upsc` only for targets in `[health] ups`), never a command from the service. Its unit has only `CAP_SYS_RAWIO`, `CAP_SYS_ADMIN` and `CAP_DAC_READ_SEARCH`, a read-only file system, no new privileges, and network only to localhost and private LAN ranges (for a NUT server), never the internet (decision N-034). Since 0.14.0 it can also read home directories read-only (`ProtectHome=read-only`), for the file baseline's `authorized_keys`. `sudo nightgrid-node deny health` removes it.
 
 ## Power (`allow power`)
 

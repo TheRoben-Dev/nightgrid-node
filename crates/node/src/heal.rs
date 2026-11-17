@@ -329,6 +329,8 @@ mod tests {
             status: String::new(),
             health: health.map(Into::into),
             project: None,
+            ports: vec![],
+            compose_files: vec![],
         };
         let al = |key: &str, kind| Alert {
             id: 1,

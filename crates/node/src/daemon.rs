@@ -57,6 +57,10 @@ pub struct Shared {
     pub logs: Mutex<crate::logs::LogsState>,
     /// The latest usage sample.
     pub usage: Mutex<Option<nightgrid_node_proto::UsageSample>>,
+    /// Recent failed logins, for the login-burst alert.
+    pub logins: Mutex<crate::logins::Recent>,
+    /// The latest read of listening sockets.
+    pub ports: Mutex<nightgrid_node_proto::PortsResult>,
 }
 
 impl Shared {
@@ -95,6 +99,8 @@ impl Shared {
             health_socket: PathBuf::from(crate::health::watch::SOCKET),
             logs: Mutex::new(logs),
             usage: Mutex::new(None),
+            logins: Mutex::new(crate::logins::Recent::default()),
+            ports: Mutex::new(nightgrid_node_proto::PortsResult::default()),
         })
     }
 }
@@ -289,6 +295,14 @@ pub fn run(config: Config, paths: Paths) -> Result<(), String> {
     } else {
         None
     };
+    let ports = if config.ports.enabled {
+        Some(
+            crate::ports::PortWatcher::start(shared.clone(), PathBuf::from("/"))
+                .map_err(|e| format!("port watcher: {e}"))?,
+        )
+    } else {
+        None
+    };
     let watcher = if config.docker.enabled {
         Some(crate::containers::Watcher::start(shared.clone()).map_err(|e| format!("container watcher: {e}"))?)
     } else {
@@ -331,6 +345,9 @@ pub fn run(config: Config, paths: Paths) -> Result<(), String> {
         w.stop();
     }
     if let Some(w) = usage {
+        w.stop();
+    }
+    if let Some(w) = ports {
         w.stop();
     }
     let _ = std::fs::remove_file(&config.server.socket);
