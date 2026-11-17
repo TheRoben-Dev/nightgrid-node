@@ -523,3 +523,19 @@ fn daily_summary_for_drift() {
     assert_eq!(week["to"].as_i64().unwrap() - week["from"].as_i64().unwrap(), 168 * 3600);
     assert!(c.call("summary.daily", json!({"hours": 0})).is_err());
 }
+
+#[test]
+fn a_node_answers_while_it_pings() {
+    // Paired with itself: it must serve its own ping while making it.
+    let addr = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().to_string();
+    let a = start();
+    let keys = tempfile::tempdir().unwrap();
+    let _l = link(&a, keys.path(), &addr);
+    let v = latest(&a, |v| v["listening"].is_string());
+    let fp = v["fingerprint"].as_str().unwrap().to_owned();
+    let mut c = Client::connect(&a.socket, "e2e").unwrap();
+    let id = c.welcome.node.node_id.clone();
+    c.call("peers.set", json!({"peers": [{"id": id, "name": "self", "address": addr, "fingerprint": fp}]})).unwrap();
+    let v = latest(&a, |v| v["readings"][0]["at"].is_number());
+    assert_eq!(v["readings"][0]["ok"], true, "{v}");
+}

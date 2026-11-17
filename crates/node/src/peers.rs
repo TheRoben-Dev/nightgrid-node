@@ -544,7 +544,7 @@ pub fn link(config_path: &Path) -> Result<(), String> {
     });
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| e.to_string())?;
     let mut listening: Option<SocketAddr> = None;
-    let mut listener: Option<tokio::net::TcpListener> = None;
+    let mut listener = false;
     let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server_config(&id, allowed.clone())?));
     let interval = Duration::from_secs(cfg.peers.interval_secs.into());
     let socket = cfg.server.socket.clone();
@@ -555,13 +555,31 @@ pub fn link(config_path: &Path) -> Result<(), String> {
         let mut known: Option<PeersList> = None;
         let mut leader = Leader::default();
         loop {
-            if listener.is_none() {
+            if !listener {
                 if let Some(addr) = listen_addr(&cfg) {
                     match tokio::net::TcpListener::bind(addr).await {
                         Ok(l) => {
                             crate::info!("listening for peers on {addr}");
                             listening = Some(addr);
-                            listener = Some(l);
+                            // Its own task, so peers are answered while this
+                            // node is busy pinging them (or itself).
+                            let (a, c, sl) = (acceptor.clone(), ctx.clone(), slots.clone());
+                            tokio::spawn(async move {
+                                loop {
+                                    let Ok((tcp, _)) = l.accept().await else { continue };
+                                    // A few at a time: anything on the tailnet can
+                                    // connect, though only paired nodes get past
+                                    // the handshake.
+                                    if let Ok(permit) = sl.clone().try_acquire_owned() {
+                                        let (a, c) = (a.clone(), c.clone());
+                                        tokio::spawn(async move {
+                                            serve_one(tcp, a, c).await;
+                                            drop(permit);
+                                        });
+                                    }
+                                }
+                            });
+                            listener = true;
                             // Report the address now.
                             next_round = Instant::now();
                         }
@@ -610,22 +628,9 @@ pub fn link(config_path: &Path) -> Result<(), String> {
                 }
             }
             let wait = next_round.min(next_check).saturating_duration_since(Instant::now());
-            match &listener {
-                Some(l) => {
-                    if let Ok(Ok((tcp, _))) = tokio::time::timeout(wait, l.accept()).await {
-                        // A few at a time: anything on the tailnet can connect,
-                        // even if only paired nodes get past the handshake.
-                        if let Ok(permit) = slots.clone().try_acquire_owned() {
-                            let (a, c) = (acceptor.clone(), ctx.clone());
-                            tokio::spawn(async move {
-                                serve_one(tcp, a, c).await;
-                                drop(permit);
-                            });
-                        }
-                    }
-                }
-                None => tokio::time::sleep(wait).await,
-            }
+            // Until bound, look for the address again every 30 s.
+            let wait = if listener { wait } else { wait.min(Duration::from_secs(30)) };
+            tokio::time::sleep(wait).await;
         }
     })
 }
