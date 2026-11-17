@@ -113,3 +113,4 @@ Scope:
 ## N9 · DRIFT helpers
 
 - **N9 (0.23.0):** `summary.daily`: what happened on the host over the last day (or up to a week) as plain facts for the app's DRIFT helper, made on request from the node's own history (N-046). App spec 0019.
+- Wake-on-LAN relay: stays with the app's relay hosts and their systemd timers, which already work with the app closed (N-047).
