@@ -305,6 +305,15 @@ PY
   grep -q '"pools":{"at":' /tmp/ngn-health.json || fail "no pools read"
   python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); bad=[k for k in ("smart","pools","updates") if "error" in r[k]]; sys.exit(1 if bad else 0)' /tmp/ngn-health.json \
     || { journalctl -u 'nightgrid-node-health@*' --no-pager -n 30; fail "a health read failed"; }
+  say "SMART reads the same through the sandbox as directly as root"
+  dev=$(smartctl --scan-open 2>/dev/null | awk '$1 ~ /^\/dev\// {print $1; exit}')
+  if [ -n "$dev" ]; then
+    direct=$(smartctl -a -j "$dev" | python3 -c 'import json,sys; print(json.load(sys.stdin)["smartctl"]["exit_status"] & 3)')
+    echo "direct smartctl on $dev: open/command bits $direct"
+    if [ "$direct" = 0 ] && grep -q "couldn't open the device" /tmp/ngn-health.json; then
+      journalctl -u 'nightgrid-node-health@*' --no-pager -n 30; fail "the health sandbox keeps smartctl from opening $dev"
+    fi
+  fi
   say "the health helper only queries UPS targets root listed"
   python3 - <<'PY' > /tmp/ngn-health-direct.json
 import socket

@@ -5,8 +5,10 @@
 #   sh uninstall.sh --purge    remove everything, including the account
 set -u
 [ "$(id -u)" = 0 ] || { echo "run as root" >&2; exit 1; }
-systemctl disable --now nightgrid-node nightgrid-node-netwatch nightgrid-node-helper.socket \
-  nightgrid-node-health.socket 2>/dev/null || true
+# One at a time: systemctl gives up on the whole list if one unit is missing.
+for u in nightgrid-node nightgrid-node-netwatch nightgrid-node-helper.socket nightgrid-node-health.socket; do
+  systemctl disable --now "$u" 2>/dev/null || true
+done
 rm -f /etc/systemd/system/nightgrid-node.service /etc/systemd/system/nightgrid-node-netwatch.service \
   /etc/systemd/system/nightgrid-node-helper.socket /etc/systemd/system/nightgrid-node-helper@.service \
   /etc/systemd/system/nightgrid-node-health.socket /etc/systemd/system/nightgrid-node-health@.service
