@@ -23,6 +23,7 @@ fn kind_str(k: EventKind) -> &'static str {
         EventKind::Network => "network",
         EventKind::Action => "action",
         EventKind::Port => "port",
+        EventKind::Job => "job",
         EventKind::Other => "other",
     }
 }

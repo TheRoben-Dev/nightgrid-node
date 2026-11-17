@@ -104,6 +104,7 @@ The node never buffers without bound for a slow client: each stream keeps a shor
 | `security` 1 | `ports.list`; `port` events; `loginBurst` alerts; the wider file baseline; `ports` on containers | N6b |
 | `block` 1 | `firewall.block` / `firewall.unblock` actions; `block.list`; optional auto-block of failed-login bursts | N6c |
 | `checks` 1 | `checks.set`, `checks.get`, `checks.latest`; `serviceDown` and `certExpiring` alerts (with `allow checks`) | N7a |
+| `jobs` 1 | `jobs.set`, `jobs.get`, `jobs.latest`; `job` events; `backupFailed` and `backupStale` alerts | N7b |
 
 ### `node.info` (`node` 1)
 
@@ -124,7 +125,7 @@ The node never buffers without bound for a slow client: each stream keeps a shor
 }
 ```
 
-`access` (0.5.0+; `netwatch` 0.7.0+; `helper` 0.9.0+, `ok` when the root helper's socket is installed; `health` 0.11.0+, `ok` when the health helper's socket is installed; `power` 0.13.0+, from RAPL: `ok`, `denied` or `absent`; `checks` 0.16.0+, `ok` while the check runner has reported within three rounds; `ok` while the helper has reported in the last 2½ minutes) says which optional access root has granted: `ok`, `denied` (root hasn't run `nightgrid-node allow <name>`), `absent` (nothing to read on this host) or `off` (disabled in the config).
+`access` (0.5.0+; `netwatch` 0.7.0+; `helper` 0.9.0+, `ok` when the root helper's socket is installed; `health` 0.11.0+, `ok` when the health helper's socket is installed; `power` 0.13.0+, from RAPL: `ok`, `denied` or `absent`; `checks` 0.16.0+, `ok` while the check runner has reported within three rounds; `jobs` 0.17.0+, `ok` or `off`; `ok` while the helper has reported in the last 2½ minutes) says which optional access root has granted: `ok`, `denied` (root hasn't run `nightgrid-node allow <name>`), `absent` (nothing to read on this host) or `off` (disabled in the config).
 
 ### `metrics.latest` (`metrics` 1)
 
@@ -173,7 +174,7 @@ The cursor is the event's `seq`, which only grows.
            "title": "server01", "detail": "/srv is 91% full (40 GB free)", "since": 1763290000, "resolved": null}}
 ```
 
-- `kind`: `alert` (fired, worse, or changed: `level: info` when it got better), `recovered` (`level: ok`, `alert.resolved` set), `boot`, `outage`, `container` (N1b), `login` and `file` (N2b), `network` (N3a), `action` (N4a), `port` (N6b); unknown kinds read as `other`.
+- `kind`: `alert` (fired, worse, or changed: `level: info` when it got better), `recovered` (`level: ok`, `alert.resolved` set), `boot`, `outage`, `container` (N1b), `login` and `file` (N2b), `network` (N3a), `action` (N4a), `port` (N6b), `job` (N7b); unknown kinds read as `other`.
 - `login`: "alice logged in from 10.0.0.5" (`detail`: "ssh, publickey"), or failed logins summed per minute: "failed login for root from 192.0.2.7" / "12 failed logins from 3 addresses" (`detail`: users and the top addresses; `warn` from 10 failures). Needs `allow journal`.
 - `file`: "changed /etc/ssh/sshd_config", "added /etc/cron.d/backup", "removed …". `detail` lists size, a short SHA-256, mode and owner changes, never contents; "(while the node was not running)" when found at start. `warn` for SSH (including `authorized_keys`), sudoers, passwd, shadow, group, cron, PAM and `ld.so.preload` files. With `[files] baseline` (default on, 0.14.0) the node also watches more of `/etc`, root's and every login user's `authorized_keys` and running containers' compose files; with `allow health` the read-only health helper takes those snapshots, so files the service can't read (homes, root's crontabs) are seen too, with hashes.
 - `port` (0.14.0): "new listener 8080/tcp (http-alt)" (`detail`: "on every interface, published by container web"; `warn` when reachable from the network, i.e. bound to every interface or a specific address, with a note for databases and caches) and "stopped listening 8080/tcp (http-alt)" (`info`). A socket must be there (or gone) in two reads in a row. Unconnected UDP sockets in the ephemeral range are listed but not reported. "(while the node was not running)" when found at start.
@@ -215,7 +216,7 @@ The node evaluates the rules it has implemented with the app's field names. `set
 {"enabled": true, "diskFull": true, "diskPercent": 90, "diskForecast": true, "forecastDays": 14}
 ```
 
-`serviceDown`, `certExpiring` and `certDays` (0.16.0; app defaults `true`, `true`, 14; `certDays` 1–365) apply to the node's service checks. `loginBurst` (0.14.0, default `false`; not an app setting yet, so the app turns it on when it knows the `loginBurst` alert kind) raises a `loginBurst` alert, key `logins:burst`, while at least `[logins] burst` (root's config, default 20) failed SSH logins fall in the last 5 minutes; `critical` at ten times that. Needs `allow journal`.
+`backupStale` (0.17.0, app default `true`) turns on `backupFailed` and `backupStale` alerts for the node's backup jobs, as the app's switch does. `serviceDown`, `certExpiring` and `certDays` (0.16.0; app defaults `true`, `true`, 14; `certDays` 1–365) apply to the node's service checks. `loginBurst` (0.14.0, default `false`; not an app setting yet, so the app turns it on when it knows the `loginBurst` alert kind) raises a `loginBurst` alert, key `logins:burst`, while at least `[logins] burst` (root's config, default 20) failed SSH logins fall in the last 5 minutes; `critical` at ten times that. Needs `allow journal`.
 
 `diskPercent` must be 50–99 and `forecastDays` 1–90, else `bad_request`. Rules are stored in the node's state directory and survive restarts and upgrades.
 
@@ -477,6 +478,42 @@ The app's service checks, run from this host every `[checks] interval_secs` (60 
 Alerts, with the app's keys (no host segment, like the app's own) and rules `serviceDown`, `certExpiring`, `certDays`: `serviceDown` `svc:<id>` (`critical`, after 90 s, as in the app) and `certExpiring` `svc:<id>:cert` (`warn`, `critical` at 3 days or less). While the runner is silent, its checks raise nothing (unknown isn't down).
 
 `checks.report` is internal (the runner's results); only the service's own account may call it.
+
+### `jobs.set` / `jobs.get` / `jobs.latest` (`jobs` 1)
+
+The app's backup jobs, read every `[jobs] interval_secs` (60 s), and the app's scheduled jobs (every `nightgrid-job-*.service` and `nightgrid-power-*.service` on the host, found by the node).
+
+`jobs.set` replaces the backup list (at most 100) and answers like `jobs.get`:
+
+```json
+{"backups": [{"id": 4, "name": "nightly", "tool": "restic", "source": "unit", "target": "restic-backup.timer", "staleHours": 26},
+             {"id": 5, "name": "usb copy", "tool": "rsync", "source": "path", "target": "/mnt/usb/srv", "staleHours": 48}],
+ "interval": 60}
+```
+
+The app's `BackupJob` without `hostId`, with the app's checks (name 1–80 characters, a systemd unit name or an absolute path, `staleHours` 1–2160); a bad entry makes the whole call `bad_request`. A unit target may be a timer (its `Unit=` is read), a service, or a bare name (`.service` is added).
+
+`jobs.latest`:
+
+```json
+{"access": "ok", "at": 1763290000,
+ "backups": [{"jobId": 4, "result": "ok", "lastRun": 1763262005.2, "lastOk": 1763262005.2, "exitCode": 0,
+              "size": 5637144576, "added": 13107200, "summary": "snapshot 1a2b3c4d saved", "stale": false, "error": null}],
+ "runs": [{"unit": "nightgrid-job-nightly-sync", "description": "nightly sync", "result": "failed",
+           "started": 1763258400.0, "finished": 1763258431.7, "exitCode": 23, "summary": "rsync error: some files vanished"}]}
+```
+
+- `backups` entries are the app's `BackupStatus` with the app's rules: `running` while the unit runs, `unknown` with no run since boot, `stale` when the last good run is older than `staleHours` (a failed run with no good one counts as stale; no run since boot only once the host has been up longer than the limit). Path jobs use the newest file within three levels and the size on disk; they are read at most every 10 minutes.
+- `runs`: the last run of each scheduled job since boot. `description` is the unit's description without "Nightgrid job:". `summary` is the error line of a failed run or the last line of output, hidden when it looks like a secret.
+- Totals and summaries come from the run's journal output and need `allow journal`; without it, results and exit codes still show.
+
+Events (`job`, 0.17.0), once per finished run, also for runs while the node was stopped:
+
+- "backup nightly finished" (`info`; `detail`: "snapshot 1a2b3c4d saved · 5.2 GiB · added 12.5 MiB") or "backup nightly failed" (`warn`; the error line and exit code), for unit backup jobs.
+- "job nightly sync finished" (`info`; the last output line) or "job nightly sync failed (exit 23)" (`warn`), for `nightgrid-job-*` and `nightgrid-power-*` units.
+- "scheduled reboot ran" (`info`), recorded at the next start when the previous boot's journal shows a `nightgrid-power-*` unit started (needs a persistent journal and `allow journal`).
+
+Alerts, with the app's keys (no host segment) and its `backupStale` switch: `backupFailed` `backup:<id>` (`critical`, the error line as detail) and `backupStale` `backup:<id>` (`warn`, "no good run in the last 26 hours"). Titles are "<name> on <hostname>", as in the app.
 
 ### `block.list` (`block` 1)
 

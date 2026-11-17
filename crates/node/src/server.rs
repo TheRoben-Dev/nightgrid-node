@@ -237,6 +237,7 @@ fn access(shared: &Shared) -> std::collections::BTreeMap<String, String> {
             checks_access(shared, &shared.checks.lock().unwrap_or_else(|e| e.into_inner())).to_owned(),
         ),
         ("power".to_owned(), power_access(shared)),
+        ("jobs".to_owned(), if shared.config.jobs.enabled { "ok" } else { "off" }.to_owned()),
     ]
     .into_iter()
     .collect()
@@ -340,6 +341,7 @@ pub fn caps() -> Caps {
         (cap::SECURITY, 1),
         (cap::BLOCK, 1),
         (cap::CHECKS, 1),
+        (cap::JOBS, 1),
     ]
     .into_iter()
     .map(|(k, v)| (k.to_owned(), v))
@@ -622,6 +624,31 @@ fn dispatch(shared: &Shared, session: &mut Session, req: &Request) -> Result<Res
             let r: nightgrid_node_proto::ChecksReport = params(&req.params)?;
             shared.checks.lock().unwrap_or_else(|e| e.into_inner()).report(r, crate::daemon::now_secs());
             Ok(Response::ok(0, Value::Null))
+        }
+        method::JOBS_SET => {
+            let p: nightgrid_node_proto::JobsList = params(&req.params)?;
+            let list = crate::backups::validate(&p.backups).map_err(|e| Response::err(0, ErrorCode::BadRequest, e))?;
+            {
+                let st = shared.store.lock().unwrap_or_else(|e| e.into_inner());
+                crate::jobs::save(&st, &list).map_err(internal)?;
+            }
+            shared.jobs.lock().unwrap_or_else(|e| e.into_inner()).set(list.clone());
+            Ok(Response::ok(
+                0,
+                nightgrid_node_proto::JobsList { backups: list, interval: shared.config.jobs.interval_secs },
+            ))
+        }
+        method::JOBS_GET => {
+            let list = shared.jobs.lock().unwrap_or_else(|e| e.into_inner()).list.clone();
+            Ok(Response::ok(
+                0,
+                nightgrid_node_proto::JobsList { backups: list, interval: shared.config.jobs.interval_secs },
+            ))
+        }
+        method::JOBS_LATEST => {
+            let mut l = shared.jobs.lock().unwrap_or_else(|e| e.into_inner()).latest.clone();
+            l.access = if shared.config.jobs.enabled { "ok" } else { "off" }.into();
+            Ok(Response::ok(0, l))
         }
         method::BLOCK_LIST => {
             let c = &shared.config;

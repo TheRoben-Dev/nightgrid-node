@@ -26,6 +26,22 @@ pub struct Config {
     pub ports: PortsConfig,
     pub block: BlockConfig,
     pub checks: ChecksConfig,
+    pub jobs: JobsConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct JobsConfig {
+    /// Watch the app's backup jobs and scheduled jobs (read-only).
+    pub enabled: bool,
+    /// Seconds between reads (30-3600).
+    pub interval_secs: u32,
+}
+
+impl Default for JobsConfig {
+    fn default() -> Self {
+        Self { enabled: true, interval_secs: 60 }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -387,6 +403,9 @@ impl Config {
         if !(30..=3600).contains(&self.checks.interval_secs) {
             return Err("checks.interval_secs must be 30-3600".into());
         }
+        if !(30..=3600).contains(&self.jobs.interval_secs) {
+            return Err("jobs.interval_secs must be 30-3600".into());
+        }
         if self.checks.networks.len() > 64
             || self.checks.networks.iter().any(|c| crate::firewall::parse_cidr(c).is_none())
         {
@@ -647,6 +666,15 @@ networks = [
   "fc00::/7",
   "fe80::/10",
 ]
+
+[jobs]
+# Watch the backup jobs the app defines (restic, borg, rsync, rclone: a
+# systemd unit or a path) and the app's scheduled jobs (nightgrid-job-*,
+# nightgrid-power-*): failed and stale backups alert, and each finished run
+# is recorded with the app closed. Read-only; it runs nothing.
+enabled = true
+# Seconds between reads (30-3600).
+interval_secs = 60
 "#;
 
 #[cfg(test)]

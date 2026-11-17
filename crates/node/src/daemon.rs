@@ -67,6 +67,8 @@ pub struct Shared {
     pub autoblock: Mutex<Option<std::sync::mpsc::Sender<String>>>,
     /// The app's service checks and the runner's latest results.
     pub checks: Mutex<crate::checks::ChecksState>,
+    /// The app's backup jobs and the latest read of them and its scheduled jobs.
+    pub jobs: Mutex<crate::jobs::JobsState>,
 }
 
 impl Shared {
@@ -110,6 +112,7 @@ impl Shared {
             blocks: Mutex::new(crate::firewall::Blocks::default()),
             autoblock: Mutex::new(None),
             checks: Mutex::new(crate::checks::ChecksState::default()),
+            jobs: Mutex::new(crate::jobs::JobsState::default()),
         })
     }
 }
@@ -276,6 +279,8 @@ pub fn run(config: Config, paths: Paths) -> Result<(), String> {
     {
         let list = crate::checks::load(&shared.store.lock().unwrap_or_else(|e| e.into_inner()));
         shared.checks.lock().unwrap_or_else(|e| e.into_inner()).list = list;
+        let jobs = crate::jobs::load(&shared.store.lock().unwrap_or_else(|e| e.into_inner()));
+        shared.jobs.lock().unwrap_or_else(|e| e.into_inner()).list = jobs;
     }
     let autoblock = if crate::firewall::auto_enabled(&shared) && config.logins.enabled {
         let (b, tx) = crate::firewall::AutoBlocker::start(shared.clone()).map_err(|e| format!("auto-block: {e}"))?;
@@ -329,6 +334,11 @@ pub fn run(config: Config, paths: Paths) -> Result<(), String> {
     } else {
         None
     };
+    let jobs = if config.jobs.enabled {
+        Some(crate::jobs::JobsWatcher::start(shared.clone()).map_err(|e| format!("jobs watcher: {e}"))?)
+    } else {
+        None
+    };
     let watcher = if config.docker.enabled {
         Some(crate::containers::Watcher::start(shared.clone()).map_err(|e| format!("container watcher: {e}"))?)
     } else {
@@ -377,6 +387,9 @@ pub fn run(config: Config, paths: Paths) -> Result<(), String> {
         w.stop();
     }
     if let Some(w) = ports {
+        w.stop();
+    }
+    if let Some(w) = jobs {
         w.stop();
     }
     let _ = std::fs::remove_file(&config.server.socket);

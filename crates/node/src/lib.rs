@@ -6,6 +6,7 @@ pub mod log;
 
 pub mod actions;
 pub mod alerts;
+pub mod backups;
 pub mod bus;
 pub mod checks;
 pub mod client;
@@ -23,6 +24,7 @@ pub mod heal;
 pub mod health;
 pub mod helper;
 pub mod install;
+pub mod jobs;
 pub mod logins;
 pub mod logs;
 pub mod logwatch;
