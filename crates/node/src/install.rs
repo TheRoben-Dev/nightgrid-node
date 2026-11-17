@@ -586,6 +586,34 @@ impl Grant {
             _ => None,
         }
     }
+    /// Every grant, in the order `help` lists them.
+    pub const ALL: [Grant; 9] = [
+        Self::Docker,
+        Self::Journal,
+        Self::Netwatch,
+        Self::Helper,
+        Self::Health,
+        Self::Power,
+        Self::Checks,
+        Self::Peers,
+        Self::StatusPage,
+    ];
+    /// The name `allow` takes.
+    pub fn name(self) -> &'static str {
+        self.file().trim_end_matches(".conf")
+    }
+    /// The systemd unit a separate-unit grant runs as.
+    pub fn unit(self) -> Option<&'static str> {
+        self.extra().map(|e| e.unit)
+    }
+    /// Whether root has allowed it (its unit, rule or drop-in is installed).
+    pub fn is_allowed(self, layout: &Layout) -> bool {
+        match (self, self.extra()) {
+            (_, Some(e)) => layout.has(e),
+            (Self::Power, None) => layout.at(POWER_RULE).exists(),
+            (_, None) => layout.dropin_dir().join(self.file()).exists(),
+        }
+    }
     fn file(self) -> &'static str {
         match self {
             Self::Docker => "docker.conf",

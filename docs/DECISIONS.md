@@ -144,6 +144,14 @@ Listening sockets come from `/proc/net/{tcp,tcp6,udp,udp6}`, which every user ca
 ### N-038 · Auto-block uses a node-owned nftables table with kernel timeouts
 Blocks are elements with a timeout in two sets (`v4`, `v6`) of a table only the node uses, matched by drop rules in its own `input` and `forward` chains (priority -5, so before firewalld, ufw or Docker's chains, and forwarded traffic to published container ports is covered). The kernel expires each block by itself, so a block can't outlive its duration if the node crashes, and removing the table undoes everything. That avoids editing iptables/ufw/firewalld rules the person manages, and works the same on Debian, Fedora, Bazzite and Proxmox (all nftables-based now). The root helper runs `nft` with a fixed command built from a parsed IP address and root's duration, after checking root's `[actions] allow`, the protected ranges and `[block] never` itself. Auto-block is a second opt-in (`[block] auto`) on top of allowing the action. It never touches addresses that logged in successfully in the last day, and it is capped at `[block] max_active` blocks. Blocks don't use `max_per_hour`, because a distributed attack could otherwise exhaust the budget other actions rely on.
 
+## N10 · Refinement (after the app's integration work started)
+
+### N-048 · App-facing interfaces are frozen; refinements are local
+From 2026-11-17 the app is being built against the socket protocol, the app-integration specs and the link protocol, so these don't change: no method, field or meaning is renamed, removed or reinterpreted. Refinements go into internals, the command line, tests and hardening. A change the app would see is written up as a proposal in `docs/app-integration/` first. `nightgrid-node doctor` follows this: it reads files, asks systemd and calls the existing `node.info`, and its output is for people at a terminal, not a new interface.
+
+### N-049 · CI holds the sandbox and memory budget where they are
+Each unit's `systemd-analyze security` score is checked offline against a limit equal to today's score (`ci/sandbox-scores.sh`), so loosening a unit needs a reviewed change to the limit. The real-systemd test also checks the service's peak resident memory (`VmHWM`) after every feature has run, not only right after start.
+
 ## N9
 
 ### N-047 · Wake-on-LAN stays with the app's relay hosts

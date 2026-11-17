@@ -924,6 +924,56 @@ mod tests {
         r.error.as_ref().map(|e| e.code)
     }
 
+    /// Every method name the protocol crate defines.
+    fn all_methods() -> Vec<String> {
+        let src = include_str!("../../proto/src/lib.rs");
+        let start = src.find("pub mod method {").unwrap();
+        let body = &src[start..start + src[start..].find("\n}").unwrap()];
+        body.lines().filter_map(|l| l.trim().strip_prefix("pub const ")?.split('"').nth(1).map(str::to_owned)).collect()
+    }
+
+    /// Wrong-shaped params to every method: an error or an answer, never a
+    /// panic, a hang or an internal error, and always the caller's id.
+    #[test]
+    fn every_method_survives_wrong_params() {
+        let methods = all_methods();
+        assert!(methods.len() > 40, "{methods:?}");
+        let junk = [
+            Value::Null,
+            json!(true),
+            json!(-1),
+            json!(1e308),
+            json!(u64::MAX),
+            json!("x"),
+            json!([]),
+            json!([1, "a", null]),
+            json!({}),
+            json!({"id": -1, "hours": -5, "from": i64::MIN, "to": i64::MAX, "res": 0, "limit": u64::MAX,
+                   "streams": "events", "peers": {}, "rules": 7, "checks": [null], "name": "../../etc/passwd"}),
+            serde_json::from_str::<Value>(&format!("{}1{}", "[".repeat(100), "]".repeat(100))).unwrap(),
+        ];
+        let s = shared();
+        // A client that is not the service's own account.
+        let mut ses = Session { uid: "4242".into(), ..Default::default() };
+        call(&s, &mut ses, 1, "hello", json!({"protoMin": 1, "protoMax": PROTO_VERSION, "client": "fuzz"}));
+        let mut id = 10;
+        for m in &methods {
+            if m == method::HELLO {
+                continue;
+            }
+            for p in &junk {
+                id += 1;
+                let r = call(&s, &mut ses, id, m, p.clone());
+                assert_eq!(r.id, id, "{m} {p}");
+                assert_ne!(code(&r), Some(ErrorCode::Internal), "{m} {p}: {:?}", r.error);
+            }
+        }
+        // Bytes that are not even JSON objects.
+        for line in [&b""[..], b"\xff\xfe", b"null", b"[]", b"{\"id\":1}", b"{\"id\":\"1\",\"method\":7}"] {
+            assert_eq!(code(&handle_line(&s, &mut ses, line)), Some(ErrorCode::BadRequest), "{line:?}");
+        }
+    }
+
     #[test]
     fn hello_first_and_negotiation() {
         let s = shared();
