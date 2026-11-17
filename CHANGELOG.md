@@ -4,6 +4,7 @@
 
 - `sudo nightgrid-node upgrade FILE --sha256 HEX`: installs a new binary only when its SHA-256 matches (the app passes the value from the release's `SHA256SUMS`). The check runs on a staged copy next to the installed binary, so the file that runs is the file that was hashed. The new binary must run here, say it is nightgrid-node, and not be older (`--allow-downgrade` to go back).
 - After the new binary installs itself (its own units and drop-ins), the upgrade waits for the socket to answer with the new version and for the service to stay active for 10 s without a restart. Otherwise it reinstalls the previous binary, kept as `/usr/local/bin/nightgrid-node.prev`, and checks that one too. `--json` reports `ok`, `reverted`, the steps and the error.
+- Fix: the service's task limit (`TasksMax`) goes from 16 to 64. With most watchers on, short-lived reads could hit the limit, and a watcher thread that failed to start a helper thread stopped (seen as log alerts and saved searches that never fired).
 - The timeline records "upgraded to 0.19.0" or "upgrade to 0.19.0 failed" (internal `upgrade.note`, root only). `uninstall` also removes the previous binary.
 
 ## 0.18.0 · N7c (unreleased)
