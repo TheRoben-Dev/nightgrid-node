@@ -324,6 +324,7 @@ pub fn caps() -> Caps {
         (cap::LOGS, 1),
         (cap::USAGE, 1),
         (cap::SECURITY, 1),
+        (cap::BLOCK, 1),
     ]
     .into_iter()
     .map(|(k, v)| (k.to_owned(), v))
@@ -562,6 +563,19 @@ fn dispatch(shared: &Shared, session: &mut Session, req: &Request) -> Result<Res
         method::USAGE_LATEST => {
             let u = shared.usage.lock().unwrap_or_else(|e| e.into_inner()).clone();
             Ok(Response::ok(0, u))
+        }
+        method::BLOCK_LIST => {
+            let c = &shared.config;
+            let blocked = shared.blocks.lock().unwrap_or_else(|e| e.into_inner()).list(crate::daemon::now_secs());
+            Ok(Response::ok(
+                0,
+                nightgrid_node_proto::BlockList {
+                    auto: crate::firewall::auto_enabled(shared),
+                    threshold: c.block.threshold,
+                    minutes: c.block.minutes,
+                    blocked,
+                },
+            ))
         }
         method::PORTS_LIST => {
             // `at` is 0 until the first read, and stays 0 with [ports] off.

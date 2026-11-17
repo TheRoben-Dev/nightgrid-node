@@ -108,6 +108,9 @@ pub fn handle(config: &Config, req: &HelperRequest, store: &Path, run: &mut dyn 
     if !config.actions.allow.iter().any(|x| x == a) {
         return Reply::no(format!("{a} is not in [actions] allow"));
     }
+    if action::takes_address(a) {
+        return crate::firewall::handle(&config.block, a, req.target.as_deref().unwrap_or(""), run);
+    }
     if action::takes_unit(a) {
         let unit = req.target.as_deref().unwrap_or("");
         if !action::valid_unit(unit) || !config.actions.units.iter().any(|u| u == unit) {

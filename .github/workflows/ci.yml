@@ -88,8 +88,8 @@ jobs:
           path: dist-bin
       - run: chmod +x dist-bin/nightgrid-node && dist-bin/nightgrid-node --version
       - run: sudo useradd -m -s /bin/sh tester
-      # Real smartctl for the health helper (SMART through its sandbox).
-      - run: sudo apt-get update -q && sudo apt-get install -y --no-install-recommends smartmontools
+      # Real smartctl for the health helper (SMART through its sandbox), nft for blocks.
+      - run: sudo apt-get update -q && sudo apt-get install -y --no-install-recommends smartmontools nftables
       - run: sudo WAIT_FOR_MINUTE=1 UNINSTALL_SH="$PWD/dist/uninstall.sh" sh ci/install-test.sh "$PWD/dist-bin/nightgrid-node" tester
 
   install-distros:

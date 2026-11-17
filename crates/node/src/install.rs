@@ -383,6 +383,9 @@ pub fn uninstall(layout: &Layout, sys: &mut dyn Sys, purge: bool) -> Result<Repo
             Err(err) => rep.warnings.push(err),
         }
         layout.remove_extra(e, &mut rep)?;
+        if std::ptr::eq(e, &HELPER) {
+            drop_blocks(sys, &mut rep);
+        }
     }
     match sys.run("systemctl", &["disable", "--now", SERVICE]) {
         Ok(_) => rep.step("service stopped and disabled".to_string()),
@@ -586,6 +589,9 @@ pub fn deny(layout: &Layout, sys: &mut dyn Sys, grant: Grant, no_start: bool) ->
             rep.warnings.push(err);
         }
         layout.remove_extra(e, &mut rep)?;
+        if std::ptr::eq(e, &HELPER) {
+            drop_blocks(sys, &mut rep);
+        }
         sys.run("systemctl", &["daemon-reload"])?;
         rep.step(format!("{} stopped", e.what));
         return Ok(rep);
@@ -609,6 +615,17 @@ pub fn deny(layout: &Layout, sys: &mut dyn Sys, grant: Grant, no_start: bool) ->
     remove(&path, &mut rep)?;
     restart(sys, &mut rep, no_start)?;
     Ok(rep)
+}
+
+/// Removes the node's nftables table (blocks from `firewall.block`), if any.
+fn drop_blocks(sys: &mut dyn Sys, rep: &mut Report) {
+    let t = crate::firewall::TABLE;
+    let script = format!("if command -v nft >/dev/null && nft list table inet {t} >/dev/null 2>&1; then nft delete table inet {t} && echo dropped; fi");
+    if let Ok(out) = sys.run("sh", &["-c", &script]) {
+        if out.contains("dropped") {
+            rep.step("removed the node's firewall blocks".to_string());
+        }
+    }
 }
 
 fn restart(sys: &mut dyn Sys, rep: &mut Report, no_start: bool) -> Result<(), String> {

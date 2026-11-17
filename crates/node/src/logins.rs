@@ -37,9 +37,34 @@ const BURST_KEEP: usize = 20_000;
 #[derive(Debug, Default)]
 pub struct Recent {
     fails: VecDeque<(i64, String)>,
+    /// Addresses with a successful login, and when (never auto-blocked for a day).
+    good: BTreeMap<String, i64>,
 }
 
 impl Recent {
+    /// A successful login from `from`.
+    pub fn accepted(&mut self, at: i64, from: &str) {
+        if self.good.len() >= 1000 {
+            let cutoff = at - 86_400;
+            self.good.retain(|_, t| *t > cutoff);
+            if self.good.len() >= 1000 {
+                return;
+            }
+        }
+        self.good.insert(from.to_owned(), at);
+    }
+
+    /// Whether `addr` logged in successfully in the last day.
+    pub fn trusted(&self, addr: &str, now: i64) -> bool {
+        self.good.get(addr).is_some_and(|t| *t > now - 86_400)
+    }
+
+    /// Failures from `addr` in the window.
+    pub fn count_from(&mut self, addr: &str, now: i64) -> u32 {
+        self.prune(now);
+        self.fails.iter().filter(|(_, a)| a == addr).count() as u32
+    }
+
     pub fn add(&mut self, at: i64, from: &str) {
         if self.fails.len() >= BURST_KEEP {
             self.fails.pop_front();
@@ -293,6 +318,7 @@ fn run(shared: &Shared, stop: &mpsc::Receiver<()>) {
                     dirty = true;
                     match line {
                         Line::Accepted { user, from, method } => {
+                            shared.logins.lock().unwrap_or_else(|e| e.into_inner()).accepted(at, &from);
                             flush(shared, &mut fails, None);
                             record(shared, &accepted_event(at, &user, &from, &method), cursor.as_deref());
                             dirty = false;
@@ -302,7 +328,17 @@ fn run(shared: &Shared, stop: &mpsc::Receiver<()>) {
                                 flush(shared, &mut fails, None);
                             }
                             fails.add(at, &user, &from);
-                            shared.logins.lock().unwrap_or_else(|e| e.into_inner()).add(at, &from);
+                            let n = {
+                                let mut r = shared.logins.lock().unwrap_or_else(|e| e.into_inner());
+                                r.add(at, &from);
+                                r.count_from(&from, crate::daemon::now_secs())
+                            };
+                            // Exactly at the threshold, so one burst asks once.
+                            if n == shared.config.block.threshold {
+                                if let Some(tx) = shared.autoblock.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+                                    let _ = tx.send(from.clone());
+                                }
+                            }
                         }
                     }
                 }

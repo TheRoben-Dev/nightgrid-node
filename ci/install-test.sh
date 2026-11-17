@@ -415,6 +415,44 @@ PY
   ev | tr '}' '\n' | grep 'changed /home/ngnkeys' | head -1 | grep -q 'sha256' || fail "no hash in the change (read through the helper)"
   userdel -r ngnkeys 2>/dev/null || true
   /usr/local/bin/nightgrid-node deny health >/dev/null
+
+  say "blocks: manual block and unblock, never private addresses, auto-block of a login burst"
+  if command -v nft >/dev/null; then
+    sed -i 's/^allow = .*/allow = ["firewall.block", "firewall.unblock"]/' /etc/nightgrid-node/config.toml
+    sed -i '/^\[block\]/,$ { s/^auto = false$/auto = true/; s/^threshold = 10$/threshold = 5/; s/^minutes = 60$/minutes = 5/; }' /etc/nightgrid-node/config.toml
+    grep -A3 '^\[block\]' /etc/nightgrid-node/config.toml | head -2
+    /usr/local/bin/nightgrid-node allow helper >/dev/null
+    systemctl restart nightgrid-node
+    i=0; until q node.info >/dev/null 2>&1; do i=$((i+1)); [ $i -lt 30 ] || fail "not back after restart"; sleep 1; done
+    q block.list | tee /dev/stderr | grep -q '"auto":true' || fail "auto-block not on"
+    q "actions.run '{\"action\":\"firewall.block\",\"target\":\"192.168.1.9\"}'" | grep -q '"outcome":"refused"' || fail "a private address was blocked"
+    q "actions.run '{\"action\":\"firewall.block\",\"target\":\"1.2.3.4 } ; flush ruleset\"}'" | grep -q '"outcome":"refused"' || fail "a non-address got through"
+    q "actions.run '{\"action\":\"firewall.block\",\"target\":\"203.0.113.60\"}'" | tee /tmp/ngn-block.json
+    grep -q '"outcome":"ok"' /tmp/ngn-block.json || { journalctl -u 'nightgrid-node-helper@*' --no-pager -n 20; fail "block"; }
+    nft list set inet nightgrid_node v4 | tee /dev/stderr | grep -q '203.0.113.60 timeout 5m' || fail "not in the nft set with a timeout"
+    nft list chain inet nightgrid_node forward | grep -q 'ip saddr @v4 drop' || fail "no forward rule"
+    q block.list | grep -q '"addr":"203.0.113.60"' || fail "not in block.list"
+    q "actions.run '{\"action\":\"firewall.unblock\",\"target\":\"203.0.113.60\"}'" | grep -q '"outcome":"ok"' || fail "unblock"
+    nft list set inet nightgrid_node v4 | grep -q '203.0.113.60' && fail "still in the set after unblock"
+    sleep 2
+    logger -t sshd "Accepted password for ngnok from 198.51.100.88 port 5000 ssh2"
+    for n in $(seq 1 6); do
+      logger -t sshd "Failed password for root from 198.51.100.77 port $n ssh2"
+      logger -t sshd "Failed password for ngnok from 198.51.100.88 port $n ssh2"
+    done
+    i=0; until nft list set inet nightgrid_node v4 | grep -q '198.51.100.77'; do
+      i=$((i+1)); [ $i -lt 40 ] || { q block.list; journalctl -u nightgrid-node --no-pager -n 20; fail "no auto-block"; }; sleep 1; done
+    q block.list | grep -q '"source":"auto-block"' || fail "auto-block source"
+    ev | grep -q '"title":"blocked 198.51.100.77 for 5 minutes"' || fail "no block event"
+    sleep 3
+    nft list set inet nightgrid_node v4 | grep -q '198.51.100.88' && fail "an address that just logged in was blocked"
+    q "actions.log '{\"after\":0}'" | grep -q '"verified":true' || fail "log chain"
+    /usr/local/bin/nightgrid-node deny helper --json | grep -q 'firewall blocks' || fail "deny helper left the blocks"
+    nft list table inet nightgrid_node >/dev/null 2>&1 && fail "nft table left after deny helper"
+    sed -i '/^\[block\]/,$ s/^auto = true$/auto = false/' /etc/nightgrid-node/config.toml
+  else
+    echo "skipped: no nft here"
+  fi
   /usr/local/bin/nightgrid-node deny journal >/dev/null
 fi
 

@@ -17,6 +17,7 @@ pub mod docker;
 pub mod engine;
 pub mod events;
 pub mod files;
+pub mod firewall;
 pub mod heal;
 pub mod health;
 pub mod helper;

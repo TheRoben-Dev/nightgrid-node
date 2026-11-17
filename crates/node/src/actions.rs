@@ -54,6 +54,8 @@ fn verb(a: &str) -> (&'static str, &'static str) {
         action::UNIT_STOP => ("stop", "stopped"),
         action::POWER_REBOOT => ("reboot", "rebooting"),
         action::POWER_POWEROFF => ("power off", "powering off"),
+        action::FIREWALL_BLOCK => ("block", "blocked"),
+        action::FIREWALL_UNBLOCK => ("unblock", "unblocked"),
         _ => ("run", "ran"),
     }
 }
@@ -194,7 +196,8 @@ pub fn log(store: &Store, after: i64, limit: usize) -> Result<ActionsLogResult> 
 /// Real runs (not dry, not refused) in the last hour.
 fn runs_last_hour(store: &Store, now: i64) -> Result<u32> {
     store.conn().query_row(
-        "SELECT count(*) FROM action_log WHERE at > ?1 AND dry_run = 0 AND outcome IN ('ok', 'failed')",
+        "SELECT count(*) FROM action_log WHERE at > ?1 AND dry_run = 0 AND outcome IN ('ok', 'failed')
+         AND action NOT LIKE 'firewall.%'",
         [now - 3600],
         |r| r.get(0),
     )
@@ -224,8 +227,24 @@ fn check(shared: &Shared, req: &ActionRequest, now: i64) -> std::result::Result<
                 ));
             }
         }
+        if action::takes_address(&req.action) {
+            let target = req.target.as_deref().unwrap_or("");
+            let Ok(ip) = target.parse::<std::net::IpAddr>() else {
+                return Err(format!("not an IP address: {target:?}"));
+            };
+            if req.action == action::FIREWALL_BLOCK {
+                if let Some(why) = crate::firewall::refuse(&shared.config.block, ip) {
+                    return Err(why);
+                }
+            }
+        }
         if !crate::helper::installed(&shared.helper_socket) {
             return Err("the root helper isn't installed (root can run: nightgrid-node allow helper)".into());
+        }
+        // Blocks have their own limit ([block] max_active, for auto-block)
+        // and end by themselves, so they don't use up max_per_hour.
+        if action::takes_address(&req.action) {
+            return Ok(());
         }
         return rate_limit(shared, req, now);
     }
@@ -292,7 +311,13 @@ pub fn run(shared: &Shared, req: &ActionRequest, source: &str) -> ActionRecord {
     let now = now_secs();
     let (word, _) = verb(&req.action);
     let what = match req.target.as_deref() {
-        Some(t) if action::takes_container(&req.action) || action::takes_unit(&req.action) => format!("{word} {t}"),
+        Some(t)
+            if action::takes_container(&req.action)
+                || action::takes_unit(&req.action)
+                || action::takes_address(&req.action) =>
+        {
+            format!("{word} {t}")
+        }
         _ => word.to_owned(),
     };
     let (outcome, detail) = match check(shared, req, now) {
@@ -303,6 +328,9 @@ pub fn run(shared: &Shared, req: &ActionRequest, source: &str) -> ActionRecord {
             Err(e) => (ActionOutcome::Failed, format!("could not {what}: {e}")),
         },
     };
+    if action::takes_address(&req.action) {
+        crate::firewall::note(shared, req, outcome == ActionOutcome::Ok, source);
+    }
     let st = shared.store.lock().unwrap_or_else(|e| e.into_inner());
     let rec = match append(&st, now, source, req, outcome, &detail) {
         Ok(r) => r,

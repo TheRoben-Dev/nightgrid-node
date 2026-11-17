@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.15.0 · N6c (unreleased)
+
+- New actions `firewall.block` and `firewall.unblock` (target: an IP address), through the root helper with nftables. Blocks drop all traffic from the address (input and forwarded) for `[block] minutes`, in the node's own table with kernel timeouts. Loopback, private, link-local and CGNAT/Tailscale addresses and `[block] never` are refused, also on the helper's side.
+- Optional auto-block (`[block] auto`, off by default): an address with `[block] threshold` failed SSH logins within 5 minutes is blocked, unless it logged in successfully in the last day; at most `[block] max_active` at once. Every block is in the action log and the timeline.
+- `block.list`; new capability `block` 1. The root helper unit gains `CAP_NET_ADMIN` (for nft). `deny helper`, `uninstall` and `dist/uninstall.sh` remove the table.
+
 ## 0.14.0 · N6b (unreleased)
 
 - Listening ports: every 15 s (`[ports] interval_secs`) the node reads the kernel's socket tables (no privileges) and records `port` events when a socket starts or stops listening ("new listener 6379/tcp (redis)", `warn` when reachable from the network). `ports.list` with the app's `Listener` fields, and the containers that publish each port. `containers.list` entries gain `ports`.
