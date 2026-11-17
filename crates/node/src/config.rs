@@ -25,6 +25,41 @@ pub struct Config {
     pub usage: UsageConfig,
     pub ports: PortsConfig,
     pub block: BlockConfig,
+    pub checks: ChecksConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ChecksConfig {
+    /// Run the app's service checks from this host (needs `allow checks`,
+    /// which installs the runner unit).
+    pub enabled: bool,
+    /// Seconds between rounds (30-3600).
+    pub interval_secs: u32,
+    /// The only addresses checks may connect to (and DNS servers they may
+    /// ask). `allow checks` turns this into the runner's IPAddressAllow.
+    pub networks: Vec<String>,
+}
+
+pub const DEFAULT_CHECK_NETWORKS: &[&str] = &[
+    "127.0.0.0/8",
+    "::1/128",
+    "10.0.0.0/8",
+    "172.16.0.0/12",
+    "192.168.0.0/16",
+    "100.64.0.0/10",
+    "fc00::/7",
+    "fe80::/10",
+];
+
+impl Default for ChecksConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            interval_secs: 60,
+            networks: DEFAULT_CHECK_NETWORKS.iter().map(|s| (*s).to_owned()).collect(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -349,6 +384,14 @@ impl Config {
         if !(5..=300).contains(&self.docker.interval_secs) {
             return Err("docker.interval_secs must be 5-300".into());
         }
+        if !(30..=3600).contains(&self.checks.interval_secs) {
+            return Err("checks.interval_secs must be 30-3600".into());
+        }
+        if self.checks.networks.len() > 64
+            || self.checks.networks.iter().any(|c| crate::firewall::parse_cidr(c).is_none())
+        {
+            return Err("checks.networks takes at most 64 addresses or CIDR ranges".into());
+        }
         if !(3..=1000).contains(&self.block.threshold) {
             return Err("block.threshold must be 3-1000".into());
         }
@@ -583,6 +626,27 @@ max_active = 200
 private = false
 # Addresses or ranges never to block, e.g. ["203.0.113.0/24"].
 never = []
+
+[checks]
+# Run the app's service checks (HTTP(S) status and certificates, TCP
+# connects) from this host with the app closed. The main service never opens
+# an IP socket: `nightgrid-node allow checks` installs a separate runner with
+# network access only to `networks` (run it again after changing them).
+enabled = true
+# Seconds between rounds (30-3600).
+interval_secs = 60
+# The only addresses checks may reach, DNS servers included. Add a public
+# address or range to check something outside your LAN.
+networks = [
+  "127.0.0.0/8",
+  "::1/128",
+  "10.0.0.0/8",
+  "172.16.0.0/12",
+  "192.168.0.0/16",
+  "100.64.0.0/10",
+  "fc00::/7",
+  "fe80::/10",
+]
 "#;
 
 #[cfg(test)]

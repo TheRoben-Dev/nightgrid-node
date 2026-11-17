@@ -28,11 +28,14 @@ COMMANDS:
                             and UPS status (root)
     allow power             Let the service read the CPU energy counters (RAPL)
                             for power draw (root)
-    deny docker|journal|netwatch|helper|health|power
+    allow checks            Install the check runner for the app's service checks,
+                            with network access to [checks] networks only (root)
+    deny docker|journal|netwatch|helper|health|power|checks
                             Take that access away again (root)
     netwatch                Run the network watch helper (its unit starts this)
     helper                  Serve one root helper request (its socket unit starts this)
     health-helper           Serve one health read (its socket unit starts this)
+    checker                 Run the service checks (its unit starts this)
     status                  Show what the running node reports
     query METHOD [JSON]     Send one request and print the answer
     watch STREAM... [--count N]
@@ -162,6 +165,7 @@ fn real_main() -> Result<(), String> {
         }
         "helper" => nightgrid_node::helper::serve(&a.config),
         "health-helper" => nightgrid_node::health::watch::serve(&a.config),
+        "checker" => nightgrid_node::checks::checker(&a.config),
         "netwatch" => {
             let mut config = Config::load(&a.config)?;
             if let Some(s) = &a.socket {

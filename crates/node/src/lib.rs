@@ -7,6 +7,7 @@ pub mod log;
 pub mod actions;
 pub mod alerts;
 pub mod bus;
+pub mod checks;
 pub mod client;
 pub mod config;
 pub mod containers;

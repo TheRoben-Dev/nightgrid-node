@@ -454,6 +454,51 @@ PY
     echo "skipped: no nft here"
   fi
   /usr/local/bin/nightgrid-node deny journal >/dev/null
+
+  say "checks: a network-limited runner checks HTTP, HTTPS (self-signed) and TCP, and a down service alerts"
+  q node.info | grep -q '"checks":"denied"' || { q node.info; fail "checks should be denied before allow"; }
+  sed -i '/^\[checks\]/,/^\[/ s/^interval_secs = 60$/interval_secs = 30/' /etc/nightgrid-node/config.toml
+  systemctl restart nightgrid-node
+  i=0; until q node.info >/dev/null 2>&1; do i=$((i+1)); [ $i -lt 30 ] || fail "not back after restart"; sleep 1; done
+  mkdir -p /tmp/ngn-tls && openssl req -x509 -newkey rsa:2048 -nodes -days 10 -subj /CN=localhost \
+    -keyout /tmp/ngn-tls/key.pem -out /tmp/ngn-tls/cert.pem 2>/dev/null
+  python3 -m http.server 18766 --bind 127.0.0.1 >/dev/null 2>&1 &
+  http_pid=$!
+  python3 - <<'PY' >/dev/null 2>&1 &
+import http.server, ssl
+s = http.server.HTTPServer(("127.0.0.1", 18767), http.server.SimpleHTTPRequestHandler)
+ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+ctx.load_cert_chain("/tmp/ngn-tls/cert.pem", "/tmp/ngn-tls/key.pem")
+s.socket = ctx.wrap_socket(s.socket, server_side=True)
+s.serve_forever()
+PY
+  https_pid=$!
+  q "checks.set '{\"checks\":[{\"id\":\"web\",\"name\":\"web\",\"url\":\"http://127.0.0.1:18766/\"},{\"id\":\"tls\",\"name\":\"tls\",\"url\":\"https://localhost:18767/\",\"allowUntrusted\":true},{\"id\":\"strict\",\"name\":\"strict\",\"url\":\"https://localhost:18767/\"},{\"id\":\"gone\",\"name\":\"gone\",\"url\":\"tcp://127.0.0.1:1\"},{\"id\":\"out\",\"name\":\"out\",\"url\":\"http://1.1.1.1/\"}]}'" | grep -q '"id":"web"' || fail "checks.set"
+  q "checks.set '{\"checks\":[{\"id\":\"x\",\"name\":\"x\",\"url\":\"http://a/\\r\\nX: y\"}]}'" 2>&1 | grep -q 'bad characters' || fail "a header injection URL was accepted"
+  /usr/local/bin/nightgrid-node allow checks --json | tee /tmp/ngn-allow-c.json
+  grep -q 'no capabilities' /tmp/ngn-allow-c.json || fail "no checks warning"
+  grep -q '^IPAddressAllow=192.168.0.0/16$' /etc/systemd/system/nightgrid-node-checks.service.d/networks.conf || fail "no networks drop-in"
+  systemctl show -p User --value nightgrid-node-checks | grep -qx nightgrid-node || fail "runner not the service account"
+  i=0; until q checks.latest | grep -q '"access":"ok"'; do
+    i=$((i+1)); [ $i -lt 60 ] || { q checks.latest; journalctl -u nightgrid-node-checks --no-pager -n 20; fail "runner never reported"; }; sleep 1; done
+  q checks.latest | tee /tmp/ngn-checks.json
+  python3 - /tmp/ngn-checks.json <<'PY' || fail "check results"
+import json, sys
+r = {x["id"]: x["result"] for x in json.load(open(sys.argv[1]))["readings"]}
+assert r["web"]["up"] and r["web"]["status"] == 200, r["web"]
+assert r["tls"]["up"] and r["tls"]["tls"]["expires"] and not r["tls"]["tls"]["trusted"], r["tls"]
+assert not r["strict"]["up"] and "not trusted" in r["strict"]["error"], r["strict"]
+assert r["gone"]["error"] == "connection refused", r["gone"]
+assert "outside [checks] networks" in r["out"]["error"], r["out"]
+PY
+  q "checks.report '{\"readings\":[]}'" 2>&1 | grep -q 'only the check runner' || fail "a login user could report checks"
+  i=0; until q alerts.active | grep -q '"key":"svc:gone"'; do
+    i=$((i+1)); [ $i -lt 240 ] || { q alerts.active; fail "no service-down alert"; }; sleep 1; done
+  q alerts.active | grep -q '"key":"svc:tls:cert"' || { q alerts.active; fail "no certificate alert for a 10-day cert"; }
+  kill $http_pid $https_pid 2>/dev/null || true
+  /usr/local/bin/nightgrid-node deny checks >/dev/null
+  test ! -e /etc/systemd/system/nightgrid-node-checks.service || fail "runner unit left after deny"
+  systemctl is-active --quiet nightgrid-node-checks && fail "runner still running after deny"
 fi
 
 say "reinstall (upgrade in place) keeps the node id"

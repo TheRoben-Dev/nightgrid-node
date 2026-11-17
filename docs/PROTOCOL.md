@@ -103,6 +103,7 @@ The node never buffers without bound for a slow client: each stream keeps a shor
 | `usage` 1 | `usage.latest`, `usage.history`, the `usage` stream; power (with `allow power`) | N6a |
 | `security` 1 | `ports.list`; `port` events; `loginBurst` alerts; the wider file baseline; `ports` on containers | N6b |
 | `block` 1 | `firewall.block` / `firewall.unblock` actions; `block.list`; optional auto-block of failed-login bursts | N6c |
+| `checks` 1 | `checks.set`, `checks.get`, `checks.latest`; `serviceDown` and `certExpiring` alerts (with `allow checks`) | N7a |
 
 ### `node.info` (`node` 1)
 
@@ -123,7 +124,7 @@ The node never buffers without bound for a slow client: each stream keeps a shor
 }
 ```
 
-`access` (0.5.0+; `netwatch` 0.7.0+; `helper` 0.9.0+, `ok` when the root helper's socket is installed; `health` 0.11.0+, `ok` when the health helper's socket is installed; `power` 0.13.0+, from RAPL: `ok`, `denied` or `absent`; `ok` while the helper has reported in the last 2½ minutes) says which optional access root has granted: `ok`, `denied` (root hasn't run `nightgrid-node allow <name>`), `absent` (nothing to read on this host) or `off` (disabled in the config).
+`access` (0.5.0+; `netwatch` 0.7.0+; `helper` 0.9.0+, `ok` when the root helper's socket is installed; `health` 0.11.0+, `ok` when the health helper's socket is installed; `power` 0.13.0+, from RAPL: `ok`, `denied` or `absent`; `checks` 0.16.0+, `ok` while the check runner has reported within three rounds; `ok` while the helper has reported in the last 2½ minutes) says which optional access root has granted: `ok`, `denied` (root hasn't run `nightgrid-node allow <name>`), `absent` (nothing to read on this host) or `off` (disabled in the config).
 
 ### `metrics.latest` (`metrics` 1)
 
@@ -214,7 +215,7 @@ The node evaluates the rules it has implemented with the app's field names. `set
 {"enabled": true, "diskFull": true, "diskPercent": 90, "diskForecast": true, "forecastDays": 14}
 ```
 
-`loginBurst` (0.14.0, default `false`; not an app setting yet, so the app turns it on when it knows the `loginBurst` alert kind) raises a `loginBurst` alert, key `logins:burst`, while at least `[logins] burst` (root's config, default 20) failed SSH logins fall in the last 5 minutes; `critical` at ten times that. Needs `allow journal`.
+`serviceDown`, `certExpiring` and `certDays` (0.16.0; app defaults `true`, `true`, 14; `certDays` 1–365) apply to the node's service checks. `loginBurst` (0.14.0, default `false`; not an app setting yet, so the app turns it on when it knows the `loginBurst` alert kind) raises a `loginBurst` alert, key `logins:burst`, while at least `[logins] burst` (root's config, default 20) failed SSH logins fall in the last 5 minutes; `critical` at ten times that. Needs `allow journal`.
 
 `diskPercent` must be 50–99 and `forecastDays` 1–90, else `bad_request`. Rules are stored in the node's state directory and survive restarts and upgrades.
 
@@ -448,6 +449,35 @@ A finding stays active for at least 150 s, then clears at the next round without
 
 Params `{"kind": "service", "name": "nginx.service", "since": 1763200000}` (`since` defaults to, and is at most, a day ago) → `{"points": [{"ts", "cpu", "mem", "ioRead", "ioWrite", "netRx", "netTx", "watts"}]}`: one-minute averages, oldest first. Power is `{"kind": "power", "name": "total"}` or a domain name. A minute is stored for services and containers that used any CPU or memory, the listed process names and power.
 
+### `checks.set` / `checks.get` / `checks.latest` (`checks` 1)
+
+The app's service checks, run from this host every `[checks] interval_secs` (60 s) by the check runner, which root installs with `allow checks`.
+
+`checks.set` replaces the list (at most 200) and answers like `checks.get`:
+
+```json
+{"checks": [{"id": "12", "name": "Grafana", "url": "https://grafana.lan/", "expectStatus": "200-399", "allowUntrusted": true},
+            {"id": "13", "name": "NAS SSH", "url": "tcp://nas.lan:22"}],
+ "interval": 60}
+```
+
+- `id`: the app's service id as text (letters, digits, `-_.`, up to 64). `url`: `http://`, `https://` or `tcp://host:port` (a plain connect). `expectStatus` uses the app's syntax (`200-399`, `2xx,401`); empty means 200–399. A bad entry makes the whole call `bad_request`.
+- Checks connect only to `[checks] networks` (private ranges, loopback, CGNAT/Tailscale and IPv6 ULA/link-local by default), which systemd enforces on the runner. A name that resolves outside them fails with "… is outside [checks] networks".
+
+`checks.latest`:
+
+```json
+{"access": "ok", "readings": [{"id": "12", "at": 1763290000,
+  "result": {"up": true, "status": 200, "latencyMs": 41, "error": null,
+             "tls": {"trusted": false, "problem": "unknown issuer or self-signed", "expires": 1770000000, "subject": "CN=grafana.lan", "issuer": "CN=grafana.lan"}}}]}
+```
+
+`result` is the app's `CheckResult` (and `TlsInfo`), with the app's rules: redirects aren't followed, an untrusted certificate is shown but makes the check down only without `allowUntrusted`. `access`: `ok`, `denied` (no recent report: root hasn't run `allow checks`, or the runner stopped) or `off`.
+
+Alerts, with the app's keys (no host segment, like the app's own) and rules `serviceDown`, `certExpiring`, `certDays`: `serviceDown` `svc:<id>` (`critical`, after 90 s, as in the app) and `certExpiring` `svc:<id>:cert` (`warn`, `critical` at 3 days or less). While the runner is silent, its checks raise nothing (unknown isn't down).
+
+`checks.report` is internal (the runner's results); only the service's own account may call it.
+
 ### `block.list` (`block` 1)
 
 ```json
@@ -477,4 +507,3 @@ The sockets listening on this host at the last read (every 15 s, `[ports] interv
 
 | Capability | Methods | Milestone |
 |---|---|---|
-| `checks` | `checks.set`, `checks.latest` | N7 |

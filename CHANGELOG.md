@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.16.0 · N7a (unreleased)
+
+- Service checks from inside the LAN: the app pushes its HTTP(S) and TCP checks (`checks.set`). After root runs `nightgrid-node allow checks`, a separate check runner (the service account, no capabilities, network access only to `[checks] networks`) runs them every minute with the app's own rules (expected status, certificate trust and expiry) and hands results to the node. `checks.latest`; `node.info.access.checks`.
+- `serviceDown` and `certExpiring` alerts with the app's keys and its `serviceDown`, `certExpiring` and `certDays` rules.
+- `[checks]` in the config: `enabled`, `interval_secs`, `networks`. New capability `checks` 1.
+
 ## 0.15.0 · N6c (unreleased)
 
 - New actions `firewall.block` and `firewall.unblock` (target: an IP address), through the root helper with nftables. Blocks drop all traffic from the address (input and forwarded) for `[block] minutes`, in the node's own table with kernel timeouts. Loopback, private, link-local and CGNAT/Tailscale addresses and `[block] never` are refused, also on the helper's side.

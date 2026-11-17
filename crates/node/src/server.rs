@@ -232,6 +232,10 @@ fn access(shared: &Shared) -> std::collections::BTreeMap<String, String> {
         ("netwatch".to_owned(), netwatch.to_owned()),
         ("helper".to_owned(), if crate::helper::installed(&shared.helper_socket) { "ok" } else { "denied" }.to_owned()),
         ("health".to_owned(), health_access(shared).to_owned()),
+        (
+            "checks".to_owned(),
+            checks_access(shared, &shared.checks.lock().unwrap_or_else(|e| e.into_inner())).to_owned(),
+        ),
         ("power".to_owned(), power_access(shared)),
     ]
     .into_iter()
@@ -243,6 +247,16 @@ fn power_access(shared: &Shared) -> String {
         return "off".into();
     }
     shared.usage.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map_or_else(String::new, |u| u.power.access.clone())
+}
+
+fn checks_access(shared: &Shared, c: &crate::checks::ChecksState) -> &'static str {
+    if !shared.config.checks.enabled {
+        "off"
+    } else if c.fresh(shared.config.checks.interval_secs, crate::daemon::now_secs()) {
+        "ok"
+    } else {
+        "denied"
+    }
 }
 
 fn health_access(shared: &Shared) -> &'static str {
@@ -325,6 +339,7 @@ pub fn caps() -> Caps {
         (cap::USAGE, 1),
         (cap::SECURITY, 1),
         (cap::BLOCK, 1),
+        (cap::CHECKS, 1),
     ]
     .into_iter()
     .map(|(k, v)| (k.to_owned(), v))
@@ -563,6 +578,50 @@ fn dispatch(shared: &Shared, session: &mut Session, req: &Request) -> Result<Res
         method::USAGE_LATEST => {
             let u = shared.usage.lock().unwrap_or_else(|e| e.into_inner()).clone();
             Ok(Response::ok(0, u))
+        }
+        method::CHECKS_SET => {
+            let p: nightgrid_node_proto::ChecksList = params(&req.params)?;
+            crate::checks::validate(&p.checks).map_err(|e| Response::err(0, ErrorCode::BadRequest, e))?;
+            {
+                let st = shared.store.lock().unwrap_or_else(|e| e.into_inner());
+                crate::checks::save(&st, &p.checks).map_err(internal)?;
+            }
+            let mut c = shared.checks.lock().unwrap_or_else(|e| e.into_inner());
+            c.list = p.checks;
+            let list = c.list.clone();
+            c.readings.retain(|r| list.iter().any(|x| x.id == r.id));
+            Ok(Response::ok(
+                0,
+                nightgrid_node_proto::ChecksList { checks: list, interval: shared.config.checks.interval_secs },
+            ))
+        }
+        method::CHECKS_GET => {
+            let list = shared.checks.lock().unwrap_or_else(|e| e.into_inner()).list.clone();
+            Ok(Response::ok(
+                0,
+                nightgrid_node_proto::ChecksList { checks: list, interval: shared.config.checks.interval_secs },
+            ))
+        }
+        method::CHECKS_LATEST => {
+            let c = shared.checks.lock().unwrap_or_else(|e| e.into_inner());
+            Ok(Response::ok(
+                0,
+                nightgrid_node_proto::ChecksLatest {
+                    access: checks_access(shared, &c).to_owned(),
+                    readings: c.readings.clone(),
+                },
+            ))
+        }
+        method::CHECKS_REPORT => {
+            // Only the check runner, which runs as the service's own account.
+            // SAFETY: geteuid has no preconditions.
+            let me = unsafe { libc::geteuid() };
+            if session.uid.parse::<u32>().ok() != Some(me) {
+                return Err(Response::err(0, ErrorCode::Forbidden, "only the check runner may report"));
+            }
+            let r: nightgrid_node_proto::ChecksReport = params(&req.params)?;
+            shared.checks.lock().unwrap_or_else(|e| e.into_inner()).report(r, crate::daemon::now_secs());
+            Ok(Response::ok(0, Value::Null))
         }
         method::BLOCK_LIST => {
             let c = &shared.config;
