@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use nightgrid_node::config::{Config, DEFAULT_CONFIG};
-use nightgrid_node::{client, daemon, install};
+use nightgrid_node::{cli, client, daemon, install};
 
 const HELP: &str = "nightgrid-node: optional agent for the Nightgrid homelab app
 
@@ -45,7 +45,15 @@ COMMANDS:
     checker                 Run the service checks (its unit starts this)
     peer                    Run the node-to-node link (its unit starts this)
     status-page             Serve the status page (its unit starts this)
-    status                  Show what the running node reports
+    status                  Show what the running node reports: the host, active
+                            alerts and access (--json: the raw node.info)
+    events [--count N]      The last N events (default 30), oldest first
+    audit [--count N]       The last N entries of the action log (default 30)
+    audit verify            Check the action log's whole SHA-256 chain; exits 1
+                            if any entry was edited or removed
+    completions bash|zsh|fish
+                            Print a shell completion script
+    man                     Print the manual page (nightgrid-node man | man -l -)
     doctor                  Check this host's install: config, service, socket,
                             memory and each allowed access (read-only; exits 1
                             on a failure)
@@ -127,6 +135,11 @@ fn socket(a: &Args) -> PathBuf {
     })
 }
 
+fn connect(a: &Args, who: &str) -> Result<client::Client, String> {
+    let path = socket(a);
+    client::Client::connect(&path, who).map_err(|e| format!("{}: {e}", path.display()))
+}
+
 fn print_report(r: &install::Report, json: bool) {
     if json {
         println!("{}", serde_json::to_string(r).unwrap_or_default());
@@ -143,6 +156,15 @@ fn print_report(r: &install::Report, json: bool) {
 
 fn real_main() -> Result<(), String> {
     let a = parse_args()?;
+    if matches!(
+        a.cmd.as_str(),
+        "status" | "doctor" | "events" | "audit" | "query" | "watch" | "completions" | "man" | "version" | "help" | ""
+    ) {
+        // Rust ignores SIGPIPE; let `nightgrid-node events | head` end quietly
+        // instead of panicking on the closed pipe.
+        // SAFETY: setting a signal's disposition to its default has no preconditions.
+        unsafe { libc::signal(libc::SIGPIPE, libc::SIG_DFL) };
+    }
     match a.cmd.as_str() {
         "run" => {
             let config = Config::load(&a.config)?;
@@ -238,15 +260,103 @@ fn real_main() -> Result<(), String> {
         }
         "bridge" => client::bridge(&socket(&a)).map_err(|e| format!("{}: {e}", socket(&a).display())),
         "status" => {
-            let path = socket(&a);
-            let mut c = client::Client::connect(&path, "nightgrid-node status")
-                .map_err(|e| format!("{}: {e}", path.display()))?;
+            let mut c = connect(&a, "nightgrid-node status")?;
             let info = c.call("node.info", serde_json::Value::Null).map_err(|e| e.to_string())?;
             if a.json {
                 println!("{info}");
-            } else {
-                println!("{}", serde_json::to_string_pretty(&info).unwrap_or_default());
+                return Ok(());
             }
+            let info: nightgrid_node_proto::NodeInfo = serde_json::from_value(info).map_err(|e| e.to_string())?;
+            let sample =
+                c.call("metrics.latest", serde_json::Value::Null).ok().and_then(|v| serde_json::from_value(v).ok());
+            let alerts: Vec<nightgrid_node_proto::Alert> = c
+                .call("alerts.active", serde_json::Value::Null)
+                .ok()
+                .and_then(|v| serde_json::from_value(v).ok())
+                .unwrap_or_default();
+            print!("{}", cli::status(&info, sample.as_ref(), &alerts, daemon::now_secs()));
+            Ok(())
+        }
+        "events" => {
+            let mut c = connect(&a, "nightgrid-node events")?;
+            let n = a.count.unwrap_or(30) as usize;
+            let mut tail = std::collections::VecDeque::new();
+            let mut after = 0;
+            loop {
+                let v = c.call("events.sync", serde_json::json!({ "after": after })).map_err(|e| e.to_string())?;
+                let page: nightgrid_node_proto::EventsResult = serde_json::from_value(v).map_err(|e| e.to_string())?;
+                for e in page.events {
+                    tail.push_back(e);
+                    if tail.len() > n {
+                        tail.pop_front();
+                    }
+                }
+                if !page.more || page.next == after {
+                    break;
+                }
+                after = page.next;
+            }
+            let list: Vec<_> = tail.into();
+            if a.json {
+                list.iter().for_each(|e| println!("{}", serde_json::to_string(e).unwrap_or_default()));
+            } else {
+                print!("{}", cli::events(&list));
+            }
+            Ok(())
+        }
+        "audit" => {
+            let verify = match a.rest.first().map(String::as_str) {
+                None => false,
+                Some("verify") => true,
+                Some(x) => return Err(format!("audit {x}? (audit, or audit verify)")),
+            };
+            let mut c = connect(&a, "nightgrid-node audit")?;
+            let n = a.count.unwrap_or(30) as usize;
+            let mut tail = std::collections::VecDeque::new();
+            let mut check = cli::Verify::default();
+            let mut after = 0;
+            loop {
+                let v = c.call("actions.log", serde_json::json!({ "after": after })).map_err(|e| e.to_string())?;
+                let page: nightgrid_node_proto::ActionsLogResult =
+                    serde_json::from_value(v).map_err(|e| e.to_string())?;
+                check.add(&page);
+                for r in &page.records {
+                    tail.push_back(r.clone());
+                    if tail.len() > n {
+                        tail.pop_front();
+                    }
+                }
+                if !page.more || page.next == after {
+                    break;
+                }
+                after = page.next;
+            }
+            if verify {
+                if a.json {
+                    println!("{}", serde_json::to_string(&check).unwrap_or_default());
+                } else {
+                    print!("{}", check.text());
+                }
+                return if check.ok() { Ok(()) } else { Err("the action log's chain is broken".into()) };
+            }
+            let list: Vec<_> = tail.into();
+            if a.json {
+                list.iter().for_each(|r| println!("{}", serde_json::to_string(r).unwrap_or_default()));
+            } else {
+                print!("{}", cli::audit(&list));
+                if !check.ok() {
+                    eprintln!("warning: the chain is broken (run: nightgrid-node audit verify)");
+                }
+            }
+            Ok(())
+        }
+        "completions" => {
+            let sh = a.rest.first().map(String::as_str).unwrap_or("");
+            print!("{}", cli::completions(sh).ok_or("completions for which shell? (bash, zsh or fish)")?);
+            Ok(())
+        }
+        "man" => {
+            print!("{}", cli::man(HELP, env!("CARGO_PKG_VERSION")));
             Ok(())
         }
         "doctor" => {

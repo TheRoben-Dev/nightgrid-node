@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.25.0 · N10 refinement (unreleased)
+
+- `nightgrid-node status` is now a readable summary: host, version, uptime, CPU, memory, swap, disks, active alerts and which access is on. `status --json` prints the raw `node.info` as before.
+- `nightgrid-node events [--count N]`: the last N events (30 by default), oldest first, in local time. `--json` gives one event per line.
+- `nightgrid-node audit [--count N]`: the last N action-log entries. `audit verify` walks the whole log, checks every SHA-256 link and exits 1 with the broken range if a row was edited or removed.
+- `nightgrid-node completions bash|zsh|fish` and `nightgrid-node man` (a manual page made from the help: `nightgrid-node man | man -l -`).
+- The command-line tools no longer panic when their output pipe closes early (`nightgrid-node events | head`).
+- These use only methods the app already uses (N-048).
+
 ## 0.24.0 · N10 refinement (unreleased)
 
 - `nightgrid-node doctor` (`--json` too): a read-only self-check any user can run. It checks the installed binary, that `/etc/nightgrid-node/config.toml` parses and validates, that the service is active, that the socket answers (with a hint when the user isn't in the node's group), that the running version matches this binary, resident memory against the 20 MB budget, history size, and for each `allow` grant whether it is on, its unit runs and the node sees the access. It exits 1 on a failure. Nothing in the app protocol changed (N-048).

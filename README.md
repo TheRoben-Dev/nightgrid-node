@@ -106,10 +106,14 @@ nightgrid-node allow statuspage    start the read-only status page and print its
 nightgrid-node deny docker|journal|netwatch|helper|health|power|checks|peers|statuspage   take that away again
 nightgrid-node netwatch            the helper (its unit starts it)
 nightgrid-node upgrade FILE --sha256 HEX   verified upgrade that reverts itself (root)
-nightgrid-node status              what the running node reports
+nightgrid-node status              what the running node reports (--json: raw)
+nightgrid-node doctor              check this host's install, end to end
+nightgrid-node events              the last events (--count N)
+nightgrid-node audit [verify]      the action log, or check its whole hash chain
 nightgrid-node query METHOD [JSON] one protocol request, e.g. query alerts.active
 nightgrid-node watch STREAM...     live frames: events, metrics, containers, usage
 nightgrid-node bridge              stdin/stdout ⇄ the node's socket (used by the app over SSH)
+nightgrid-node completions SHELL   bash, zsh or fish completions; `man` prints the manual page
 ```
 
 Configuration: `/etc/nightgrid-node/config.toml` (root-owned; every setting is in the file `install` writes).

@@ -9,6 +9,7 @@ pub mod alerts;
 pub mod backups;
 pub mod bus;
 pub mod checks;
+pub mod cli;
 pub mod client;
 pub mod config;
 pub mod containers;
