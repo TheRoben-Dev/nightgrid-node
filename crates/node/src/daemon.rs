@@ -55,6 +55,8 @@ pub struct Shared {
     pub health_socket: PathBuf,
     /// The log watcher's state, saved searches and alert conditions.
     pub logs: Mutex<crate::logs::LogsState>,
+    /// The latest usage sample.
+    pub usage: Mutex<Option<nightgrid_node_proto::UsageSample>>,
 }
 
 impl Shared {
@@ -92,6 +94,7 @@ impl Shared {
             health: Mutex::new(crate::health::watch::HealthState::default()),
             health_socket: PathBuf::from(crate::health::watch::SOCKET),
             logs: Mutex::new(logs),
+            usage: Mutex::new(None),
         })
     }
 }
@@ -268,6 +271,14 @@ pub fn run(config: Config, paths: Paths) -> Result<(), String> {
         None
     };
     let healer = crate::heal::Healer::start(shared.clone()).map_err(|e| format!("self-healing: {e}"))?;
+    let usage = if config.usage.enabled {
+        Some(
+            crate::usage::UsageWatcher::start(shared.clone(), crate::usage::UsageReader::system())
+                .map_err(|e| format!("usage watcher: {e}"))?,
+        )
+    } else {
+        None
+    };
     let logs = if config.logs.enabled {
         Some(crate::logs::LogWatcher::start(shared.clone()).map_err(|e| format!("log watcher: {e}"))?)
     } else {
@@ -317,6 +328,9 @@ pub fn run(config: Config, paths: Paths) -> Result<(), String> {
         w.stop();
     }
     if let Some(w) = logs {
+        w.stop();
+    }
+    if let Some(w) = usage {
         w.stop();
     }
     let _ = std::fs::remove_file(&config.server.socket);

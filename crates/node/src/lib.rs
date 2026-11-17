@@ -32,3 +32,4 @@ pub mod server;
 pub mod sniff;
 pub mod store;
 pub mod uptime;
+pub mod usage;

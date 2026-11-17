@@ -13,6 +13,10 @@ rm -f /etc/systemd/system/nightgrid-node.service /etc/systemd/system/nightgrid-n
   /etc/systemd/system/nightgrid-node-helper.socket /etc/systemd/system/nightgrid-node-helper@.service \
   /etc/systemd/system/nightgrid-node-health.socket /etc/systemd/system/nightgrid-node-health@.service
 rm -rf /etc/systemd/system/nightgrid-node.service.d /etc/systemd/system/nightgrid-node-helper@.service.d
+if [ -e /etc/udev/rules.d/70-nightgrid-node-power.rules ]; then
+  rm -f /etc/udev/rules.d/70-nightgrid-node-power.rules
+  for f in /sys/class/powercap/intel-rapl:*/energy_uj; do [ -e "$f" ] && chgrp root "$f" && chmod 0400 "$f"; done
+fi
 systemctl daemon-reload 2>/dev/null || true
 rm -f /usr/local/bin/nightgrid-node
 if [ "${1:-}" = "--purge" ]; then

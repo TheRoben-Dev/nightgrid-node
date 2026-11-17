@@ -26,7 +26,9 @@ COMMANDS:
     allow helper            Install the root helper for unit and power actions (root)
     allow health            Install the read-only helper for SMART, pools, updates
                             and UPS status (root)
-    deny docker|journal|netwatch|helper|health
+    allow power             Let the service read the CPU energy counters (RAPL)
+                            for power draw (root)
+    deny docker|journal|netwatch|helper|health|power
                             Take that access away again (root)
     netwatch                Run the network watch helper (its unit starts this)
     helper                  Serve one root helper request (its socket unit starts this)
@@ -34,7 +36,7 @@ COMMANDS:
     status                  Show what the running node reports
     query METHOD [JSON]     Send one request and print the answer
     watch STREAM... [--count N]
-                            Print live frames (events, metrics, containers)
+                            Print live frames (events, metrics, containers, usage)
                             as JSON lines; stop after N if given
     bridge                  Connect stdin/stdout to the node's socket
                             (what the app runs over SSH)
@@ -145,9 +147,9 @@ fn real_main() -> Result<(), String> {
             Ok(())
         }
         "allow" | "deny" => {
-            let what = a.rest.first().ok_or("allow/deny what? (docker, journal, netwatch, helper, health)")?;
+            let what = a.rest.first().ok_or("allow/deny what? (docker, journal, netwatch, helper, health, power)")?;
             let grant = install::Grant::parse(what)
-                .ok_or_else(|| format!("unknown access {what:?} (docker, journal, netwatch, helper, health)"))?;
+                .ok_or_else(|| format!("unknown access {what:?} (docker, journal, netwatch, helper, health, power)"))?;
             let layout = install::Layout::system();
             let r = if a.cmd == "allow" {
                 let config = Config::load(&a.config)?;

@@ -4,7 +4,7 @@
 //! loses the oldest frames and is told how many (`lagged`), so a slow
 //! client can never make the node buffer without bound.
 
-use nightgrid_node_proto::{ContainersResult, Event, Sample};
+use nightgrid_node_proto::{ContainersResult, Event, Sample, UsageSample};
 use tokio::sync::broadcast;
 
 use crate::events::NewEvent;
@@ -14,6 +14,7 @@ pub struct Bus {
     pub events: broadcast::Sender<Event>,
     pub metrics: broadcast::Sender<Sample>,
     pub containers: broadcast::Sender<ContainersResult>,
+    pub usage: broadcast::Sender<UsageSample>,
 }
 
 impl Default for Bus {
@@ -22,6 +23,7 @@ impl Default for Bus {
             events: broadcast::channel(256).0,
             metrics: broadcast::channel(16).0,
             containers: broadcast::channel(16).0,
+            usage: broadcast::channel(16).0,
         }
     }
 }

@@ -81,6 +81,10 @@ pub mod method {
     /// Saved log searches the node checks every round (`logMatch` alerts).
     pub const LOGS_SEARCHES_GET: &str = "logs.searches.get";
     pub const LOGS_SEARCHES_SET: &str = "logs.searches.set";
+    /// The latest per-service, per-container and per-process usage, and power.
+    pub const USAGE_LATEST: &str = "usage.latest";
+    /// One-minute usage of one service, container, process name or power, for a day.
+    pub const USAGE_HISTORY: &str = "usage.history";
     /// Protocol 2: start pushing frames for streams.
     pub const SUBSCRIBE: &str = "subscribe";
     /// Protocol 2: stop pushing frames for streams.
@@ -95,9 +99,12 @@ pub mod stream {
     pub const METRICS: &str = "metrics";
     /// The container list when a state or health changes: [`super::ContainersResult`].
     pub const CONTAINERS: &str = "containers";
+    /// Usage per service, container and process, every second while anyone
+    /// subscribes: [`super::UsageSample`].
+    pub const USAGE: &str = "usage";
     /// Not subscribable: the node dropped frames for a slow client: [`super::Lagged`].
     pub const LAGGED: &str = "lagged";
-    pub const ALL: [&str; 3] = [EVENTS, METRICS, CONTAINERS];
+    pub const ALL: [&str; 4] = [EVENTS, METRICS, CONTAINERS, USAGE];
 }
 
 /// Capability names. A capability's version bumps when its methods gain
@@ -138,6 +145,9 @@ pub mod cap {
     /// `logs.status`, `logs.samples`, `logs.searches.*`; log anomaly and
     /// saved-search alerts (needs `allow journal` and/or `allow docker`).
     pub const LOGS: &str = "logs";
+    /// `usage.latest`, `usage.history`, the `usage` stream; power from RAPL
+    /// (needs `allow power`).
+    pub const USAGE: &str = "usage";
 }
 
 /// Typed actions (N4). Root lists the ones the node may run in
@@ -1429,4 +1439,103 @@ pub struct LogSamplesParams {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LogSamplesResult {
     pub lines: Vec<String>,
+}
+
+/// One service, container or process name in a usage sample.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageItem {
+    /// `service`, `container` or `process`.
+    pub kind: String,
+    /// Unit name (`nginx.service`), container name, or process name (`comm`).
+    pub name: String,
+    /// Share of the whole machine's CPU time, 0-100 (like `Sample.cpu`).
+    pub cpu: f32,
+    /// Memory in bytes (cgroup `memory.current`, or resident set for processes).
+    pub mem: u64,
+    /// Bytes per second; `None` where the kernel doesn't say (processes).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub io_read: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub io_write: Option<f64>,
+    /// Containers with their own network only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub net_rx: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub net_tx: Option<f64>,
+    /// Processes: how many share the name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub count: Option<u32>,
+}
+
+/// One RAPL zone (package, core, uncore, dram, psys).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PowerDomain {
+    pub name: String,
+    pub watts: f64,
+}
+
+/// Power draw.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PowerReading {
+    /// `ok`, `denied` (root hasn't run `allow power`) or `absent` (no RAPL).
+    pub access: String,
+    /// CPU package (or platform, where `psys` exists) watts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub watts: Option<f64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub domains: Vec<PowerDomain>,
+}
+
+/// `usage.latest` and the `usage` stream.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageSample {
+    /// Milliseconds, like `Sample.ts`.
+    pub ts: f64,
+    /// Every service and container with a cgroup, and the busiest process names.
+    pub items: Vec<UsageItem>,
+    pub power: PowerReading,
+    /// `false` on cgroup v1 hosts, where services and containers aren't measured.
+    pub cgroups: bool,
+}
+
+/// `usage.history` params.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageHistoryParams {
+    /// `service`, `container`, `process`, or `power` (name `total` or a domain).
+    pub kind: String,
+    pub name: String,
+    /// Unix seconds; default a day ago.
+    #[serde(default)]
+    pub since: Option<i64>,
+}
+
+/// One minute of one entity.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsagePoint {
+    pub ts: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mem: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub io_read: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub io_write: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub net_rx: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub net_tx: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub watts: Option<f64>,
+}
+
+/// `usage.history`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct UsageHistoryResult {
+    pub points: Vec<UsagePoint>,
 }

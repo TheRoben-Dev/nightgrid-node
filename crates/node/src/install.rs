@@ -32,6 +32,18 @@ pub const HELPER_SOCKET: &str = "nightgrid-node-helper.socket";
 pub const HEALTH_SOCKET_UNIT: &str = include_str!("../../../dist/systemd/nightgrid-node-health.socket");
 pub const HEALTH_SERVICE_UNIT: &str = include_str!("../../../dist/systemd/nightgrid-node-health@.service");
 pub const HEALTH_SOCKET: &str = "nightgrid-node-health.socket";
+/// `allow power`: a udev rule that lets the service's group read RAPL.
+pub const POWER_RULE: &str = "/etc/udev/rules.d/70-nightgrid-node-power.rules";
+const POWER_RULE_BODY: &str = "# Written by `nightgrid-node allow power`; removed by `nightgrid-node deny power`.\n\
+# Lets the nightgrid-node group read the CPU energy counters (RAPL) for power draw.\n\
+SUBSYSTEM==\"powercap\", ACTION==\"add\", RUN+=\"/bin/chgrp nightgrid-node /sys%p/energy_uj\", RUN+=\"/bin/chmod 0440 /sys%p/energy_uj\"\n";
+/// Applies the rule's effect now, or takes it back (`root:root 0400`, the kernel's default).
+fn power_now(group: &str, mode: &str) -> String {
+    format!(
+        "for f in /sys/class/powercap/intel-rapl:*/energy_uj; do [ -e \"$f\" ] || continue; \
+         chgrp {group} \"$f\" && chmod {mode} \"$f\"; done; true"
+    )
+}
 
 /// An opt-in grant that installs units of its own rather than a drop-in.
 struct Extra {
@@ -382,6 +394,12 @@ pub fn uninstall(layout: &Layout, sys: &mut dyn Sys, purge: bool) -> Result<Repo
     }
     remove(&layout.bin(), &mut rep)?;
     remove_dir(&layout.dropin_dir(), &mut rep)?;
+    if layout.at(POWER_RULE).exists() {
+        remove(&layout.at(POWER_RULE), &mut rep)?;
+        if let Err(e) = sys.run("sh", &["-c", &power_now("root", "0400")]) {
+            rep.warnings.push(e);
+        }
+    }
     if purge {
         remove_dir(&layout.data_dir(), &mut rep)?;
         remove_dir(&layout.at(crate::helper::ROLLBACK_DIR), &mut rep)?;
@@ -419,6 +437,8 @@ pub enum Grant {
     Helper,
     /// The read-only health helper (SMART, pools, updates, UPS).
     Health,
+    /// Group read access to RAPL energy counters (power draw).
+    Power,
 }
 
 impl Grant {
@@ -429,6 +449,7 @@ impl Grant {
             "netwatch" => Some(Self::Netwatch),
             "helper" => Some(Self::Helper),
             "health" => Some(Self::Health),
+            "power" => Some(Self::Power),
             _ => None,
         }
     }
@@ -439,6 +460,7 @@ impl Grant {
             Self::Netwatch => "netwatch",
             Self::Helper => "helper",
             Self::Health => "health",
+            Self::Power => "power",
         }
     }
     fn extra(self) -> Option<&'static Extra> {
@@ -494,8 +516,24 @@ pub fn allow(
         }
         return Ok(rep);
     }
+    if grant == Grant::Power {
+        rep.warnings.push(
+            "the service can now read the CPU's energy counters. The kernel keeps them root-only because \
+             reading them very often can hint at what other programs compute; the node reads them every 10 s \
+             (every second while the app watches) and keeps one-minute averages."
+                .into(),
+        );
+        let path = layout.at(POWER_RULE);
+        std::fs::create_dir_all(path.parent().unwrap_or(Path::new("/")))
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        write_file(&path, POWER_RULE_BODY, 0o644)?;
+        rep.step(format!("wrote {}", path.display()));
+        sys.run("sh", &["-c", &power_now(USER, "0440")])?;
+        rep.step("energy counters readable by the service now".to_string());
+        return Ok(rep);
+    }
     let body = match grant {
-        Grant::Netwatch | Grant::Helper | Grant::Health => unreachable!("handled above"),
+        Grant::Netwatch | Grant::Helper | Grant::Health | Grant::Power => unreachable!("handled above"),
         Grant::Docker => {
             let group = socket_group(sys, socket, layout.is_system())?;
             rep.warnings.push(format!(
@@ -550,6 +588,17 @@ pub fn deny(layout: &Layout, sys: &mut dyn Sys, grant: Grant, no_start: bool) ->
         layout.remove_extra(e, &mut rep)?;
         sys.run("systemctl", &["daemon-reload"])?;
         rep.step(format!("{} stopped", e.what));
+        return Ok(rep);
+    }
+    if grant == Grant::Power {
+        let path = layout.at(POWER_RULE);
+        if !path.exists() {
+            rep.step("power was not allowed".to_string());
+            return Ok(rep);
+        }
+        remove(&path, &mut rep)?;
+        sys.run("sh", &["-c", &power_now("root", "0400")])?;
+        rep.step("energy counters root-only again".to_string());
         return Ok(rep);
     }
     let path = layout.dropin_dir().join(grant.file());
@@ -729,6 +778,25 @@ mod tests {
         allow(&layout, &mut sys, Grant::Health, Path::new("/x"), true).unwrap();
         uninstall(&layout, &mut sys, false).unwrap();
         assert!(!layout.system_unit("nightgrid-node-health.socket").exists());
+    }
+
+    #[test]
+    fn allow_and_deny_power() {
+        let (_d, layout, exe) = setup();
+        let mut sys = FakeSys::default();
+        install(&layout, &mut sys, &exe, &InstallOptions::default()).unwrap();
+        let rep = allow(&layout, &mut sys, Grant::Power, Path::new("/x"), false).unwrap();
+        assert!(rep.warnings[0].contains("energy counters"));
+        let rule = std::fs::read_to_string(layout.at(POWER_RULE)).unwrap();
+        assert!(rule.contains("SUBSYSTEM==\"powercap\"") && rule.contains("chgrp nightgrid-node /sys%p/energy_uj"));
+        assert!(sys.log.last().unwrap().contains("chgrp nightgrid-node"), "{:?}", sys.log);
+        deny(&layout, &mut sys, Grant::Power, false).unwrap();
+        assert!(!layout.at(POWER_RULE).exists());
+        assert!(sys.log.last().unwrap().contains("chgrp root") && sys.log.last().unwrap().contains("0400"));
+        assert_eq!(deny(&layout, &mut sys, Grant::Power, false).unwrap().steps, ["power was not allowed"]);
+        allow(&layout, &mut sys, Grant::Power, Path::new("/x"), true).unwrap();
+        uninstall(&layout, &mut sys, false).unwrap();
+        assert!(!layout.at(POWER_RULE).exists());
     }
 
     #[test]
