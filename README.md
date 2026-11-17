@@ -118,6 +118,21 @@ nightgrid-node completions SHELL   bash, zsh or fish completions; `man` prints t
 
 Configuration: `/etc/nightgrid-node/config.toml` (root-owned; every setting is in the file `install` writes).
 
+## Troubleshooting
+
+Start with `nightgrid-node doctor`. Any user can run it, it changes nothing, and it names the first thing that's wrong:
+
+| doctor says | what to do |
+| --- | --- |
+| `FAIL config` | Fix the line it names in `/etc/nightgrid-node/config.toml`, then `sudo systemctl restart nightgrid-node`. |
+| `FAIL service` | `journalctl -u nightgrid-node -n 50` shows why it stopped. |
+| `WARN socket … Permission denied` | This user isn't in the node's group: `sudo nightgrid-node install --user $USER`, then log in again. |
+| `WARN version … restart` | A new binary is installed but the old one still runs: `sudo systemctl restart nightgrid-node`. |
+| `WARN allow X … is failed` | That grant's own unit stopped: `journalctl -u nightgrid-node-X`. |
+| `WARN memory` | Over the 20 MB budget; please open an issue with `nightgrid-node status --json`. |
+
+`nightgrid-node events` shows what the node noticed recently. `nightgrid-node audit verify` checks that nobody edited the action log. If the history database was damaged (after a power cut, for example), the node moves it to `node.db.damaged`, starts a fresh one under the same node id, and records a "history database replaced" event. The app refills its own history as usual.
+
 ## Docs
 
 - [Design](docs/DESIGN.md): architecture, transport, storage, sync, security model, automatic actions, feature map
