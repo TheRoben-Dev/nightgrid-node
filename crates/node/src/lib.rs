@@ -16,6 +16,7 @@ pub mod daemon;
 pub mod dhcp;
 pub mod diskusage;
 pub mod docker;
+pub mod doctor;
 pub mod engine;
 pub mod events;
 pub mod files;
