@@ -369,6 +369,8 @@ What would be **added**, each opt-in, versioned and ignorable by older clients:
 | Hub socket | A new socket for a new product, same framing and `hello` rules as Lite: capabilities `fleet` 1, `notify` 1, later `devices` 1, `anomaly` 1, `logsearch` 1 | Starts at protocol 2 (streams) |
 | App | Future spec [0020](app-integration/0020-hub-fleet-sync.md) | Marked future; the app keeps working unchanged without a hub |
 
+`crates/node/tests/frozen-protocol.txt` pins every Lite method, capability and result field; the Lite additions above will show up there as new lines only, never as changed ones (regenerate with `FROZEN_UPDATE=1 cargo test -p nightgrid-node frozen` and check the diff is purely added lines).
+
 The hub can be built (H1, H2) without touching Lite's app-facing surface at all, except for the additive Lite pieces above. Those Lite pieces wait for Roben's go once the compatibility work allows additive changes; until then H1 can be developed and tested against a Lite build on a branch.
 
 ## 17. Milestones

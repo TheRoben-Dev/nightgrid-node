@@ -932,6 +932,81 @@ mod tests {
         body.lines().filter_map(|l| l.trim().strip_prefix("pub const ")?.split('"').nth(1).map(str::to_owned)).collect()
     }
 
+    /// Key paths of a JSON value: `a.b`, `list[].c`.
+    fn shape(v: &Value, at: &str, out: &mut BTreeSet<String>) {
+        match v {
+            Value::Object(m) => {
+                for (k, x) in m {
+                    let p = if at.is_empty() { k.clone() } else { format!("{at}.{k}") };
+                    out.insert(p.clone());
+                    shape(x, &p, out);
+                }
+            }
+            Value::Array(a) => {
+                for x in a {
+                    shape(x, &format!("{at}[]"), out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// The app is built against this protocol (N-048): its method names,
+    /// capabilities, streams, error codes and the fields each method answers
+    /// with on a fresh node are pinned in `tests/frozen-protocol.txt`. A
+    /// change there must be additive and on purpose; regenerate with
+    /// `FROZEN_UPDATE=1 cargo test -p nightgrid-node frozen` and review the diff.
+    #[test]
+    fn the_app_facing_protocol_is_frozen() {
+        let s = shared();
+        let mut ses = Session { uid: "4242".into(), ..Default::default() };
+        let w = call(&s, &mut ses, 1, "hello", json!({"protoMin": 1, "protoMax": PROTO_VERSION, "client": "frozen"}));
+        let mut o = format!("protocol {PROTO_MIN}-{PROTO_VERSION}, max line {MAX_LINE}\n");
+        o += &format!("caps {}\n", serde_json::to_string(&caps()).unwrap());
+        o += &format!("streams {}\n", stream::ALL.join(" "));
+        let codes = [
+            ErrorCode::BadRequest,
+            ErrorCode::UnknownMethod,
+            ErrorCode::HelloRequired,
+            ErrorCode::UnsupportedProto,
+            ErrorCode::CapabilityDisabled,
+            ErrorCode::TooLarge,
+            ErrorCode::Internal,
+            ErrorCode::Forbidden,
+        ];
+        o += &format!(
+            "errors {}\n",
+            codes.map(|c| serde_json::to_value(c).unwrap().as_str().unwrap().to_owned()).join(" ")
+        );
+        let mut fields = BTreeSet::new();
+        shape(w.result.as_ref().unwrap(), "", &mut fields);
+        o += &format!("hello -> {}\n", fields.into_iter().collect::<Vec<_>>().join(" "));
+        let mut methods = all_methods();
+        methods.sort();
+        for m in methods.iter().filter(|m| m.as_str() != method::HELLO) {
+            let r = call(&s, &mut ses, 2, m, json!({"after": 0, "hours": 24}));
+            let mut fields = BTreeSet::new();
+            if let Some(v) = &r.result {
+                shape(v, "", &mut fields);
+            }
+            let tag = match &r.error {
+                None => "->".to_owned(),
+                Some(e) => format!("!{}", serde_json::to_value(e.code).unwrap().as_str().unwrap()),
+            };
+            o += &format!("{m} {tag} {}\n", fields.into_iter().collect::<Vec<_>>().join(" "));
+        }
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/frozen-protocol.txt");
+        if std::env::var_os("FROZEN_UPDATE").is_some() {
+            std::fs::write(&path, &o).unwrap();
+        }
+        let want = std::fs::read_to_string(&path).unwrap_or_default();
+        if want != o {
+            let gone: Vec<_> = want.lines().filter(|l| !o.lines().any(|x| x == *l)).collect();
+            let new: Vec<_> = o.lines().filter(|l| !want.lines().any(|x| x == *l)).collect();
+            panic!("the app-facing protocol changed (N-048)\nwas:\n{}\nnow:\n{}", gone.join("\n"), new.join("\n"));
+        }
+    }
+
     /// Wrong-shaped params to every method: an error or an answer, never a
     /// panic, a hang or an internal error, and always the caller's id.
     #[test]

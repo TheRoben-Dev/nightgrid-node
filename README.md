@@ -106,13 +106,32 @@ nightgrid-node allow statuspage    start the read-only status page and print its
 nightgrid-node deny docker|journal|netwatch|helper|health|power|checks|peers|statuspage   take that away again
 nightgrid-node netwatch            the helper (its unit starts it)
 nightgrid-node upgrade FILE --sha256 HEX   verified upgrade that reverts itself (root)
-nightgrid-node status              what the running node reports
+nightgrid-node status              what the running node reports (--json: raw)
+nightgrid-node doctor              check this host's install, end to end
+nightgrid-node events              the last events (--count N)
+nightgrid-node audit [verify]      the action log, or check its whole hash chain
 nightgrid-node query METHOD [JSON] one protocol request, e.g. query alerts.active
 nightgrid-node watch STREAM...     live frames: events, metrics, containers, usage
 nightgrid-node bridge              stdin/stdout ⇄ the node's socket (used by the app over SSH)
+nightgrid-node completions SHELL   bash, zsh or fish completions; `man` prints the manual page
 ```
 
 Configuration: `/etc/nightgrid-node/config.toml` (root-owned; every setting is in the file `install` writes).
+
+## Troubleshooting
+
+Start with `nightgrid-node doctor`. Any user can run it, it changes nothing, and it names the first thing that's wrong:
+
+| doctor says | what to do |
+| --- | --- |
+| `FAIL config` | Fix the line it names in `/etc/nightgrid-node/config.toml`, then `sudo systemctl restart nightgrid-node`. |
+| `FAIL service` | `journalctl -u nightgrid-node -n 50` shows why it stopped. |
+| `WARN socket … Permission denied` | This user isn't in the node's group: `sudo nightgrid-node install --user $USER`, then log in again. |
+| `WARN version … restart` | A new binary is installed but the old one still runs: `sudo systemctl restart nightgrid-node`. |
+| `WARN allow X … is failed` | That grant's own unit stopped: `journalctl -u` the unit it names. |
+| `WARN memory` | Over the 20 MB budget; please open an issue with `nightgrid-node status --json`. |
+
+`nightgrid-node events` shows what the node noticed recently. `nightgrid-node audit verify` checks that nobody edited the action log. If the history database was damaged (after a power cut, for example), the node moves it to `node.db.damaged`, starts a fresh one under the same node id, and records a "history database replaced" event. The app refills its own history as usual.
 
 ## Docs
 

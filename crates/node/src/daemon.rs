@@ -265,8 +265,18 @@ pub fn sd_notify(state: &str) {
 /// Runs the service until SIGTERM/SIGINT.
 pub fn run(config: Config, paths: Paths) -> Result<(), String> {
     std::fs::create_dir_all(&paths.data_dir).map_err(|e| format!("{}: {e}", paths.data_dir.display()))?;
-    let store = Store::open(&paths.db())?;
+    let (store, recovered) = Store::open_or_recover(&paths.db())?;
     let shared = Shared::new(config.clone(), store);
+    if let Some(note) = recovered {
+        crate::warn!("{note}");
+        use nightgrid_node_proto::{EventKind, Level};
+        let e =
+            crate::events::NewEvent::new(now_secs(), EventKind::Other, Level::Warn, "history database replaced", note);
+        let st = shared.store.lock().unwrap_or_else(|e| e.into_inner());
+        if let Err(err) = shared.bus.record(&st, &e) {
+            crate::warn!("event: {err}");
+        }
+    }
     crate::info!(
         "nightgrid-node {} starting (node {}, every {} s, socket {})",
         shared.identity.version,
