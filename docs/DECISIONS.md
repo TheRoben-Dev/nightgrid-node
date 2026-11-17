@@ -174,3 +174,34 @@ The plan said "scheduled jobs that run with the app closed". The app already ins
 
 ### N-039 · Service checks run in a separate network-limited unit
 Checks are the first thing that needs outbound connections. The milestone plan said "a drop-in that allows exactly the configured addresses" on the main service, but that would give the process holding the history, the socket and the journal grant network access too. Following N-021, a separate unit (`nightgrid-node checker`, the service account, no capabilities) runs them instead, with `IPAddressAllow` built from root's `[checks] networks` (LAN, loopback and tailnet ranges by default). The app supplies what to check, root decides where checks may go. It reports over the node's socket like the network watch helper, and the main service stays offline. The check code is the app's (URL parsing, status rules, certificate capture with rustls and the platform verifier, alert conditions), vendored from 8eedcf2. The one change is a minimal HTTP/1.1 GET that reads only the status line instead of hyper. This keeps the binary at about 4.7 MB static. Alerts use the app's own keys and rules, so the app can drop its own result for a service the node already checks from inside the LAN. When the runner goes quiet, its alerts lapse instead of turning into "down".
+
+## Hub profile (proposed, H0)
+
+Design: [HUB.md](HUB.md). All of these are proposals; nothing is built. Roben, 2026-11-17: keep Lite and Hub separate, with the Hub recommended as one system per network.
+
+### N-048 · The hub is a separate binary from the same workspace and release
+A profile flag in `nightgrid-node` would put the hub's code (notifier, SNMP, indexer) on every Lite host and let a config edit turn a light agent into a heavy one. `nightgrid-hub` is its own static binary, account, units and sandbox, built from the same workspace (sharing `proto` and node code), released with the same version, checksums, provenance and verified upgrade (N-014, N-042). A hub host runs Lite for itself, and the hub reads that host through the local Lite socket.
+
+### N-049 · The person designates the hub; there is no election or broadcast discovery
+An election needs all-to-all links, a quorum a two-host homelab doesn't have, and split-brain handling, and it moves a choice about which machine does more work away from the person who knows which one is always on. The app already pairs nodes as the trust anchor (N-043), so it designates the hub, refuses a second one per site, and pairs members with it. No mDNS or UDP announce, so Lite still never listens on the LAN by default. A second hub is harmless (pulls are read-only) and is reported. A standby hub (N-056) is the only supported second one.
+
+### N-050 · Hub budget: 55 to 110 MB for the core, caps per unit, a CI budget test
+Targets for 25 members on a Pi 4: main unit 40 to 80 MB (`MemoryMax=200M`), collector 10 to 20 MB (64M), notifier 5 to 10 MB (32M); later features are separate opt-in units with their own caps (index up to 256M), 150 to 250 MB with everything on. Store capped by `[store] max_gb` (default 4), pruning oldest minutes first. H1 adds a test against 25 simulated members that fails over budget.
+
+### N-051 · The hub pulls from members over the link, read-only, keeping their cursors
+Pushing would give Lite a queue, retries and a dependency on the hub. Pulling keeps Lite stateless toward clients (as for the app) and unchanged when the hub is down. The hub calls a fixed read-only list of existing socket methods through a new link request (`peer.sync`), served only if root adds `sync` to `[peers] serve` and only to the peer named by `hub.member`. It stores members' own `seq` and bucket timestamps, so the app's cursors work through the hub or directly, interchangeably, with no gaps or duplicates.
+
+### N-052 · Hub down means Lite and the app carry on as today
+Members don't notice (nothing queued), the app syncs each host directly from the same cursors, and the hub catches up from its cursors when back, a page per member per round. Silence from a dead hub is covered by the app when open, an optional heartbeat URL the notifier calls, and later a standby hub.
+
+### N-053 · A compromised hub can read telemetry, not act: the hold rule
+The link answers the hub only read methods; the hub has no SSH keys or sudo passwords. The only control message it may send is `hold {kind, until, reason}`, which can only stop a member's automatic action of a kind root allowed, expires within 24 h and is logged on the member. Where each hub unit may connect is root's per-unit list; the main unit with the data stays offline, as N-039 does for Lite.
+
+### N-054 · Notifications reuse the app's formats; the notifier holds the secrets and nothing else
+ntfy, Discord and the generic webhook use the app's own formats (D-051, vendored), plus email through an SMTP submission server with TLS required. No APNs/FCM (they need a cloud relay). The main unit renders messages and hands only text to the notifier unit, which holds `systemd-creds` secrets and is the only unit that may reach the internet, and only when root allows it for the endpoints the person chose. Folding, grouping, quiet hours and rate limits follow the app. Per site, either the hub or the app delivers, never both.
+
+### N-055 · New app-facing surface is additive, versioned and future
+No existing method, field, frame, link request or spec changes. Additions: Lite capability `hub.member` 1, link requests `peer.sync` and `peer.hold` behind new `serve` entries, and a new hub socket with its own capabilities (`fleet`, `notify`, later others). The app side is future spec 0020. The Lite pieces wait for Roben's go while the app's compatibility work runs.
+
+### N-056 · Later features each get their own unit, opt-in and consent
+LAN checks with DNS (H3), SNMP v3 read-only polling (H4), deterministic baselines and forecasts with no trained model (H5), a log index in SQLite FTS5 that needs root's consent on each member before any line leaves it (H6), and per-host runbooks, backup verification and patch windows that act only through Lite's existing typed action path, with the hub limited to holds (H7). The standby hub comes with H7 unless availability matters sooner.

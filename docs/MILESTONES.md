@@ -114,3 +114,16 @@ Scope:
 
 - **N9 (0.23.0):** `summary.daily`: what happened on the host over the last day (or up to a week) as plain facts for the app's DRIFT helper, made on request from the node's own history (N-046). App spec 0019.
 - Wake-on-LAN relay: stays with the app's relay hosts and their systemd timers, which already work with the app closed (N-047).
+
+## Hub profile (proposed)
+
+A separate, heavier `nightgrid-hub` for one always-on host per network, next to the unchanged Lite agent. Design in [HUB.md](HUB.md), decisions N-048 to N-056, app spec [0020](app-integration/0020-hub-fleet-sync.md) (future). Nothing here changes a frozen interface; Lite additions are additive and wait for Roben's go.
+
+- **H0:** design (this document set). Docs only.
+- **H1:** `nightgrid-hub` binary, install/uninstall/upgrade, store, collector pulling members over the link (`peer.sync`, `hub.member`), `fleet.*` on the hub socket, host-offline alerts, CI budget test with 25 simulated members.
+- **H2:** notifier: ntfy, Discord, webhook, email; folding, grouping, quiet hours, rate limits, heartbeat URL.
+- **H3:** fleet status page; hub checks (HTTP, TLS, TCP, DNS).
+- **H4:** SNMP devices (v3 read-only).
+- **H5:** baselines, anomalies and forecasts.
+- **H6:** log index and search (opt-in per member).
+- **H7:** runbooks, backup verification and restore tests, patch windows with rollback, holds, standby hub.
