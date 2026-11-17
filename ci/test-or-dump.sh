@@ -11,7 +11,7 @@ while kill -0 "$pid" 2>/dev/null; do
   i=$((i+1))
   if [ "$i" -ge "$limit" ]; then
     echo "::error::tests still running after ${limit}s; dumping test threads"
-    for p in $(pgrep -f 'target/debug/deps/'); do
+    for p in $(pgrep -f '/target/debug/.*-[0-9a-f]{16}( |$)'); do
       echo "== pid $p: $(tr '\0' ' ' < /proc/$p/cmdline)"
       for t in /proc/$p/task/*; do
         echo "-- $(cat $t/comm) state=$(awk '/^State/ {print $2}' $t/status) wchan=$(cat $t/wchan 2>/dev/null)"
