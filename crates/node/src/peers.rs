@@ -38,6 +38,8 @@ const META_PEERS: &str = "peers";
 pub const MAX_PEERS: usize = 64;
 /// Longest request or answer line on the link.
 const MAX_LINE: usize = 4096;
+/// Connections served at once.
+const MAX_CONNECTIONS: usize = 16;
 const TIMEOUT: Duration = Duration::from_secs(10);
 /// Consecutive failed probes before a peer counts as unreachable.
 const FAILS: u32 = 2;
@@ -546,6 +548,7 @@ pub fn link(config_path: &Path) -> Result<(), String> {
     let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server_config(&id, allowed.clone())?));
     let interval = Duration::from_secs(cfg.peers.interval_secs.into());
     let socket = cfg.server.socket.clone();
+    let slots = Arc::new(tokio::sync::Semaphore::new(MAX_CONNECTIONS));
     rt.block_on(async {
         let mut next_round = Instant::now();
         let mut next_check = Instant::now();
@@ -610,7 +613,15 @@ pub fn link(config_path: &Path) -> Result<(), String> {
             match &listener {
                 Some(l) => {
                     if let Ok(Ok((tcp, _))) = tokio::time::timeout(wait, l.accept()).await {
-                        tokio::spawn(serve_one(tcp, acceptor.clone(), ctx.clone()));
+                        // A few at a time: anything on the tailnet can connect,
+                        // even if only paired nodes get past the handshake.
+                        if let Ok(permit) = slots.clone().try_acquire_owned() {
+                            let (a, c) = (acceptor.clone(), ctx.clone());
+                            tokio::spawn(async move {
+                                serve_one(tcp, a, c).await;
+                                drop(permit);
+                            });
+                        }
                     }
                 }
                 None => tokio::time::sleep(wait).await,
