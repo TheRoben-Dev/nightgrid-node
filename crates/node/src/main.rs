@@ -376,6 +376,23 @@ fn real_main() -> Result<(), String> {
             }
             Ok(())
         }
+        "doctor" => {
+            let r = nightgrid_node::doctor::run(
+                &install::Layout::system(),
+                &a.config,
+                a.socket.as_deref(),
+                &mut nightgrid_node::doctor::RealProbe,
+            );
+            if a.json {
+                println!("{}", serde_json::to_string(&r).unwrap_or_default());
+            } else {
+                print!("{}", nightgrid_node::doctor::render(&r));
+            }
+            if r.worst() == nightgrid_node::doctor::Level::Fail {
+                return Err("doctor found a failure".into());
+            }
+            Ok(())
+        }
         "query" => {
             let method = a.rest.first().ok_or("query needs a method")?;
             let params = match a.rest.get(1) {
