@@ -254,6 +254,8 @@ cargo run -p nightgrid-node -- run --socket /tmp/ngn.sock --data-dir /tmp/ngn --
 cargo run -p nightgrid-node -- query node.info --socket /tmp/ngn.sock
 ```
 
+Releasing: bump `version` in `Cargo.toml` and add its `## X.Y.Z` section to CHANGELOG.md. When that lands on main, [auto-release.yml](.github/workflows/auto-release.yml) tags the commit `vX.Y.Z` and publishes the release (binaries, SHA256SUMS, provenance). A tag pushed by hand still publishes too.
+
 Parts of the metrics, alert, forecast, timeline and secret-filter code are vendored from Nightgrid (MIT, attributed in the file headers).
 
 ## License
