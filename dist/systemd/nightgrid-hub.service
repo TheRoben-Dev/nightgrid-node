@@ -1,0 +1,69 @@
+# Nightgrid Hub (optional, one per network): keeps a copy of what the
+# Nightgrid Nodes on this network record, for the app to sync from one place,
+# and notices a node that stops answering while the app is closed.
+# Installed by `nightgrid-hub install`; removed by `nightgrid-hub uninstall`.
+# This unit holds the store and the socket and has no network at all: the
+# collector (nightgrid-hub-collect.service) is the only part that talks to
+# the nodes, and it hands what it pulls to this unit over the socket.
+
+[Unit]
+Description=Nightgrid Hub (copy of the network's Nightgrid Nodes)
+Documentation=https://github.com/TheRoben-Dev/nightgrid-node/blob/main/docs/HUB.md
+After=local-fs.target
+
+[Service]
+Type=notify
+NotifyAccess=main
+User=nightgrid-hub
+Group=nightgrid-hub
+ExecStart=/usr/local/bin/nightgrid-hub run
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=15s
+
+StateDirectory=nightgrid-hub
+StateDirectoryMode=0700
+RuntimeDirectory=nightgrid-hub
+RuntimeDirectoryMode=0750
+UMask=0007
+# The collector's key is its own.
+InaccessiblePaths=-/var/lib/nightgrid-hub-collect
+
+# Budget (docs/HUB.md section 4): 40-80 MB for 25 members.
+MemoryHigh=150M
+MemoryMax=200M
+TasksMax=32
+CPUWeight=20
+CPUQuota=50%
+IOWeight=20
+Nice=10
+
+IPAddressDeny=any
+RestrictAddressFamilies=AF_UNIX
+
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+
+[Install]
+WantedBy=multi-user.target

@@ -568,6 +568,12 @@ Events (`other`): "peer nas unreachable" (`warn`, after two misses in a row) and
 
 The link itself (TCP, mutual TLS 1.3, both certificates pinned) carries one JSON request per line, at most 4 KiB: `{"method": "peer.ping"}` → `{"ok": true, "result": {"id", "hostname", "version", "uptime"}}`, or `{"ok": false, "error"}` for anything root's `[peers] serve` doesn't list. `{"method": "peer.ups", "params": {"phase", "reason", "target"}}` (0.21.0) is sent by a host whose UPS guard starts a countdown (`countdown`, `shuttingDown`, repeated every minute) or ends one (`idle`: power is back; `cancelled`); the answer is `{"phase"}` of the receiver's guard, or an error such as "this host doesn't follow that node's UPS".
 
+`{"method": "peer.sync", "params": {"method", "params"}}` (0.26.0) is how this node's hub reads it: it is answered only if root lists `sync` in `[peers] serve` and the asking peer is the one named with `hub.member.set`, and only for `node.info`, `metrics.sync`, `events.sync`, `uptime.sync`, `disk.sync` and `alerts.active`. The answer is that method's result, exactly as on the socket; errors are "not this node's hub (hub.member)", "\"x\" is not served to the hub" and, over 1 MiB, "answer too large; ask for a smaller limit".
+
+### `hub.member.get` / `hub.member.set` (`hub.member` 1, 0.26.0)
+
+Which paired peer is this node's hub (see [HUB.md](HUB.md)). `{"hubId": "9f1c…" | null}` both ways. `set` refuses an id that isn't in `peers.get` ("pair the hub with peers.set first"); `null` clears it. Naming a hub serves it nothing by itself: root must also run `nightgrid-node serve add sync`.
+
 ### `summary.daily` (`summary` 1)
 
 Params `{"hours": 24}` (1–168, default 24; `null` params mean 24):
@@ -616,6 +622,36 @@ The sockets listening on this host at the last read (every 15 s, `[ports] interv
 - Same fields as the app's `Listener` (security audit, M10d). `scope`: `local`, `vpn`, `address` or `all`. `0.0.0.0` and `::` for one port are one entry.
 - `process` is always `null`: the kernel only shows a socket's process to its owner or root. The app's own audit over SSH still fills it.
 - `container` needs `allow docker`. `at` is 0 until the first read and with `[ports]` off.
+
+## Hub socket (`fleet` 1)
+
+`nightgrid-hub` (0.26.0, optional, one per network) has its own socket, `/run/nightgrid-hub/hub.sock` (0660, group `nightgrid-hub`), with the same framing and `hello` as the node's; `hello` lists capability `fleet` 1 and the hub's own id as `node.nodeId`. The app reaches it over SSH like the node's socket, or with `nightgrid-hub bridge`.
+
+### `fleet.members.get` / `fleet.members.set`
+
+`{"members": [{"id", "name", "address", "fingerprint"}]}`, the same fields and rules as a peer in `peers.set` (at most 64). `set` replaces the list and answers with it; a member that is removed loses everything the hub held for it.
+
+### `fleet.overview`
+
+```json
+{"hubId": "…", "fingerprint": "…64 hex", "listening": "100.64.0.2:7420", "collector": "ok", "storeBytes": 9437184,
+ "members": [{"id": "9f1c…", "name": "nas", "state": "ok", "lastContact": 1763290000, "version": "0.26.0",
+              "hostname": "nas", "alerts": 1, "error": null}]}
+```
+
+- `fingerprint` and `listening`: the collector's, to pair members with (`null` until it has run).
+- `collector`: `ok` while it reports, `off` before it ever has, `denied` after it stopped (`deny collect`).
+- `state`: `new` (not pulled yet), `ok`, `stale` (no pull for over two intervals), `unreachable` (`error` says why, as the link puts it), `consent` (the member refused: no `sync` in its `serve`, or it names another hub), `version` (older than 0.26.0).
+
+### `fleet.sync`
+
+`{"nodeId", "method", "params"}`: one of `node.info`, `metrics.sync`, `events.sync`, `uptime.sync`, `disk.sync`, `alerts.active` for that member, answered from the hub's copy with exactly the node's params and result (same `seq`, timestamps, `next`, `more`, `oldest`), so the app's cursor for that node works through either path. Other methods: `bad request` "… is not kept by the hub".
+
+### `fleet.events.sync`
+
+`{"after", "limit"}` like `events.sync`, over the hub's own events: "nas offline" (kind `alert`, level `critical`, with an `alert` of kind `hostOffline`, key `hostOffline:<id>`, and `nodeId`), "nas back online" (kind `recovered`, level `ok`, the same alert with `resolved` set), "hub store at its N GB cap".
+
+`fleet.plan` and `fleet.ingest` are internal (the collector's); only the hub's own account may call them.
 
 ## Planned (not in version 1 yet)
 

@@ -1,8 +1,8 @@
 protocol 1-2, max line 4194304
-caps {"actions":2,"alerts":1,"block":1,"changes":1,"checks":1,"containers":1,"disk":1,"events":1,"files":1,"heal":1,"health":1,"jobs":1,"logins":1,"logs":1,"metrics":1,"metrics.sync":1,"net":1,"net.dhcp":1,"node":1,"peers":1,"security":1,"summary":1,"ups":1,"uptime":1,"usage":1}
+caps {"actions":2,"alerts":1,"block":1,"changes":1,"checks":1,"containers":1,"disk":1,"events":1,"files":1,"heal":1,"health":1,"hub.member":1,"jobs":1,"logins":1,"logs":1,"metrics":1,"metrics.sync":1,"net":1,"net.dhcp":1,"node":1,"peers":1,"security":1,"summary":1,"ups":1,"uptime":1,"usage":1}
 streams events metrics containers usage
 errors bad_request unknown_method hello_required unsupported_proto capability_disabled too_large internal forbidden
-hello -> caps caps.actions caps.alerts caps.block caps.changes caps.checks caps.containers caps.disk caps.events caps.files caps.heal caps.health caps.jobs caps.logins caps.logs caps.metrics caps.metrics.sync caps.net caps.net.dhcp caps.node caps.peers caps.security caps.summary caps.ups caps.uptime caps.usage node node.arch node.hostname node.nodeId node.version proto
+hello -> caps caps.actions caps.alerts caps.block caps.changes caps.checks caps.containers caps.disk caps.events caps.files caps.heal caps.health caps.hub.member caps.jobs caps.logins caps.logs caps.metrics caps.metrics.sync caps.net caps.net.dhcp caps.node caps.peers caps.security caps.summary caps.ups caps.uptime caps.usage node node.arch node.hostname node.nodeId node.version proto
 actions.log -> more next records verified
 actions.policy -> allowed helper known maxPerHour units
 actions.run !bad_request 
@@ -25,6 +25,8 @@ heal.rules.get -> rules
 heal.rules.set -> rules
 heal.status -> enabled tracking
 health.latest -> access
+hub.member.get -> hubId
+hub.member.set -> hubId
 jobs.get -> backups interval
 jobs.latest -> access at backups runs
 jobs.set !bad_request 

@@ -74,7 +74,7 @@ pub struct PeersConfig {
     pub port: u16,
     /// The only addresses the link may talk to, in and out (tailnet ranges by default).
     pub networks: Vec<String>,
-    /// What paired peers may ask this node (`ping`, `ups`).
+    /// What paired peers may ask this node (`ping`, `ups`, `sync`).
     pub serve: Vec<String>,
     /// Seconds between probes of each peer (30-3600).
     pub interval_secs: u32,
@@ -82,7 +82,7 @@ pub struct PeersConfig {
 
 pub const DEFAULT_PEER_NETWORKS: &[&str] = &["100.64.0.0/10", "fd7a:115c:a1e0::/48"];
 /// What `[peers] serve` may list.
-pub const PEER_SERVES: &[&str] = &["ping", "ups"];
+pub const PEER_SERVES: &[&str] = &["ping", "ups", "sync"];
 
 impl Default for PeersConfig {
     fn default() -> Self {
@@ -889,6 +889,9 @@ networks = ["100.64.0.0/10", "fd7a:115c:a1e0::/48"]
 #   "ups"   start this host's UPS shutdown when a peer the app marked
 #           "follow" starts its own, and end it when that peer's power is
 #           back. Also needs [ups] shutdown and its requirements here.
+#   "sync"  let this node's hub (the peer the app set with hub.member) read
+#           its history, events, uptime, disk usage and active alerts.
+#           Read-only; nothing else is served to it. See docs/HUB.md.
 serve = ["ping"]
 # Seconds between probes of each peer (30-3600).
 interval_secs = 60

@@ -411,8 +411,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "nightgrid-hub"
+version = "0.26.0"
+dependencies = [
+ "libc",
+ "nightgrid-node",
+ "nightgrid-node-proto",
+ "rusqlite",
+ "rusqlite_migration",
+ "rustls",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-rustls",
+ "toml",
+]
+
+[[package]]
 name = "nightgrid-node"
-version = "0.25.1"
+version = "0.26.0"
 dependencies = [
  "libc",
  "nightgrid-node-proto",
@@ -434,7 +452,7 @@ dependencies = [
 
 [[package]]
 name = "nightgrid-node-proto"
-version = "0.25.1"
+version = "0.26.0"
 dependencies = [
  "serde",
  "serde_json",

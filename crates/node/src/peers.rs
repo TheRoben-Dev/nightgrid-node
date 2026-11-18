@@ -11,6 +11,8 @@
 //!   fingerprint: no certificate authority, no trust on first use.
 //! - **Requests:** one typed request per connection, answered only if root
 //!   lists it in `[peers] serve`. `ping` returns version, host name and uptime.
+//!   `sync` (H1) lets the peer named by `hub.member` read this node's
+//!   history through a fixed list of read methods, and nothing else.
 //! - **Reach:** the unit may use IP only to `[peers] networks` (tailnet
 //!   ranges by default), enforced by systemd; it listens on one address,
 //!   never every interface. The main service stays offline and only takes
@@ -86,6 +88,17 @@ pub fn load(store: &crate::store::Store) -> Vec<Peer> {
 
 pub fn save(store: &crate::store::Store, list: &[Peer]) -> crate::store::Result<()> {
     store.set_meta(META_PEERS, &serde_json::to_string(list).unwrap_or_default())
+}
+
+const META_HUB: &str = "hub_member";
+
+/// Which paired peer is this node's hub (`hub.member.get`).
+pub fn hub_member(store: &crate::store::Store) -> nightgrid_node_proto::HubMember {
+    store.meta(META_HUB).ok().flatten().and_then(|v| serde_json::from_str(&v).ok()).unwrap_or_default()
+}
+
+pub fn set_hub_member(store: &crate::store::Store, m: &nightgrid_node_proto::HubMember) -> crate::store::Result<()> {
+    store.set_meta(META_HUB, &serde_json::to_string(m).unwrap_or_default())
 }
 
 /// What the main service knows about the link.

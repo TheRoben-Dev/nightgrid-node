@@ -366,6 +366,7 @@ pub fn caps() -> Caps {
         (cap::UPS, 1),
         (cap::PEERS, 1),
         (cap::SUMMARY, 1),
+        (cap::HUB_MEMBER, 1),
     ]
     .into_iter()
     .map(|(k, v)| (k.to_owned(), v))
@@ -726,6 +727,27 @@ fn dispatch(shared: &Shared, session: &mut Session, req: &Request) -> Result<Res
             s.set(p.peers);
             Ok(Response::ok(0, peers_list(shared, &s)))
         }
+        method::HUB_MEMBER_GET => {
+            let st = shared.store.lock().unwrap_or_else(|e| e.into_inner());
+            Ok(Response::ok(0, crate::peers::hub_member(&st)))
+        }
+        method::HUB_MEMBER_SET => {
+            let p: nightgrid_node_proto::HubMember = params(&req.params)?;
+            if let Some(id) = &p.hub_id {
+                let paired = shared.peers.lock().unwrap_or_else(|e| e.into_inner()).list.iter().any(|x| &x.id == id);
+                if !paired {
+                    return Err(Response::err(
+                        0,
+                        ErrorCode::BadRequest,
+                        "hubId must be a paired peer's id (pair the hub with peers.set first)",
+                    ));
+                }
+            }
+            let st = shared.store.lock().unwrap_or_else(|e| e.into_inner());
+            crate::peers::set_hub_member(&st, &p).map_err(internal)?;
+            crate::info!("hub set to {:?} by uid {}", p.hub_id, session.uid);
+            Ok(Response::ok(0, p))
+        }
         method::PEERS_GET => {
             let s = shared.peers.lock().unwrap_or_else(|e| e.into_inner());
             Ok(Response::ok(0, peers_list(shared, &s)))
@@ -798,6 +820,28 @@ fn dispatch(shared: &Shared, session: &mut Session, req: &Request) -> Result<Res
                     crate::upsguard::apply(shared, steps);
                     let g = shared.ups_guard.lock().unwrap_or_else(|e| e.into_inner()).status(&shared.config);
                     Ok(Response::ok(0, serde_json::json!({"phase": g.phase})))
+                }
+                "sync" => {
+                    let hub = crate::peers::hub_member(&shared.store.lock().unwrap_or_else(|e| e.into_inner()));
+                    if hub.hub_id.as_deref() != Some(peer.id.as_str()) {
+                        return Err(Response::err(0, ErrorCode::Forbidden, "not this node's hub (hub.member)"));
+                    }
+                    let r: nightgrid_node_proto::PeerSync = serde_json::from_value(p.params)
+                        .map_err(|e| Response::err(0, ErrorCode::BadRequest, e.to_string()))?;
+                    if !nightgrid_node_proto::HUB_READS.contains(&r.method.as_str()) {
+                        return Err(Response::err(
+                            0,
+                            ErrorCode::Forbidden,
+                            format!("{:?} is not served to the hub", r.method),
+                        ));
+                    }
+                    let inner = Request { id: 0, method: r.method, params: r.params };
+                    let out = dispatch(shared, session, &inner)?;
+                    let size = out.result.as_ref().map_or(0, |v| serde_json::to_vec(v).map_or(0, |b| b.len()));
+                    if size > nightgrid_node_proto::HUB_MAX_ANSWER {
+                        return Err(Response::err(0, ErrorCode::TooLarge, "answer too large; ask for a smaller limit"));
+                    }
+                    Ok(out)
                 }
                 m => Err(Response::err(0, ErrorCode::BadRequest, format!("unknown peer request {m:?}"))),
             }
@@ -922,6 +966,56 @@ mod tests {
 
     fn code(r: &Response) -> Option<ErrorCode> {
         r.error.as_ref().map(|e| e.code)
+    }
+
+    #[test]
+    fn hub_reads_only_through_sync_and_only_as_the_named_hub() {
+        let mut cfg = Config::default();
+        cfg.peers.serve = vec!["ping".into(), "sync".into()];
+        let s = Shared::new(cfg, Store::open_in_memory().unwrap());
+        // SAFETY: geteuid has no preconditions.
+        let me = unsafe { libc::geteuid() }.to_string();
+        let mut ses = Session { uid: me, ..Default::default() };
+        call(
+            &s,
+            &mut ses,
+            1,
+            "hello",
+            json!({"protoMin": 1, "protoMax": PROTO_VERSION, "client": "nightgrid-node peer"}),
+        );
+        let (hub, other) = ("a".repeat(32), "b".repeat(32));
+        let unpaired = call(&s, &mut ses, 2, method::HUB_MEMBER_SET, json!({"hubId": hub}));
+        assert_eq!(code(&unpaired), Some(ErrorCode::BadRequest), "the hub must be paired first");
+        let peers = json!({"peers": [
+            {"id": hub, "name": "hub", "address": "100.64.0.2:7420", "fingerprint": "1".repeat(64)},
+            {"id": other, "name": "nas", "address": "100.64.0.3:7419", "fingerprint": "2".repeat(64)}]});
+        assert!(call(&s, &mut ses, 3, method::PEERS_SET, peers).error.is_none());
+        let sync = |from: &str, m: &str| json!({"from": from, "method": "sync", "params": {"method": m, "params": {"after": 0}}});
+        let r = call(&s, &mut ses, 4, method::PEERS_INBOUND, sync(&hub, "events.sync"));
+        assert_eq!(code(&r), Some(ErrorCode::Forbidden), "no hub named yet");
+        assert!(call(&s, &mut ses, 5, method::HUB_MEMBER_SET, json!({"hubId": hub})).error.is_none());
+        let got = call(&s, &mut ses, 6, method::HUB_MEMBER_GET, Value::Null);
+        assert_eq!(got.result.unwrap()["hubId"], hub);
+        let r = call(&s, &mut ses, 7, method::PEERS_INBOUND, sync(&hub, "events.sync"));
+        assert!(r.result.as_ref().is_some_and(|v| v["events"].is_array()), "{r:?}");
+        let r = call(&s, &mut ses, 8, method::PEERS_INBOUND, sync(&hub, "metrics.sync"));
+        assert_eq!(code(&r), Some(ErrorCode::BadRequest), "the inner method's own params are checked");
+        for m in ["actions.run", "peers.set", "hub.member.set", "alerts.rules.set", "peers.inbound", "hello"] {
+            let r = call(&s, &mut ses, 9, method::PEERS_INBOUND, sync(&hub, m));
+            assert_eq!(code(&r), Some(ErrorCode::Forbidden), "{m} must not reach the hub");
+        }
+        let r = call(&s, &mut ses, 10, method::PEERS_INBOUND, sync(&other, "events.sync"));
+        assert_eq!(code(&r), Some(ErrorCode::Forbidden), "only the named hub");
+        // Root took sync out of [peers] serve.
+        let s2 = shared();
+        let mut ses2 = Session { uid: ses.uid.clone(), ..Default::default() };
+        call(&s2, &mut ses2, 1, "hello", json!({"protoMin": 1, "protoMax": PROTO_VERSION}));
+        let r = call(&s2, &mut ses2, 2, method::PEERS_INBOUND, sync(&hub, "events.sync"));
+        assert_eq!(code(&r), Some(ErrorCode::Forbidden));
+        // Unpairing the hub cuts it off even though hub.member still names it.
+        assert!(call(&s, &mut ses, 11, method::PEERS_SET, json!({"peers": []})).error.is_none());
+        let r = call(&s, &mut ses, 12, method::PEERS_INBOUND, sync(&hub, "events.sync"));
+        assert_eq!(code(&r), Some(ErrorCode::Forbidden));
     }
 
     /// Every method name the protocol crate defines.
