@@ -53,6 +53,10 @@ jobs:
       id-token: write
       attestations: write
     steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: CHANGELOG.md
+          sparse-checkout-cone-mode: false
       - uses: actions/download-artifact@v4
         with:
           pattern: bin-*
@@ -78,10 +82,24 @@ jobs:
           subject-path: |
             out/nightgrid-node-*
             out/nightgrid-hub-*
+      - name: Release notes from CHANGELOG.md
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          {
+            awk -v v="$v" '$0 ~ "^## "v" " {p=1; next} /^## / && p {exit} p' CHANGELOG.md \
+              | sed "s#](docs/#](https://github.com/$GITHUB_REPOSITORY/blob/$GITHUB_REF_NAME/docs/#g"
+            printf '\n## Install\n\n'
+            printf 'Two static binaries per architecture (x86_64, aarch64), each with its systemd units built in:\n\n'
+            printf -- '- `nightgrid-node`: the Lite agent, for every server.\n'
+            printf -- '- `nightgrid-hub`: optional, for one always-on host per network, next to `nightgrid-node`.\n\n'
+            printf 'Check them with `sha256sum -c --ignore-missing SHA256SUMS` and, optionally, `gh attestation verify <file> --repo %s`. ' "$GITHUB_REPOSITORY"
+            printf 'Steps: [README](https://github.com/%s/blob/%s/README.md#install-by-hand).\n' "$GITHUB_REPOSITORY" "$GITHUB_REF_NAME"
+          } > "$RUNNER_TEMP/notes.md"
+          grep -q . "$RUNNER_TEMP/notes.md" && cat "$RUNNER_TEMP/notes.md"
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           pre=""
           case "$GITHUB_REF_NAME" in *-*) pre="--prerelease" ;; esac
-          gh release create "$GITHUB_REF_NAME" out/* --repo "$GITHUB_REPOSITORY" --title "Nightgrid Node $GITHUB_REF_NAME" --generate-notes $pre
+          gh release create "$GITHUB_REF_NAME" out/* --repo "$GITHUB_REPOSITORY" --title "Nightgrid Node $GITHUB_REF_NAME" --notes-file "$RUNNER_TEMP/notes.md" $pre

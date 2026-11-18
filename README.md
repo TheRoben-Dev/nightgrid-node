@@ -68,13 +68,17 @@ The app speaks a small, versioned JSON-lines protocol to the socket. It starts w
 The app will do this for you (see [docs/app-integration](docs/app-integration/)). By hand, on the server:
 
 ```sh
-# Download nightgrid-node-vX.Y.Z-<arch>-linux and SHA256SUMS from Releases, then:
+VER=v0.26.0; ARCH=$(uname -m)                  # x86_64 or aarch64
+URL=https://github.com/TheRoben-Dev/nightgrid-node/releases/download/$VER
+curl -fL -O "$URL/nightgrid-node-$VER-$ARCH-linux" -O "$URL/SHA256SUMS"
 sha256sum -c --ignore-missing SHA256SUMS
-chmod +x nightgrid-node-*-linux
-sudo ./nightgrid-node-*-linux install          # adds you (the sudo user) to the nightgrid-node group
+chmod +x nightgrid-node-$VER-$ARCH-linux
+sudo ./nightgrid-node-$VER-$ARCH-linux install # copies itself to /usr/local/bin, adds you (the sudo user) to the nightgrid-node group
 # log in again so the group applies, then:
 nightgrid-node status
 ```
+
+The binary carries its own systemd units, so there is nothing else to download. Optionally check where it was built: `gh attestation verify nightgrid-node-$VER-$ARCH-linux --repo TheRoben-Dev/nightgrid-node`.
 
 Optional: let it watch containers, SSH logins and DHCP. Read [SECURITY.md](SECURITY.md) first: Docker's group is root-equivalent, the journal's group can read every log, and the network helper may read raw packets (it is filtered to ARP and DHCP and only listens).
 
@@ -122,6 +126,20 @@ Configuration: `/etc/nightgrid-node/config.toml` (root-owned; every setting is i
 ### Optional: one hub per network
 
 `nightgrid-hub` is a separate, heavier binary for one always-on host per network (0.26.0, milestone H1). It pulls every member's history read-only over the node-to-node link, keeps it in one store, and raises "host offline" alerts while the app is closed. Lite nodes don't need it and nothing changes for them unless root runs `nightgrid-node serve add sync` and the app names the hub. Design and limits: [docs/HUB.md](docs/HUB.md).
+
+On the one host that should be the hub, after Nightgrid Node is installed there (same `VER`, `ARCH` and `URL` as above):
+
+```sh
+curl -fL -O "$URL/nightgrid-hub-$VER-$ARCH-linux" -O "$URL/SHA256SUMS"
+sha256sum -c --ignore-missing SHA256SUMS
+chmod +x nightgrid-hub-$VER-$ARCH-linux
+sudo ./nightgrid-hub-$VER-$ARCH-linux install   # copies itself to /usr/local/bin, writes the nightgrid-hub and nightgrid-hub-collect units
+sudo nightgrid-hub allow collect                 # prints the hub id and fingerprint the app pairs
+# on each member that the hub should read:
+sudo nightgrid-node serve add sync
+```
+
+Use the same version of `nightgrid-node` and `nightgrid-hub` on the hub host.
 
 ```
 nightgrid-hub install [--user NAME]... [--json]   install next to Nightgrid Node (root)
