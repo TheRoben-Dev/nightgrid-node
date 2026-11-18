@@ -200,6 +200,7 @@ const COMMANDS: &[&str] = &[
     "uninstall",
     "allow",
     "deny",
+    "serve",
     "status",
     "doctor",
     "events",
@@ -248,6 +249,7 @@ _nightgrid_node() {{
         allow|deny) [[ $COMP_CWORD -eq 2 ]] && COMPREPLY=($(compgen -W "{grants}" -- "$cur")) ;;
         watch) COMPREPLY=($(compgen -W "{streams}" -- "$cur")) ;;
         audit) [[ $COMP_CWORD -eq 2 ]] && COMPREPLY=($(compgen -W "verify" -- "$cur")) ;;
+        serve) [[ $COMP_CWORD -eq 2 ]] && COMPREPLY=($(compgen -W "add remove" -- "$cur")); [[ $COMP_CWORD -eq 3 ]] && COMPREPLY=($(compgen -W "ping ups sync" -- "$cur")) ;;
         completions) [[ $COMP_CWORD -eq 2 ]] && COMPREPLY=($(compgen -W "bash zsh fish" -- "$cur")) ;;
         upgrade) COMPREPLY=($(compgen -f -- "$cur")) ;;
     esac
@@ -266,6 +268,7 @@ _nightgrid-node() {{
         allow|deny) (( CURRENT == 3 )) && compadd -- {grants} ;;
         watch) compadd -- {streams} ;;
         audit) (( CURRENT == 3 )) && compadd -- verify ;;
+        serve) (( CURRENT == 3 )) && compadd -- add remove; (( CURRENT == 4 )) && compadd -- ping ups sync ;;
         completions) (( CURRENT == 3 )) && compadd -- bash zsh fish ;;
         upgrade) _files ;;
     esac
@@ -281,6 +284,7 @@ _nightgrid-node "$@"
             o += &format!("complete -c nightgrid-node -n '__fish_seen_subcommand_from allow deny' -a '{grants}'\n");
             o += &format!("complete -c nightgrid-node -n '__fish_seen_subcommand_from watch' -a '{streams}'\n");
             o += "complete -c nightgrid-node -n '__fish_seen_subcommand_from audit' -a verify\n";
+            o += "complete -c nightgrid-node -n '__fish_seen_subcommand_from serve' -a 'add remove ping ups sync'\n";
             o += "complete -c nightgrid-node -n '__fish_seen_subcommand_from completions' -a 'bash zsh fish'\n";
             o += "complete -c nightgrid-node -n '__fish_seen_subcommand_from upgrade' -F\n";
             for opt in OPTIONS {

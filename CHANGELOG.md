@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.26.0 · H1: the hub (unreleased)
+
+- New, optional binary `nightgrid-hub` for one always-on host per network ([docs/HUB.md](docs/HUB.md)). It needs Nightgrid Node on the same host and changes nothing on hosts that don't opt in.
+  - `install`, `uninstall [--purge]`, `allow collect`, `deny collect`, `status`, `query`, `bridge`. Two units: `nightgrid-hub` holds the store and the socket `/run/nightgrid-hub/hub.sock` and has no network at all; `nightgrid-hub-collect` holds the link key and may reach only `[collect] networks` (tailnet ranges by default).
+  - The collector pulls each member read-only over the existing mutual-TLS link: metrics (minute, quarter-hour and hour), events, uptime, disk usage, active alerts and `node.info`, keeping the member's own `seq` numbers and timestamps, so `fleet.sync` answers exactly as the member would and the app's cursors work both ways.
+  - Socket capability `fleet` 1: `fleet.members.get` / `fleet.members.set` (set only by the app), `fleet.overview`, `fleet.sync`, `fleet.events.sync` (the hub's own events: "host offline" as a `hostOffline` alert, "back online", store at its cap).
+  - Store limits: 14 days of minutes, 90 days of quarter-hours, 400 days of hours, a 4 GB cap. Memory limits: 200 MB for the main unit, 64 MB for the collector. A CI test pulls 25 simulated members with two days of minutes each over real TLS in under a second, growing memory by about 6 MB.
+- Lite, additive only (the frozen protocol test shows new lines, no changed ones):
+  - `hub.member.get` / `hub.member.set {hubId}` (capability `hub.member` 1): which paired peer is this node's hub. Only a paired peer can be named.
+  - The link answers `peer.sync {method, params}` from that hub only, only if root lists `sync` in `[peers] serve`, and only for `node.info`, `metrics.sync`, `events.sync`, `uptime.sync`, `disk.sync` and `alerts.active`. Answers are capped at 1 MiB.
+  - `nightgrid-node serve add|remove ping|ups|sync` (root) edits `[peers] serve` and restarts the node and its link, so the app can do it through its sudo flow.
+- Release assets now include `nightgrid-hub` for both architectures, in the same `SHA256SUMS` and build provenance.
+
 ## 0.25.1 · N10 refinement (unreleased)
 
 - The minimum supported Rust is 1.89, which the locked `rusqlite` 0.41 requires. The old 1.80 was never checked, and a CI job now builds with 1.89.

@@ -1,6 +1,6 @@
 # 0020 · Hub: fleet sync and notifications (future)
 
-Node milestones: **H1, H2** (not built). Status: **future**, a proposal for after the app's compatibility work on specs 0001 to 0019. Design: [HUB.md](../HUB.md).
+Node milestones: **H1** (built in 0.26.0: setup and `fleet` 1), **H2** (notifications, not built). Status: **future** for the app, a proposal for after the app's compatibility work on specs 0001 to 0019. Design: [HUB.md](../HUB.md).
 
 This spec is **additive and versioned**. It changes nothing in 0001 to 0019, in the Lite socket methods, in the protocol or in the peer link. An app that never implements it keeps working exactly as today, with or without a hub on the network, and a hub never needs the app to implement it to stay harmless.
 
@@ -16,7 +16,7 @@ This spec is **additive and versioned**. It changes nothing in 0001 to 0019, in 
 - The candidate host has Lite installed and runs systemd on Linux with at least 1 GB of RAM (from `metrics.latest`). Suggest the host that is always on (best uptime over 30 days), reads the UPS (`health.latest.ups`), and has the most free memory. The person confirms.
 - If a site already has a hub, show it instead and don't offer a second one.
 
-Members on Lite releases without `hub.member` are shown as "needs Node 0.30 or newer" (version to be fixed at H1) and stay synced directly.
+Members on Lite releases without `hub.member` are shown as "needs Node 0.26 or newer" and stay synced directly.
 
 ## 2. Setting up a hub
 
@@ -26,7 +26,7 @@ All root steps go through the app's existing sudo flow and confirmation rules.
 2. Run `sudo nightgrid-hub allow collect --json`. Its report gives the collector's certificate fingerprint and the hub's `hubId`.
 3. For each member:
    1. Run `sudo nightgrid-node allow peers --json` if the link is off (as in 0016).
-   2. Pair the member with the hub exactly as in 0016 §2 (the hub is a normal peer: id `hubId`, the collector's fingerprint, the hub host's tailnet address). The hub's collector answers the member's existing pings, so the member's Linked hosts list shows the hub like any peer. Nothing is added to the hub host's own Lite `peers.set` for this.
+   2. Pair the member with the hub exactly as in 0016 §2 (the hub is a normal peer: id `hubId`, the collector's fingerprint, the hub host's tailnet address). The hub's collector answers the member's existing pings, so the member's Linked hosts list shows the hub like any peer. For the other members nothing is added to the hub host's own Lite `peers.set`; the hub host itself is a member too and is paired with its hub the same way (its collector address on the same host).
    3. Call `hub.member.set {"hubId": "…"}` on the member.
    4. Run `sudo nightgrid-node serve add sync --json` on the member (root consent to serve the hub; `serve remove sync` undoes it).
 4. On the hub's socket, call `fleet.members.set` with every member's `{nodeId, name, address, fingerprint}`.
@@ -41,7 +41,7 @@ Removing the hub reverses these steps: `fleet.members.set []`, `hub.member.set {
 | Capability | Methods | Notes |
 |---|---|---|
 | `fleet` 1 | `fleet.members.get` / `fleet.members.set` | Member list, set only by the app |
-| | `fleet.overview` | Per member: `nodeId`, `name`, `state` (`ok`, `stale`, `unreachable`, `consent`, `version`), `lastContact`, `version`, active alert count, `skewSecs` |
+| | `fleet.overview` | Per member: `id`, `name`, `state` (`new`, `ok`, `stale`, `unreachable`, `consent`, `version`), `lastContact`, `version`, `hostname`, `alerts` (active count), `error`. Also the hub's `hubId`, `fingerprint`, `listening`, `collector` and `storeBytes`. (`skewSecs` comes later, additively) |
 | | `fleet.sync {nodeId, method, params}` | Calls one of `metrics.sync`, `events.sync`, `uptime.sync`, `disk.sync`, `alerts.active`, `node.info` for that member from the hub's copy. Params and result are exactly the Lite method's |
 | | `fleet.events.sync {after}` | The hub's own events (`hub` warnings, `hostOffline`), with the same shape as `events.sync` |
 | `notify` 1 | `notify.channels.get` / `notify.channels.set` | Channels without secrets; secrets are set by root (§5) |
@@ -49,7 +49,7 @@ Removing the hub reverses these steps: `fleet.members.set []`, `hub.member.set {
 | | `notify.log` | Recent deliveries and failures |
 | | `notify.settings.get` / `.set` | Quiet hours, rate limit, minimal mode, resolved messages, heartbeat URL name |
 
-Exact schemas go into PROTOCOL.md with H1 and H2.
+Exact schemas for `fleet` 1 are in [PROTOCOL.md](../PROTOCOL.md#hub-socket-fleet-1); `notify` comes with H2.
 
 ## 4. Syncing through the hub
 

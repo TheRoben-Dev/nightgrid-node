@@ -1,6 +1,6 @@
-# Nightgrid Node: Hub profile (design proposal)
+# Nightgrid Node: Hub profile
 
-Status: **proposed** (H0, design only). Nothing here is built. Decisions N-051 to N-059 in [DECISIONS.md](DECISIONS.md) record the choices, milestones H1 to H7 are in [MILESTONES.md](MILESTONES.md#hub-profile-proposed), and the app side is the future spec [app-integration/0020](app-integration/0020-hub-fleet-sync.md).
+Status: **H1 built (0.26.0)**: the binary, install, store, collector, `fleet` 1 on the hub socket and host-offline alerts. H2 to H7 are still design. Section 19 lists where the build differs from this design. Decisions N-051 to N-059 in [DECISIONS.md](DECISIONS.md) record the choices, milestones H1 to H7 are in [MILESTONES.md](MILESTONES.md#hub-profile-proposed), and the app side is the future spec [app-integration/0020](app-integration/0020-hub-fleet-sync.md).
 
 Roben, 2026-11-17: keep Lite and Hub separate, with the Hub profile recommended as one system per network.
 
@@ -35,7 +35,7 @@ The rules that make this safe:
 | Acts | Typed, root-allowed actions on its own host | Nothing on other hosts. Only "hold" signals (section 7.3) |
 | Needed by | Nothing; everything works over SSH without it | Nothing; everything works with Lite alone |
 
-A hub host also runs Lite for itself. The hub reads its own host through the local Lite socket like the app does, so there is one way to collect a host's data and the hub never samples anything itself.
+A hub host also runs Lite for itself, and that host is a member like any other: its Lite link pairs with the hub and the collector pulls it over the link (on the tailnet address, or loopback). There is one way to collect a host's data, the main hub unit never needs to be in the Lite group, and the hub never samples anything itself.
 
 ### 1.1 Why a separate binary (N-051)
 
@@ -371,7 +371,7 @@ What would be **added**, each opt-in, versioned and ignorable by older clients:
 
 `crates/node/tests/frozen-protocol.txt` pins every Lite method, capability and result field; the Lite additions above will show up there as new lines only, never as changed ones (regenerate with `FROZEN_UPDATE=1 cargo test -p nightgrid-node frozen` and check the diff is purely added lines).
 
-The hub can be built (H1, H2) without touching Lite's app-facing surface at all, except for the additive Lite pieces above. Those Lite pieces wait for Roben's go once the compatibility work allows additive changes; until then H1 can be developed and tested against a Lite build on a branch.
+H1 added `hub.member`, `peer.sync` and the `sync` serve entry and the `serve` command (0.26.0); the frozen protocol test shows them as new lines only.
 
 ## 17. Milestones
 
@@ -394,3 +394,15 @@ Each milestone gets its app spec in `docs/app-integration/` (0020 covers H1 and 
 - **Email.** Plain text only, or a small HTML summary as well? Plain text is proposed.
 - **Minimum hardware.** The budget targets a Pi 4 with 4 GB and an SSD. A Pi 3 or 1 GB board could run the core (H1, H2) but not the index.
 - **Standby hub.** Proposed for H7; it could move up if hub availability turns out to matter more than the later features.
+
+## 19. H1 as built (0.26.0)
+
+- **The hub's own host** is a member over the link (section 1), not read through the Lite socket.
+- **Members need Node 0.26.0 or newer** (`hub.member` 1). An older member shows `state: "version"`.
+- **States** in `fleet.overview`: `new` (never pulled), `ok` (pulled within two intervals), `stale`, `unreachable` (with the link's error, such as a wrong pin), `consent` (the member refused: no `sync` in its `serve`, or another hub is named), `version`.
+- **Pull cadence** at `[collect] interval_secs` (60 by default): active alerts, events and minute metrics every round; quarter-hours every round; hours, uptime and disk every fifth round; `node.info` on the first round and every 60th. Pages are capped (500 events, 300 minutes) and a "too large" answer is retried once with a quarter of the limit. Four members are pulled at a time.
+- **Hand-over:** the collector passes each answer to the main unit at once over the hub socket (`fleet.ingest`, `fleet.plan`: only the hub's own account may call them), so it holds one page at a time.
+- **Offline:** `hostOffline` after `[alerts] offline_secs` (120 by default) without contact, recovered when the member answers again. Both are hub events in `fleet.events.sync`.
+- **Store pruning** runs hourly; hitting `[store] max_gb` drops the oldest minute days first and records a hub warning.
+- **Not yet:** `skewSecs` in the overview, `hello`-time discovery of a second hub (section 2.4) and the standby hub. They come with H2 or later and are additive.
+- **Tests:** unit tests per module; `crates/hub/tests/fleet.rs` (25 simulated members over real mutual TLS, one with a wrong pin and one refusing; the budget line); `ci/hub-test.sh` (node and hub installed with systemd on one runner, paired over loopback: consent, pull, cursors through the hub equal to direct, offline and back, consent withdrawn, clean uninstall).

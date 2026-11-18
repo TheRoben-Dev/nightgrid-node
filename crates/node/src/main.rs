@@ -39,6 +39,9 @@ COMMANDS:
                             its secret link (root; again to see the link)
     deny docker|journal|netwatch|helper|health|power|checks|peers|statuspage
                             Take that access away again (root)
+    serve add|remove ping|ups|sync
+                            Change what paired peers may ask this node ([peers] serve),
+                            then restart the service and the link (root)
     netwatch                Run the network watch helper (its unit starts this)
     helper                  Serve one root helper request (its socket unit starts this)
     health-helper           Serve one health read (its socket unit starts this)
@@ -207,6 +210,15 @@ fn real_main() -> Result<(), String> {
             } else {
                 install::deny(&layout, &mut install::RealSys, grant, a.no_start)?
             };
+            print_report(&r, a.json);
+            Ok(())
+        }
+        "serve" => {
+            let (verb, name) = match a.rest.as_slice() {
+                [v, n] if v == "add" || v == "remove" => (v.as_str(), n.as_str()),
+                _ => return Err("usage: serve add|remove ping|ups|sync".into()),
+            };
+            let r = install::serve(&install::Layout::system(), &mut install::RealSys, name, verb == "add")?;
             print_report(&r, a.json);
             Ok(())
         }

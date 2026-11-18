@@ -640,6 +640,94 @@ impl Grant {
     }
 }
 
+/// Rewrites the `serve = [...]` line of `[peers]` in the config text.
+/// Comments and every other line are kept as they are.
+pub fn edit_serve(text: &str, name: &str, add: bool) -> Result<(String, bool), String> {
+    if !crate::config::PEER_SERVES.contains(&name) {
+        return Err(format!("unknown {name:?} (one of {})", crate::config::PEER_SERVES.join(", ")));
+    }
+    let mut out = Vec::new();
+    let (mut section, mut found, mut changed) = (String::new(), false, false);
+    for line in text.lines() {
+        let t = line.trim();
+        if t.starts_with('[') {
+            if section == "[peers]" && !found && add {
+                // No serve line yet: the default is ["ping"].
+                out.push(format!("serve = [\"ping\", \"{name}\"]"));
+                found = true;
+                changed = true;
+            }
+            section = t.split('#').next().unwrap_or("").trim().to_owned();
+        }
+        if section == "[peers]" && !found && t.starts_with("serve") && t[5..].trim_start().starts_with('=') {
+            found = true;
+            let v: toml::Value = toml::from_str(t).map_err(|e| format!("[peers] serve: {e}"))?;
+            let mut list: Vec<String> = v
+                .get("serve")
+                .and_then(|x| x.as_array())
+                .ok_or("[peers] serve is not a list")?
+                .iter()
+                .filter_map(|x| x.as_str().map(str::to_owned))
+                .collect();
+            let had = list.iter().any(|x| x == name);
+            if add && !had {
+                list.push(name.to_owned());
+            } else if !add && had {
+                list.retain(|x| x != name);
+            }
+            changed = had != add;
+            let items: Vec<String> = list.iter().map(|x| format!("\"{x}\"")).collect();
+            out.push(format!("serve = [{}]", items.join(", ")));
+            continue;
+        }
+        out.push(line.to_owned());
+    }
+    if section == "[peers]" && !found && add {
+        out.push(format!("serve = [\"ping\", \"{name}\"]"));
+        found = true;
+        changed = true;
+    }
+    if !found && add {
+        out.push(String::new());
+        out.push("[peers]".into());
+        out.push(format!("serve = [\"ping\", \"{name}\"]"));
+        changed = true;
+    }
+    let mut s = out.join("\n");
+    s.push('\n');
+    Ok((s, changed))
+}
+
+/// `serve add|remove NAME`: changes what paired peers may ask this node,
+/// then restarts the service and the link so both read it.
+pub fn serve(layout: &Layout, sys: &mut dyn Sys, name: &str, add: bool) -> Result<Report, String> {
+    preflight(layout)?;
+    let mut rep = Report { action: "serve", version: env!("CARGO_PKG_VERSION"), ..Default::default() };
+    let path = layout.config();
+    let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let (new, changed) = edit_serve(&text, name, add)?;
+    if !changed {
+        rep.step(format!("[peers] serve already {} {name:?}", if add { "lists" } else { "leaves out" }));
+        return Ok(rep);
+    }
+    let cfg: crate::config::Config = toml::from_str(&new).map_err(|e| format!("config: {e}"))?;
+    cfg.validate()?;
+    write_file(&path, &new, 0o644)?;
+    rep.step(format!("[peers] serve is now {:?}", cfg.peers.serve));
+    if name == "sync" && add {
+        rep.warnings.push(
+            "the peer the app names with hub.member can now read this host's metrics, events, uptime, disk \
+             usage and active alerts over the link. It can't change or run anything here."
+                .into(),
+        );
+    }
+    if layout.is_system() {
+        sys.run("systemctl", &["try-restart", SERVICE, PEER_SERVICE])?;
+        rep.step("restarted the service and the link (where running)".to_string());
+    }
+    Ok(rep)
+}
+
 /// Group that owns `path`, by name.
 fn socket_group(sys: &mut dyn Sys, path: &Path, system: bool) -> Result<String, String> {
     use std::os::unix::fs::MetadataExt;
@@ -840,6 +928,32 @@ fn remove_dir(p: &Path, rep: &mut Report) -> Result<(), String> {
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(format!("{}: {e}", p.display())),
+    }
+}
+
+#[cfg(test)]
+mod serve_tests {
+    use super::edit_serve;
+
+    #[test]
+    fn edits_only_the_serve_line_of_peers() {
+        let t = "[server]\nserve = [\"x\"] # not this one\n\n[peers]\n# what peers may ask\nserve = [\"ping\"]\nport = 7419\n";
+        let (s, changed) = edit_serve(t, "sync", true).unwrap();
+        assert!(changed);
+        assert!(s.contains("[peers]\n# what peers may ask\nserve = [\"ping\", \"sync\"]\nport = 7419"), "{s}");
+        assert!(s.contains("serve = [\"x\"] # not this one"), "other sections untouched");
+        assert!(!edit_serve(&s, "sync", true).unwrap().1, "already there");
+        let (back, changed) = edit_serve(&s, "sync", false).unwrap();
+        assert!(changed && back.contains("serve = [\"ping\"]\nport"));
+        assert!(edit_serve(t, "everything", true).is_err());
+        let (s, _) = edit_serve("[peers]\nport = 1\n\n[ups]\n", "sync", true).unwrap();
+        assert!(
+            s.contains("[peers]\nport = 1\n\nserve = [\"ping\", \"sync\"]\n[ups]")
+                || s.contains("serve = [\"ping\", \"sync\"]"),
+            "{s}"
+        );
+        let (s, _) = edit_serve("", "sync", true).unwrap();
+        assert!(s.contains("[peers]\nserve = [\"ping\", \"sync\"]"));
     }
 }
 

@@ -103,6 +103,7 @@ nightgrid-node allow power         let it read the CPU energy counters for power
 nightgrid-node allow checks        start the check runner for the app's service checks (root)
 nightgrid-node allow peers         start the node-to-node link for nodes the app pairs (root)
 nightgrid-node allow statuspage    start the read-only status page and print its link (root)
+nightgrid-node serve add|remove ping|ups|sync   what paired peers may ask this node (root; `sync` lets its hub read it)
 nightgrid-node deny docker|journal|netwatch|helper|health|power|checks|peers|statuspage   take that away again
 nightgrid-node netwatch            the helper (its unit starts it)
 nightgrid-node upgrade FILE --sha256 HEX   verified upgrade that reverts itself (root)
@@ -117,6 +118,19 @@ nightgrid-node completions SHELL   bash, zsh or fish completions; `man` prints t
 ```
 
 Configuration: `/etc/nightgrid-node/config.toml` (root-owned; every setting is in the file `install` writes).
+
+### Optional: one hub per network
+
+`nightgrid-hub` is a separate, heavier binary for one always-on host per network (0.26.0, milestone H1). It pulls every member's history read-only over the node-to-node link, keeps it in one store, and raises "host offline" alerts while the app is closed. Lite nodes don't need it and nothing changes for them unless root runs `nightgrid-node serve add sync` and the app names the hub. Design and limits: [docs/HUB.md](docs/HUB.md).
+
+```
+nightgrid-hub install [--user NAME]... [--json]   install next to Nightgrid Node (root)
+nightgrid-hub allow collect        start the collector; prints the hub id and fingerprint to pair (root)
+nightgrid-hub deny collect         stop it (root)
+nightgrid-hub status               the members and their state
+nightgrid-hub query METHOD [JSON]  one request, e.g. query fleet.overview
+nightgrid-hub uninstall [--purge]  remove the hub; the node stays (root)
+```
 
 ## Troubleshooting
 
@@ -137,6 +151,7 @@ Start with `nightgrid-node doctor`. Any user can run it, it changes nothing, and
 
 - [Design](docs/DESIGN.md): architecture, transport, storage, sync, security model, automatic actions, feature map
 - [Protocol](docs/PROTOCOL.md): versioned NDJSON protocol with capability negotiation
+- [Hub profile](docs/HUB.md): the optional `nightgrid-hub`, one per network
 - [Milestones](docs/MILESTONES.md) and [Decisions](docs/DECISIONS.md)
 - [App integration specs](docs/app-integration/): what the Nightgrid app needs to do
 - [Security](SECURITY.md)
@@ -147,8 +162,8 @@ Start with `nightgrid-node doctor`. Any user can run it, it changes nothing, and
 cargo test                       # unit + end-to-end tests (no root needed)
 cargo clippy --all-targets -- -D warnings
 cargo zigbuild --release --target x86_64-unknown-linux-musl   # static build (pip install ziglang; cargo install cargo-zigbuild)
-cargo run -- run --socket /tmp/ngn.sock --data-dir /tmp/ngn --config /dev/null   # run without installing
-cargo run -- query node.info --socket /tmp/ngn.sock
+cargo run -p nightgrid-node -- run --socket /tmp/ngn.sock --data-dir /tmp/ngn --config /dev/null   # run without installing
+cargo run -p nightgrid-node -- query node.info --socket /tmp/ngn.sock
 ```
 
 Parts of the metrics, alert, forecast, timeline and secret-filter code are vendored from Nightgrid (MIT, attributed in the file headers).

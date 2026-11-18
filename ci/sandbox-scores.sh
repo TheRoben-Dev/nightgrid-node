@@ -22,6 +22,8 @@ nightgrid-node-peer.service 15
 nightgrid-node-status.service 15
 nightgrid-node-helper@.service 25
 nightgrid-node-health@.service 30
+nightgrid-hub.service 10
+nightgrid-hub-collect.service 15
 LIMITS
 for f in "$dir"/*.service; do
   grep -q "^$(basename "$f") " "$0" || { echo "FAIL: $(basename "$f") has no limit here" >&2; status=1; }

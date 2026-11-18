@@ -14,6 +14,12 @@ pub const INFO: u8 = 6;
 pub const DEBUG: u8 = 7;
 
 static MAX: AtomicU8 = AtomicU8::new(INFO);
+static NAME: OnceLock<&'static str> = OnceLock::new();
+
+/// The program name on lines outside the journal (default `nightgrid-node`).
+pub fn set_name(name: &'static str) {
+    let _ = NAME.set(name);
+}
 
 pub fn set_max(level: u8) {
     MAX.store(level, Ordering::Relaxed);
@@ -38,7 +44,7 @@ pub fn write(level: u8, args: std::fmt::Arguments<'_>) {
             INFO => "info",
             _ => "debug",
         };
-        writeln!(e, "nightgrid-node {w}: {args}")
+        writeln!(e, "{} {w}: {args}", NAME.get().copied().unwrap_or("nightgrid-node"))
     };
 }
 

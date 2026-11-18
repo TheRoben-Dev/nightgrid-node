@@ -71,18 +71,22 @@ jobs:
           pip3 install --user ziglang==0.17.1
           cargo install --locked cargo-zigbuild@0.24.1
       - run: cargo zigbuild --release --locked --target ${{ matrix.target }}
-      - name: Check the binary is static and small
+      - name: Check the binaries are static and small
         run: |
-          b=target/${{ matrix.target }}/release/nightgrid-node
-          file "$b"
-          file "$b" | grep -q 'statically linked'
-          size=$(stat -c %s "$b")
-          echo "size: $size bytes"
-          test "$size" -lt 8000000
+          for b in nightgrid-node:8000000 nightgrid-hub:12000000; do
+            f=target/${{ matrix.target }}/release/${b%%:*}
+            file "$f"
+            file "$f" | grep -q 'statically linked'
+            size=$(stat -c %s "$f")
+            echo "$f: $size bytes"
+            test "$size" -lt "${b##*:}"
+          done
       - uses: actions/upload-artifact@v4
         with:
           name: nightgrid-node-${{ matrix.target }}
-          path: target/${{ matrix.target }}/release/nightgrid-node
+          path: |
+            target/${{ matrix.target }}/release/nightgrid-node
+            target/${{ matrix.target }}/release/nightgrid-hub
           if-no-files-found: error
 
   install-runner:
@@ -104,13 +108,15 @@ jobs:
         with:
           name: nightgrid-node-${{ matrix.target }}
           path: dist-bin
-      - run: chmod +x dist-bin/nightgrid-node && dist-bin/nightgrid-node --version
+      - run: chmod +x dist-bin/nightgrid-node dist-bin/nightgrid-hub && dist-bin/nightgrid-node --version && dist-bin/nightgrid-hub --version
       - run: sudo useradd -m -s /bin/sh tester
       # Real smartctl for the health helper (SMART through its sandbox), nft for blocks.
       - run: sudo apt-get update -q && sudo apt-get install -y --no-install-recommends smartmontools nftables
       - name: systemd sandbox scores stay where they are
         run: sh ci/sandbox-scores.sh
       - run: sudo WAIT_FOR_MINUTE=1 UNINSTALL_SH="$PWD/dist/uninstall.sh" sh ci/install-test.sh "$PWD/dist-bin/nightgrid-node" tester
+      - name: Hub e2e (node and hub on one host, link on loopback)
+        run: sudo sh ci/hub-test.sh "$PWD/dist-bin/nightgrid-node" "$PWD/dist-bin/nightgrid-hub" tester
 
   install-distros:
     name: Install e2e (${{ matrix.image }})

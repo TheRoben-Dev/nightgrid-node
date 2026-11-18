@@ -119,6 +119,9 @@ pub mod method {
     /// What happened on this host over the last day, as plain facts for
     /// the app's DRIFT helper (N9).
     pub const SUMMARY_DAILY: &str = "summary.daily";
+    /// Which paired peer is this node's hub (H1, capability `hub.member`).
+    pub const HUB_MEMBER_GET: &str = "hub.member.get";
+    pub const HUB_MEMBER_SET: &str = "hub.member.set";
     /// Protocol 2: start pushing frames for streams.
     pub const SUBSCRIBE: &str = "subscribe";
     /// Protocol 2: stop pushing frames for streams.
@@ -201,6 +204,8 @@ pub mod cap {
     /// link (with `allow peers`, 0.20.0).
     pub const PEERS: &str = "peers";
     pub const SUMMARY: &str = "summary";
+    /// `hub.member.get` / `hub.member.set` (H1, 0.26.0).
+    pub const HUB_MEMBER: &str = "hub.member";
 }
 
 /// Typed actions (N4). Root lists the ones the node may run in
@@ -2063,4 +2068,184 @@ pub struct UsagePoint {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct UsageHistoryResult {
     pub points: Vec<UsagePoint>,
+}
+
+/// `hub.member.get` / `hub.member.set`: the paired peer this node serves
+/// sync reads to (`[peers] serve` must list `sync`). `None`: no hub.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HubMember {
+    #[serde(default)]
+    pub hub_id: Option<String>,
+}
+
+/// A hub's `peer.sync` request on the link: one read method of this node,
+/// with that method's own params and result.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PeerSync {
+    pub method: String,
+    #[serde(default)]
+    pub params: Value,
+}
+
+/// The methods a hub may read through `peer.sync`, and nothing else.
+pub const HUB_READS: [&str; 6] = [
+    method::NODE_INFO,
+    method::METRICS_SYNC,
+    method::EVENTS_SYNC,
+    method::UPTIME_SYNC,
+    method::DISK_SYNC,
+    method::ALERTS_ACTIVE,
+];
+
+/// Largest `peer.sync` answer, bytes; a bigger page is refused so the hub
+/// asks for fewer rows.
+pub const HUB_MAX_ANSWER: usize = 1024 * 1024;
+
+/// The hub's own socket protocol (`nightgrid-hub`, H1). Same framing and
+/// `hello` as the node's; these methods exist only there.
+pub mod hub {
+    use serde::{Deserialize, Serialize};
+    use serde_json::Value;
+
+    pub const DEFAULT_SOCKET: &str = "/run/nightgrid-hub/hub.sock";
+
+    pub mod method {
+        /// The members, set only by the app.
+        pub const MEMBERS_GET: &str = "fleet.members.get";
+        pub const MEMBERS_SET: &str = "fleet.members.set";
+        /// Every member's state at a glance.
+        pub const OVERVIEW: &str = "fleet.overview";
+        /// One member's read method, answered from the hub's copy.
+        pub const SYNC: &str = "fleet.sync";
+        /// The hub's own events (members offline, hub warnings).
+        pub const EVENTS_SYNC: &str = "fleet.events.sync";
+        /// Internal: what the collector needs for a round.
+        pub const PLAN: &str = "fleet.plan";
+        /// Internal: the collector's results.
+        pub const INGEST: &str = "fleet.ingest";
+    }
+
+    pub mod cap {
+        pub const FLEET: &str = "fleet";
+    }
+
+    /// One member, as the app gives it (`fleet.members.set`). Same fields
+    /// as a node's `peers.set` entry.
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    pub struct Member {
+        pub id: String,
+        pub name: String,
+        pub address: String,
+        pub fingerprint: String,
+    }
+
+    #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+    pub struct Members {
+        pub members: Vec<Member>,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    pub enum MemberState {
+        /// Pulled recently.
+        Ok,
+        /// Not pulled yet since it was added.
+        New,
+        /// Answers, but its last pull is older than it should be.
+        Stale,
+        /// Doesn't answer over the link.
+        Unreachable,
+        /// Answers but won't serve this hub (`sync` not in `[peers] serve`,
+        /// or `hub.member` names another hub).
+        Consent,
+        /// Too old a node for the hub (no `hub.member`).
+        Version,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    pub struct MemberStatus {
+        pub id: String,
+        pub name: String,
+        pub state: MemberState,
+        /// Last successful pull, unix seconds.
+        pub last_contact: Option<i64>,
+        pub version: Option<String>,
+        pub hostname: Option<String>,
+        /// Active alerts at the last pull.
+        pub alerts: u32,
+        /// Why the last pull failed, as is.
+        pub error: Option<String>,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    pub struct Overview {
+        pub hub_id: String,
+        pub fingerprint: Option<String>,
+        pub listening: Option<String>,
+        /// `ok` while the collector reports, `off` before it ever has,
+        /// `denied` when it stopped.
+        pub collector: String,
+        pub store_bytes: u64,
+        pub members: Vec<MemberStatus>,
+    }
+
+    /// `fleet.sync` params.
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    pub struct SyncParams {
+        pub node_id: String,
+        pub method: String,
+        #[serde(default)]
+        pub params: Value,
+    }
+
+    /// What one member should be asked this round (`fleet.plan`).
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    pub struct PlanMember {
+        pub member: Member,
+        /// Cursor per stream: `metrics.60`, `metrics.900`, `metrics.3600`,
+        /// `events`, `uptime`, `disk`.
+        pub cursors: std::collections::BTreeMap<String, i64>,
+    }
+
+    #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    pub struct Plan {
+        pub hub_id: String,
+        pub hostname: String,
+        pub interval_secs: u32,
+        pub members: Vec<PlanMember>,
+    }
+
+    /// One answer the collector got, or why it got none (`fleet.ingest`).
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    pub struct Ingest {
+        pub id: String,
+        pub at: i64,
+        /// The read method and its params, as sent.
+        #[serde(default)]
+        pub method: String,
+        #[serde(default)]
+        pub params: Value,
+        /// The member's result, when it answered.
+        #[serde(default)]
+        pub result: Option<Value>,
+        #[serde(default)]
+        pub error: Option<String>,
+    }
+
+    /// The collector's report: its identity and the round's answers.
+    #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    pub struct IngestBatch {
+        pub fingerprint: String,
+        pub listening: Option<String>,
+        pub answers: Vec<Ingest>,
+    }
 }

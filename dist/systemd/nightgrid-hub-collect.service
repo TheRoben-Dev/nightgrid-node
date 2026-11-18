@@ -1,0 +1,64 @@
+# Nightgrid Hub collector (optional). Installed by `nightgrid-hub allow collect`;
+# removed by `nightgrid-hub deny collect`.
+# It pulls from the nodes the app made members of this hub, over their
+# node-to-node link (mutual TLS 1.3, each side's certificate pinned), and only
+# what a member's root allows (`sync` in its [peers] serve) to the one peer its
+# hub.member names: history, events, uptime, disk usage and active alerts. It
+# can't ask a node to change or run anything. It answers members' pings on the
+# tailnet address only, and may reach only [collect] networks (networks.conf
+# next to this unit). It hands every page to the hub over its unix socket.
+
+[Unit]
+Description=Nightgrid Hub collector (pulls the network's Nightgrid Nodes)
+Documentation=https://github.com/TheRoben-Dev/nightgrid-node/blob/main/docs/HUB.md
+After=nightgrid-hub.service network-online.target
+Wants=network-online.target
+PartOf=nightgrid-hub.service
+
+[Service]
+Type=simple
+User=nightgrid-hub
+Group=nightgrid-hub
+ExecStart=/usr/local/bin/nightgrid-hub collect
+Restart=on-failure
+RestartSec=30s
+TimeoutStopSec=5s
+StateDirectory=nightgrid-hub-collect
+StateDirectoryMode=0700
+InaccessiblePaths=-/var/lib/nightgrid-hub
+
+CapabilityBoundingSet=
+NoNewPrivileges=yes
+
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+IPAddressDeny=any
+
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+UMask=0077
+
+MemoryHigh=48M
+MemoryMax=64M
+TasksMax=16
+CPUWeight=20
+Nice=10
+
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+
+[Install]
+WantedBy=multi-user.target
