@@ -1,12 +1,23 @@
 name: Release
 
-# Push a tag like v0.1.0 to publish. Builds both static binaries, checksums
+# Publishes a release for a tag like v0.1.0. Normally auto-release.yml
+# calls this when a version bump lands on main (it makes the tag itself); a
+# tag pushed by hand still works. Builds both static binaries, checksums
 # them, signs them with minisign when the NODE_MINISIGN_KEY secret exists,
 # and records GitHub build provenance (keyless, no secret needed).
 
 on:
   push:
     tags: ["v*"]
+  workflow_call:
+    inputs:
+      tag:
+        description: The tag to release (vX.Y.Z), already pushed
+        required: true
+        type: string
+
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
 
 permissions:
   contents: read
@@ -23,6 +34,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -33,12 +46,12 @@ jobs:
       - name: Check the tag matches the crate version
         run: |
           v=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
-          test "v$v" = "${GITHUB_REF_NAME}" || { echo "tag ${GITHUB_REF_NAME} but Cargo.toml says $v"; exit 1; }
+          test "v$v" = "${TAG}" || { echo "tag ${TAG} but Cargo.toml says $v"; exit 1; }
       - run: cargo zigbuild --release --locked --target ${{ matrix.target }}
       - run: |
           mkdir out
           for b in nightgrid-node nightgrid-hub; do
-            cp "target/${{ matrix.target }}/release/$b" "out/$b-${GITHUB_REF_NAME}-${{ matrix.arch }}-linux"
+            cp "target/${{ matrix.target }}/release/$b" "out/$b-${TAG}-${{ matrix.arch }}-linux"
           done
       - uses: actions/upload-artifact@v4
         with:
@@ -55,6 +68,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ env.TAG }}
           sparse-checkout: CHANGELOG.md
           sparse-checkout-cone-mode: false
       - uses: actions/download-artifact@v4
@@ -74,7 +88,7 @@ jobs:
           umask 077
           printf '%s\n' "$KEY" > "$RUNNER_TEMP/node.key"
           for f in out/nightgrid-node-* out/nightgrid-hub-* out/SHA256SUMS; do
-            minisign -S -s "$RUNNER_TEMP/node.key" -m "$f" -t "nightgrid-node ${GITHUB_REF_NAME} $(basename "$f")" </dev/null
+            minisign -S -s "$RUNNER_TEMP/node.key" -m "$f" -t "nightgrid-node ${TAG} $(basename "$f")" </dev/null
           done
           rm -f "$RUNNER_TEMP/node.key"
       - uses: actions/attest-build-provenance@v2
@@ -84,16 +98,16 @@ jobs:
             out/nightgrid-hub-*
       - name: Release notes from CHANGELOG.md
         run: |
-          v="${GITHUB_REF_NAME#v}"
+          v="${TAG#v}"
           {
             awk -v v="$v" '$0 ~ "^## "v" " {p=1; next} /^## / && p {exit} p' CHANGELOG.md \
-              | sed "s#](docs/#](https://github.com/$GITHUB_REPOSITORY/blob/$GITHUB_REF_NAME/docs/#g"
+              | sed "s#](docs/#](https://github.com/$GITHUB_REPOSITORY/blob/$TAG/docs/#g"
             printf '\n## Install\n\n'
             printf 'Two static binaries per architecture (x86_64, aarch64), each with its systemd units built in:\n\n'
             printf -- '- `nightgrid-node`: the Lite agent, for every server.\n'
             printf -- '- `nightgrid-hub`: optional, for one always-on host per network, next to `nightgrid-node`.\n\n'
             printf 'Check them with `sha256sum -c --ignore-missing SHA256SUMS` and, optionally, `gh attestation verify <file> --repo %s`. ' "$GITHUB_REPOSITORY"
-            printf 'Steps: [README](https://github.com/%s/blob/%s/README.md#install-by-hand).\n' "$GITHUB_REPOSITORY" "$GITHUB_REF_NAME"
+            printf 'Steps: [README](https://github.com/%s/blob/%s/README.md#install-by-hand).\n' "$GITHUB_REPOSITORY" "$TAG"
           } > "$RUNNER_TEMP/notes.md"
           grep -q . "$RUNNER_TEMP/notes.md" && cat "$RUNNER_TEMP/notes.md"
       - name: Publish the release
@@ -101,5 +115,5 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           pre=""
-          case "$GITHUB_REF_NAME" in *-*) pre="--prerelease" ;; esac
-          gh release create "$GITHUB_REF_NAME" out/* --repo "$GITHUB_REPOSITORY" --title "Nightgrid Node $GITHUB_REF_NAME" --notes-file "$RUNNER_TEMP/notes.md" $pre
+          case "$TAG" in *-*) pre="--prerelease" ;; esac
+          gh release create "$TAG" out/* --repo "$GITHUB_REPOSITORY" --title "Nightgrid Node $TAG" --notes-file "$RUNNER_TEMP/notes.md" $pre
