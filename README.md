@@ -68,7 +68,7 @@ The app speaks a small, versioned JSON-lines protocol to the socket. It starts w
 The app will do this for you (see [docs/app-integration](docs/app-integration/)). By hand, on the server:
 
 ```sh
-VER=v0.26.0; ARCH=$(uname -m)                  # x86_64 or aarch64
+VER=v0.26.1; ARCH=$(uname -m)                  # x86_64 or aarch64
 URL=https://github.com/TheRoben-Dev/nightgrid-node/releases/download/$VER
 curl -fL -O "$URL/nightgrid-node-$VER-$ARCH-linux" -O "$URL/SHA256SUMS"
 sha256sum -c --ignore-missing SHA256SUMS

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.26.1 · install fix (2026-11-18)
+
+- `install` (node and hub) now creates its directories as 0755 whatever the umask of the shell that ran sudo. Under a strict umask (0077 or 0027) 0.26.0 created `/etc/nightgrid-node` (or `/etc/nightgrid-hub`) closed to the service account, so the service exited with `config.toml: Permission denied` and restarted in a loop.
+- Running `install` again on a host installed with 0.26.0 opens that directory (0755) and says so. By hand: `sudo chmod 755 /etc/nightgrid-node && sudo systemctl restart nightgrid-node`.
+
 ## 0.26.0 · H1: the hub (2026-11-18)
 
 First published release. It includes everything below; 0.1.0 to 0.25.1 were never published on their own.
