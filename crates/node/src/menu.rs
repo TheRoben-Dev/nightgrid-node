@@ -46,9 +46,21 @@ fn who() -> String {
     }
 }
 
-/// The login user a fix for "me" means: the one who ran sudo, else us.
+/// The login user a fix for "me" means: under sudo, the one who ran it;
+/// otherwise whoever we run as (from the password database, not $USER,
+/// which an environment can carry over).
 fn me() -> Option<String> {
-    std::env::var("SUDO_USER").ok().filter(|u| !u.is_empty() && u != "root").or_else(|| std::env::var("USER").ok())
+    if euid() == 0 {
+        return std::env::var("SUDO_USER").ok().filter(|u| !u.is_empty() && u != "root");
+    }
+    // SAFETY: getuid has no preconditions; getpwuid's result is read at once.
+    unsafe {
+        let pw = libc::getpwuid(libc::getuid());
+        if pw.is_null() || (*pw).pw_name.is_null() {
+            return None;
+        }
+        Some(std::ffi::CStr::from_ptr((*pw).pw_name).to_string_lossy().into_owned())
+    }
 }
 
 /// What a fix needs as its target.
