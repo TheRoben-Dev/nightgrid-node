@@ -133,8 +133,7 @@ impl Layout {
         }
         if let Some((_, f)) = e.dropin {
             let path = self.extra_dropin(e);
-            std::fs::create_dir_all(path.parent().unwrap_or(Path::new("/")))
-                .map_err(|err| format!("{}: {err}", path.display()))?;
+            make_dirs(path.parent().unwrap_or(Path::new("/")))?;
             write_file(&path, &f(self), 0o644)?;
             rep.step(format!("{verb} {}", path.display()));
         }
@@ -364,9 +363,46 @@ pub fn valid_user(u: &str) -> bool {
         && u != USER
 }
 
+/// Creates `dir` and any missing parents as 0755. `create_dir_all` alone
+/// takes the umask of the shell that ran sudo: with a 0077 or 0027 umask the
+/// config directory came out 0700/0750 root:root and the service account
+/// couldn't read its own config.
+fn make_dirs(dir: &Path) -> Result<(), String> {
+    let mut missing = Vec::new();
+    let mut d = Some(dir);
+    while let Some(p) = d {
+        if p.as_os_str().is_empty() || p.exists() {
+            break;
+        }
+        missing.push(p.to_path_buf());
+        d = p.parent();
+    }
+    std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    for p in missing {
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755))
+            .map_err(|e| format!("{}: {e}", p.display()))?;
+    }
+    Ok(())
+}
+
+/// Makes an existing directory the service reads from (its config directory)
+/// traversable and listable by everyone, as /etc directories normally are.
+/// Repairs installs made by 0.26.0 under a strict umask. Returns true if it
+/// changed anything.
+fn open_dir(dir: &Path) -> Result<bool, String> {
+    let meta = std::fs::metadata(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let mode = meta.permissions().mode() & 0o7777;
+    if mode & 0o755 == 0o755 {
+        return Ok(false);
+    }
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755))
+        .map_err(|e| format!("{}: {e}", dir.display()))?;
+    Ok(true)
+}
+
 fn write_file(path: &Path, body: &str, mode: u32) -> Result<(), String> {
     let dir = path.parent().ok_or("no parent dir")?;
-    std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    make_dirs(dir)?;
     let tmp = path.with_extension("ngn-tmp");
     std::fs::write(&tmp, body).map_err(|e| format!("{}: {e}", tmp.display()))?;
     std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(mode)).map_err(|e| e.to_string())?;
@@ -382,8 +418,7 @@ fn copy_binary(from: &Path, to: &Path) -> Result<bool, String> {
             return Ok(false);
         }
     }
-    let dir = to.parent().ok_or("no parent dir")?;
-    std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    make_dirs(to.parent().ok_or("no parent dir")?)?;
     let tmp = to.with_extension("ngn-tmp");
     std::fs::copy(from, &tmp).map_err(|e| format!("copy to {}: {e}", tmp.display()))?;
     std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755)).map_err(|e| e.to_string())?;
@@ -436,6 +471,9 @@ pub fn install(layout: &Layout, sys: &mut dyn Sys, self_exe: &Path, opts: &Insta
     } else {
         crate::config::Config::load(&layout.config())?;
         rep.step(format!("kept {}", layout.config().display()));
+    }
+    if open_dir(&layout.config_dir())? {
+        rep.step(format!("made {} readable to the service (was closed by the umask)", layout.config_dir().display()));
     }
 
     write_file(&layout.unit(), UNIT, 0o644)?;
@@ -721,9 +759,23 @@ pub fn serve(layout: &Layout, sys: &mut dyn Sys, name: &str, add: bool) -> Resul
                 .into(),
         );
     }
-    if layout.is_system() {
-        sys.run("systemctl", &["try-restart", SERVICE, PEER_SERVICE])?;
+    if layout.has(&PEERS) {
+        if layout.is_system() {
+            sys.run("systemctl", &["try-restart", SERVICE, PEER_SERVICE])?;
+        }
         rep.step("restarted the service and the link (where running)".to_string());
+    } else {
+        if layout.is_system() {
+            sys.run("systemctl", &["try-restart", SERVICE])?;
+        }
+        rep.step("restarted the service (where running)".to_string());
+        if add {
+            rep.warnings.push(
+                "the node-to-node link is off, so no peer can ask for this yet. Turn it on with: \
+                 sudo nightgrid-node allow peers"
+                    .into(),
+            );
+        }
     }
     Ok(rep)
 }
@@ -786,8 +838,6 @@ pub fn allow(
                 .into(),
         );
         let path = layout.at(POWER_RULE);
-        std::fs::create_dir_all(path.parent().unwrap_or(Path::new("/")))
-            .map_err(|e| format!("{}: {e}", path.display()))?;
         write_file(&path, POWER_RULE_BODY, 0o644)?;
         rep.step(format!("wrote {}", path.display()));
         sys.run("sh", &["-c", &power_now(USER, "0440")])?;
@@ -1184,6 +1234,38 @@ mod tests {
         allow(&layout, &mut sys, Grant::Power, Path::new("/x"), true).unwrap();
         uninstall(&layout, &mut sys, false).unwrap();
         assert!(!layout.at(POWER_RULE).exists());
+    }
+
+    #[test]
+    fn serve_without_the_link_says_how_to_turn_it_on() {
+        let (_d, layout, exe) = setup();
+        let mut sys = FakeSys::default();
+        install(&layout, &mut sys, &exe, &InstallOptions::default()).unwrap();
+        let rep = serve(&layout, &mut sys, "sync", true).unwrap();
+        assert!(std::fs::read_to_string(layout.config()).unwrap().contains(r#"serve = ["ping", "sync"]"#));
+        assert!(rep.warnings.iter().any(|w| w.contains("sudo nightgrid-node allow peers")), "{:?}", rep.warnings);
+        assert!(rep.steps.last().unwrap().contains("restarted the service (where"), "{:?}", rep.steps);
+        allow(&layout, &mut sys, Grant::Peers, Path::new("/x"), true).unwrap();
+        let rep = serve(&layout, &mut sys, "ups", true).unwrap();
+        assert!(!rep.warnings.iter().any(|w| w.contains("allow peers")), "{:?}", rep.warnings);
+        assert!(rep.steps.last().unwrap().contains("and the link"), "{:?}", rep.steps);
+    }
+
+    #[test]
+    fn install_opens_a_config_dir_the_umask_closed() {
+        // 0.26.0 created /etc/nightgrid-node with the sudo shell's umask; under
+        // 0077 the service account couldn't read its config. Reinstalling fixes it.
+        let (_d, layout, exe) = setup();
+        let mut sys = FakeSys::default();
+        install(&layout, &mut sys, &exe, &InstallOptions::default()).unwrap();
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&layout.config_dir()), 0o755);
+        std::fs::set_permissions(layout.config_dir(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let rep = install(&layout, &mut sys, &exe, &InstallOptions::default()).unwrap();
+        assert_eq!(mode(&layout.config_dir()), 0o755);
+        assert!(rep.steps.iter().any(|s| s.contains("readable to the service")), "{:?}", rep.steps);
+        let rep = install(&layout, &mut sys, &exe, &InstallOptions::default()).unwrap();
+        assert!(!rep.steps.iter().any(|s| s.contains("readable to the service")));
     }
 
     #[test]
