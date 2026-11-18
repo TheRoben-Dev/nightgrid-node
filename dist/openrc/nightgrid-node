@@ -1,0 +1,27 @@
+#!/sbin/openrc-run
+# Nightgrid Node: optional, read-only agent for the Nightgrid app (OpenRC).
+# Installed by `nightgrid-node install` on hosts without systemd; removed by
+# `nightgrid-node uninstall`. Same account, socket and data directory as the
+# systemd unit, without systemd's sandbox. It opens no network ports.
+
+description="Nightgrid Node (optional Nightgrid agent)"
+command=/usr/local/bin/nightgrid-node
+command_args="run"
+command_user="nightgrid-node:nightgrid-node"
+command_background=true
+pidfile="/run/${RC_SVCNAME}.pid"
+# Newer OpenRC sends the service's messages to syslog; older ones ignore this.
+output_logger="logger -t nightgrid-node -p daemon.info"
+error_logger="logger -t nightgrid-node -p daemon.warning"
+retry="TERM/15/KILL/5"
+
+depend() {
+	need localmount
+	after bootmisc logger
+}
+
+start_pre() {
+	umask 0007
+	checkpath -d -m 0750 -o nightgrid-node:nightgrid-node /run/nightgrid-node
+	checkpath -d -m 0700 -o nightgrid-node:nightgrid-node /var/lib/nightgrid-node
+}

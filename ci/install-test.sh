@@ -12,6 +12,9 @@ as_user() { su -s /bin/sh "$user" -c "$1"; }
 say "install"
 "$bin" install --user "$user" --json | tee /tmp/ngn-install.json
 grep -q '"action":"install"' /tmp/ngn-install.json || fail "no install report"
+for k in '"init":"systemd"' '"kernel":"' '"libc":"' "\"arch\":\"$(uname -m)\""; do
+  grep -q "$k" /tmp/ngn-install.json || fail "install report lacks $k"
+done
 systemctl is-active --quiet nightgrid-node || fail "service not active"
 test -x /usr/local/bin/nightgrid-node || fail "binary missing"
 id nightgrid-node >/dev/null || fail "service account missing"
@@ -30,6 +33,10 @@ grep -q "nightgrid-node $(/usr/local/bin/nightgrid-node --version | cut -d' ' -f
 as_user "/usr/local/bin/nightgrid-node events --count 3" | grep -q . || fail "events"
 as_user "/usr/local/bin/nightgrid-node events | head -1" >/dev/null 2>/tmp/ngn-pipe.err; [ ! -s /tmp/ngn-pipe.err ] || { cat /tmp/ngn-pipe.err; fail "events into a closed pipe"; }
 as_user "echo '{\"id\":1,\"method\":\"hello\",\"params\":{\"protoMin\":1,\"protoMax\":1}}' | /usr/local/bin/nightgrid-node bridge" | grep -q '"proto":1' || fail "bridge"
+as_user "/usr/local/bin/nightgrid-node doctor --json" >/tmp/ngn-doctor0.json || { cat /tmp/ngn-doctor0.json; fail "doctor after install"; }
+grep -q '"init":"systemd"' /tmp/ngn-doctor0.json && grep -q '"check":"host"' /tmp/ngn-doctor0.json || fail "doctor lacks the host"
+if su -s /bin/sh nobody -c "/usr/local/bin/nightgrid-node bridge </dev/null" >/tmp/ngn-bridge.json 2>/dev/null; then fail "bridge as nobody"; fi
+grep -q '"code":"no_access"' /tmp/ngn-bridge.json || { cat /tmp/ngn-bridge.json; fail "bridge error code"; }
 
 say "other users cannot"
 if su -s /bin/sh nobody -c "/usr/local/bin/nightgrid-node status" >/dev/null 2>&1; then fail "nobody could connect"; fi

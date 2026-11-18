@@ -103,10 +103,15 @@ impl Store {
 
     /// Events with `seq > after`, oldest first.
     pub fn events_after(&self, after: i64, limit: usize) -> Result<Vec<Event>> {
-        let mut st = self.conn().prepare_cached(
-            "SELECT seq, at, kind, level, title, detail, data FROM events WHERE seq > ?1 ORDER BY seq LIMIT ?2",
-        )?;
-        let rows = st.query_map(params![after, limit as i64], |r| {
+        self.events_where("seq > ?1", &[&after], limit)
+    }
+
+    /// Events matching `cond` (with its `?N` arguments), oldest first.
+    fn events_where(&self, cond: &str, args: &[&dyn rusqlite::ToSql], limit: usize) -> Result<Vec<Event>> {
+        let mut st = self.conn().prepare_cached(&format!(
+            "SELECT seq, at, kind, level, title, detail, data FROM events WHERE {cond} ORDER BY seq LIMIT {limit}"
+        ))?;
+        let rows = st.query_map(args, |r| {
             let kind: String = r.get(2)?;
             let level: String = r.get(3)?;
             let data: Option<String> = r.get(6)?;
@@ -144,12 +149,64 @@ impl Store {
     pub fn events_oldest(&self) -> Result<Option<i64>> {
         self.conn().query_row("SELECT min(seq) FROM events", [], |r| r.get(0))
     }
+
+    pub fn events_newest(&self) -> Result<Option<i64>> {
+        self.conn().query_row("SELECT max(seq) FROM events", [], |r| r.get(0))
+    }
+
+    /// `events.sync` with an optional kind filter: (events, next, more). With
+    /// `kinds`, `next` passes the events it skipped (up to the newest when
+    /// the page isn't full), so the client's cursor moves even when nothing
+    /// matched. Without it, `next` is the last event's seq, or `after`.
+    pub fn events_page(&self, after: i64, limit: usize, kinds: Option<&[String]>) -> Result<(Vec<Event>, i64, bool)> {
+        let Some(kinds) = kinds.filter(|k| !k.is_empty()) else {
+            let mut events = self.events_after(after, limit + 1)?;
+            let more = events.len() > limit;
+            events.truncate(limit);
+            let next = events.last().map_or(after, |e| e.seq);
+            return Ok((events, next, more));
+        };
+        let kinds: Vec<&String> = kinds.iter().take(64).collect();
+        let marks: Vec<String> = (0..kinds.len()).map(|i| format!("?{}", i + 2)).collect();
+        let mut args: Vec<&dyn rusqlite::ToSql> = vec![&after];
+        args.extend(kinds.iter().map(|k| *k as &dyn rusqlite::ToSql));
+        let cond = format!("seq > ?1 AND kind IN ({})", marks.join(","));
+        let mut events = self.events_where(&cond, &args, limit + 1)?;
+        let more = events.len() > limit;
+        events.truncate(limit);
+        let next = if more {
+            events.last().map_or(after, |e| e.seq)
+        } else {
+            self.events_newest()?.unwrap_or(after).max(after)
+        };
+        Ok((events, next, more))
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use nightgrid_node_proto::{AlertKind, OutageState, Severity};
+
+    #[test]
+    fn events_sync_by_kind_moves_past_what_it_skips() {
+        let s = Store::open_in_memory().unwrap();
+        for (at, k) in [(1, EventKind::Login), (2, EventKind::Boot), (3, EventKind::File), (4, EventKind::Login)] {
+            s.event_add(&NewEvent::new(at, k, Level::Info, "x", "")).unwrap();
+        }
+        let only = |v: &[&str]| v.iter().map(|x| (*x).to_owned()).collect::<Vec<_>>();
+        let (ev, next, more) = s.events_page(0, 10, Some(&only(&["boot"]))).unwrap();
+        assert_eq!((ev.iter().map(|e| e.seq).collect::<Vec<_>>(), next, more), (vec![2], 4, false));
+        // Nothing matched after 2: the cursor still goes to the newest.
+        let (ev, next, _) = s.events_page(2, 10, Some(&only(&["boot"]))).unwrap();
+        assert!(ev.is_empty() && next == 4);
+        // A full page stops at its last event.
+        let (ev, next, more) = s.events_page(0, 1, Some(&only(&["login", "file"]))).unwrap();
+        assert_eq!((ev[0].seq, next, more), (1, 1, true));
+        // Without kinds: next == after on an empty page, as PROTOCOL.md promises.
+        assert_eq!(s.events_page(4, 10, None).unwrap(), (vec![], 4, false));
+        assert_eq!(s.events_page(0, 10, Some(&[])).unwrap().0.len(), 4);
+    }
 
     #[test]
     fn events_in_a_window() {

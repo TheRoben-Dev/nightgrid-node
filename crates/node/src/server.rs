@@ -481,10 +481,7 @@ fn dispatch(shared: &Shared, session: &mut Session, req: &Request) -> Result<Res
             let p: CursorParams = params(&req.params)?;
             let limit = p.limit.unwrap_or(MAX_ROWS).clamp(1, MAX_ROWS);
             let st = shared.store.lock().unwrap_or_else(|e| e.into_inner());
-            let mut events = st.events_after(p.after, limit + 1).map_err(internal)?;
-            let more = events.len() > limit;
-            events.truncate(limit);
-            let next = events.last().map_or(p.after, |e| e.seq);
+            let (events, next, more) = st.events_page(p.after, limit, p.kinds.as_deref()).map_err(internal)?;
             let oldest = st.events_oldest().map_err(internal)?;
             Ok(Response::ok(0, EventsResult { events, next, more, oldest }))
         }

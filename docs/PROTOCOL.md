@@ -32,6 +32,17 @@ Field names are camelCase. Unknown fields are ignored by both sides. Times are u
 
 Clients treat unknown codes like `internal`.
 
+### When the socket can't be reached (`bridge`, 0.28.0)
+
+`nightgrid-node bridge` and `nightgrid-hub bridge` print one line on stdout before exiting with status 1 when they can't connect, so a client can run the bridge first and probe only when it fails:
+
+```json
+{"error": {"code": "no_access", "message": "/run/nightgrid-node/node.sock: Permission denied (os error 13) (…)"}}
+{"error": {"code": "not_running", "message": "/run/nightgrid-node/node.sock: No such file or directory (os error 2) (…)"}}
+```
+
+`no_access`: the socket is there but this login may not use it (not in the group yet, or the login predates it: try `sg nightgrid-node -c 'nightgrid-node bridge'`). `not_running`: no socket or nothing answering (not installed, stopped). Once connected, everything on stdout is the protocol, so this line can only come first. A bridge that isn't there at all (`command not found`) prints nothing; a client tells that apart by the exit status 127.
+
 ## Session
 
 ### `hello`
@@ -59,6 +70,8 @@ Versions: the node speaks 1–2 (0.4.0 and later). A client offering `protoMax: 
 ### `subscribe` / `unsubscribe`
 
 Params: `{"streams": ["events", "metrics", "containers"]}`. Result: the streams now subscribed, `{"streams": [...]}`. Unknown stream names are `bad_request`; on protocol 1 both methods are `unknown_method`. Subscriptions end with the connection.
+
+`subscribe` adds the listed streams to what the connection already has (subscribing one twice changes nothing), and `unsubscribe` removes only the listed streams; the others keep coming. So a client can subscribe `events` at connect and toggle `metrics` on its own. Both answer with the whole set after the change.
 
 Frames:
 
@@ -160,6 +173,8 @@ Result:
 
 `events.sync`, `uptime.sync` and `disk.sync` take `{"after": cursor, "limit"?: n}` (limit 1–2000, default 2000) and return rows oldest first plus `next` (pass it as `after` next time) and `more`. Like `metrics.sync`, the cursor lives in the app and repeated calls are harmless.
 
+An empty page always has `next == after` (for `metrics.sync` too), so `next` never goes backwards. The one exception is `events.sync` with `kinds` (below), where `next` may move past events the filter skipped.
+
 ### `events.sync` (`events` 1)
 
 The cursor is the event's `seq`, which only grows.
@@ -169,6 +184,8 @@ The cursor is the event's `seq`, which only grows.
 ```
 
 `oldest` is the oldest `seq` still kept (90 days, at most 20 000 events). If it is above `after + 1`, events in between were pruned.
+
+Optional `kinds` (0.28.0, additive, same capability version): `{"after": 0, "kinds": ["alert", "recovered", "boot", "outage", "container", "action"]}` returns only those kinds, so a first sync can skip the login, file and network events a client doesn't show. When the page isn't full, `next` is the newest `seq` the node has (the skipped events are passed, and the cursor moves even if nothing matched); when it is full (`more: true`), `next` is the last returned event's `seq`. An absent or empty `kinds` means every kind, exactly as before. Unknown names match nothing. A client that later wants the skipped kinds syncs them separately from its own older cursor. The hub's `fleet.sync` takes it too.
 
 ```json
 {"seq": 41, "at": 1763290000, "kind": "alert", "level": "warn",
@@ -210,6 +227,8 @@ A page never splits an hour, so it can hold a few rows over `limit`.
 ### `alerts.active` (`alerts` 1)
 
 The alerts active right now, worst and newest first: `[Alert…]`.
+
+Alert `kind`s are camelCase (`diskFull`, `containerDown`, `hostOffline`, …), and every kind added later will be too. A client shows a kind it doesn't know as a generic alert, using `title`, `detail` and `severity`.
 
 ### `alerts.rules.get` / `alerts.rules.set` (`alerts` 1)
 
@@ -559,7 +578,7 @@ The app pairs nodes. `peers.set` replaces this node's list (at most 64) and answ
 ```
 
 - `access`: `ok` while the link unit reports, `off` when it hasn't since the node started (root hasn't run `allow peers`), `denied` when it stopped reporting.
-- `fingerprint`: this node's link certificate (SHA-256 of its DER), to give to the nodes it is paired with. `null` until the link has started once. `listening`: where the link listens, `null` if it doesn't (no tailnet address yet, or `[peers] listen = ""`).
+- `fingerprint`: this node's link certificate (SHA-256 of its DER), to give to the nodes it is paired with. `null` until the link has started once. `listening`: where the link listens, `null` if it doesn't (no tailnet address yet, or `[peers] listen = ""`). With `[peers] listen = "lan"` (0.28.0) it is the LAN address the link resolved (the source address of the route to the first non-tailnet `[peers] networks` entry, else of the default route) and changes when that does, for example after a new DHCP lease; the link looks again every 30 s.
 - `error` explains a miss: "connection refused (is the link on there?)", "not allowed by [peers] networks", "timed out", "the peer's certificate isn't the paired one (pair the nodes again in the app)", "the peer refused this node (it may not have this node paired)", "\"peer.ping\" isn't served here ([peers] serve)".
 
 Events (`other`): "peer nas unreachable" (`warn`, after two misses in a row) and "peer nas reachable again" (`ok`).
@@ -634,12 +653,14 @@ The sockets listening on this host at the last read (every 15 s, `[ports] interv
 ### `fleet.overview`
 
 ```json
-{"hubId": "…", "fingerprint": "…64 hex", "listening": "100.64.0.2:7420", "collector": "ok", "storeBytes": 9437184,
+{"hubId": "…", "fingerprint": "…64 hex", "listening": "100.64.0.2:7420",
+ "listenAll": ["100.64.0.2:7420", "192.168.1.10:7420"], "collector": "ok", "storeBytes": 9437184,
  "members": [{"id": "9f1c…", "name": "nas", "state": "ok", "lastContact": 1763290000, "version": "0.26.0",
               "hostname": "nas", "alerts": 1, "error": null}]}
 ```
 
-- `fingerprint` and `listening`: the collector's, to pair members with (`null` until it has run).
+- `fingerprint` and `listening`: the collector's, to pair members with (`null` until it has run). `listening` is the first address it answers members' pings on.
+- `listenAll` (0.28.0): every address it answers on, `listening` first, from `[collect] listen` (one entry or a list). Pair a member with the address it can reach: the tailnet one for tailnet members, the LAN one for a member only on the LAN. Missing (read it as `[listening]`) from an older hub.
 - `collector`: `ok` while it reports, `off` before it ever has, `denied` after it stopped (`deny collect`).
 - `state`: `new` (not pulled yet), `ok`, `stale` (no pull for over two intervals), `unreachable` (`error` says why, as the link puts it), `consent` (the member refused: no `sync` in its `serve`, or it names another hub), `version` (older than 0.26.0).
 

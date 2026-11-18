@@ -5,15 +5,36 @@
 use nightgrid_node_proto::{ActionRecord, ActionsLogResult, Alert, Event, NodeInfo, Sample};
 use serde::Serialize;
 
-/// `2026-11-17 21:04` in the host's time zone.
+/// `2026-11-17 21:04` in the host's time zone. Times a 32-bit `time_t`
+/// can't hold (after 2038-01-19 on the 32-bit musl builds) are shown in UTC.
 pub fn local_time(t: i64) -> String {
+    // libc's musl time_t is 32-bit on 32-bit targets for now, i64 elsewhere.
+    #[allow(deprecated, irrefutable_let_patterns, clippy::useless_conversion)]
+    let Ok(tt) = libc::time_t::try_from(t) else {
+        return format!("{} UTC", utc_time(t));
+    };
     // SAFETY: localtime_r only writes the tm we pass.
     let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-    let tt = t as libc::time_t;
     if unsafe { libc::localtime_r(&tt, &mut tm) }.is_null() {
         return t.to_string();
     }
     format!("{:04}-{:02}-{:02} {:02}:{:02}", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min)
+}
+
+/// `2026-11-17 21:04` in UTC, from i64 seconds, without libc (any year).
+pub fn utc_time(t: i64) -> String {
+    let (days, secs) = (t.div_euclid(86400), t.rem_euclid(86400));
+    // Days to a civil date (H. Hinnant's algorithm).
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!("{y:04}-{m:02}-{d:02} {:02}:{:02}", secs / 3600, secs % 3600 / 60)
 }
 
 /// `3d 4h`, `5h 2m`, `40s`.

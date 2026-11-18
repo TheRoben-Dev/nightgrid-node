@@ -856,6 +856,11 @@ pub struct CursorParams {
     pub after: i64,
     #[serde(default)]
     pub limit: Option<usize>,
+    /// `events.sync` only (0.28.0, optional): just these event kinds. `next`
+    /// then moves past the events it skipped, so a first sync can leave out
+    /// kinds the client doesn't show without fetching them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kinds: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -2185,7 +2190,12 @@ pub mod hub {
     pub struct Overview {
         pub hub_id: String,
         pub fingerprint: Option<String>,
+        /// The first address the collector answers on (as before 0.28.0).
         pub listening: Option<String>,
+        /// Every address it answers on, `listening` first (0.28.0; empty
+        /// from an older hub).
+        #[serde(default)]
+        pub listen_all: Vec<String>,
         /// `ok` while the collector reports, `off` before it ever has,
         /// `denied` when it stopped.
         pub collector: String,
@@ -2246,6 +2256,9 @@ pub mod hub {
     pub struct IngestBatch {
         pub fingerprint: String,
         pub listening: Option<String>,
+        /// Every address the collector answers on (0.28.0).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        pub listen_all: Vec<String>,
         pub answers: Vec<Ingest>,
     }
 }

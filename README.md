@@ -5,7 +5,7 @@ An optional, lightweight agent for Linux servers that extends [Nightgrid](https:
 Nightgrid is agentless: it does everything over SSH, but only while the app is open. Close the laptop and nobody is watching. Nightgrid Node runs on the server and keeps watching. When the app reconnects, it hands over everything that happened, so graphs, uptime bars, the timeline and alerts have no gaps.
 
 - **Optional.** Every Nightgrid feature works without it. The node makes things gap-free and faster; it is never required.
-- **Tiny.** One static binary (about 2 MB, x86_64 and aarch64), about 2.5 MB of RAM, no measurable idle CPU.
+- **Tiny.** One static binary (a few MB; x86_64, aarch64, armv7, armv6 and i686), a few MB of RAM, no measurable idle CPU. Runs on old and small boxes too, such as a 512 MB ARM NAS.
 - **No open ports, no outbound connections, no telemetry, no cloud.** The app talks to the node through the SSH connection it already has. systemd enforces this (`IPAddressDeny=any`, unix sockets only).
 - **Least privilege.** Its own system account and a heavily sandboxed unit. Root decides what it may do, one grant at a time.
 
@@ -68,10 +68,15 @@ The app speaks a small, versioned JSON-lines protocol to the socket. It starts w
 The app will do this for you (see [docs/app-integration](docs/app-integration/)). By hand, on the server:
 
 ```sh
-VER=v0.26.1; ARCH=$(uname -m)                  # x86_64 or aarch64
+VER=v0.28.0
+case $(uname -m) in                            # the release arch for this machine
+  x86_64|amd64) ARCH=x86_64 ;;  aarch64|arm64) ARCH=aarch64 ;;
+  armv7*|armv8l) ARCH=armv7 ;;  armv6*) ARCH=armv6 ;;  i?86|x86) ARCH=i686 ;;
+  *) echo "no build for $(uname -m)"; exit 1 ;;
+esac
 URL=https://github.com/TheRoben-Dev/nightgrid-node/releases/download/$VER
 curl -fL -O "$URL/nightgrid-node-$VER-$ARCH-linux" -O "$URL/SHA256SUMS"
-sha256sum -c --ignore-missing SHA256SUMS
+sha256sum -c --ignore-missing SHA256SUMS      # BusyBox: grep "node-$VER-$ARCH-linux" SHA256SUMS | sha256sum -c
 chmod +x nightgrid-node-$VER-$ARCH-linux
 sudo ./nightgrid-node-$VER-$ARCH-linux install # copies itself to /usr/local/bin, adds you (the sudo user) to the nightgrid-node group
 # log in again so the group applies, then:
@@ -90,7 +95,13 @@ sudo nightgrid-node allow netwatch   # DHCP and rogue DHCP (listen-only helper);
 
 Remove it with `sudo nightgrid-node uninstall` (keeps history and config) or `sudo nightgrid-node uninstall --purge` (removes everything, including the service account). If the binary is gone, [dist/uninstall.sh](dist/uninstall.sh) does the same.
 
-Works on any systemd distro. It is tested in CI on Debian 12, Ubuntu 22.04/24.04 (x86_64 and arm64) and Fedora 41. Proxmox VE and Fedora Atomic / Bazzite use the same paths.
+Works on any systemd distro. It is tested in CI on Debian 12, Ubuntu 22.04/24.04 (x86_64 and arm64) and Fedora 41, and on Debian 12 armhf under qemu. Proxmox VE and Fedora Atomic / Bazzite use the same paths.
+
+Older and smaller hosts (0.28.0):
+
+- **Old systemd** (215 and later, such as ReadyNAS OS 6): the unit is fitted to the version. Settings it doesn't know are commented out with the version they need, and older spellings are used where they exist (`MemoryLimit=`, `ProtectSystem=full`). `nightgrid-node doctor` lists what was left out.
+- **No systemd** (Alpine and other OpenRC hosts; sysvinit with `start-stop-daemon`, BusyBox included): `install` writes `/etc/init.d/nightgrid-node` and enables it, with the same account, socket and modes. Without systemd's sandbox the node is still unprivileged. The extra access (`allow …`), `serve`, `upgrade` and the hub need systemd, and they say so (`{"error":{"code":"no_systemd",…}}` with `--json`). Tested in CI on Alpine (OpenRC, x86_64 and armv7) and Debian with sysvinit (x86_64 and i686).
+- **32-bit** (armv7, armv6, i686): the same features. Counters and sizes are 64-bit throughout, and times work past 2038. `install --json` and `doctor` report `arch`, `libc`, `init` and `kernel`.
 
 ## Commands
 
@@ -169,7 +180,7 @@ On the one host that should be the hub, after Nightgrid Node is installed there 
 
 ```sh
 curl -fL -O "$URL/nightgrid-hub-$VER-$ARCH-linux" -O "$URL/SHA256SUMS"
-sha256sum -c --ignore-missing SHA256SUMS
+sha256sum -c --ignore-missing SHA256SUMS      # BusyBox: grep "hub-$VER-$ARCH-linux" SHA256SUMS | sha256sum -c
 chmod +x nightgrid-hub-$VER-$ARCH-linux
 sudo ./nightgrid-hub-$VER-$ARCH-linux install   # copies itself to /usr/local/bin, writes the nightgrid-hub and nightgrid-hub-collect units
 sudo nightgrid-hub allow collect                 # prints the hub id and fingerprint the app pairs

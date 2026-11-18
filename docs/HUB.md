@@ -406,3 +406,14 @@ Each milestone gets its app spec in `docs/app-integration/` (0020 covers H1 and 
 - **Store pruning** runs hourly; hitting `[store] max_gb` drops the oldest minute days first and records a hub warning.
 - **Not yet:** `skewSecs` in the overview, `hello`-time discovery of a second hub (section 2.4) and the standby hub. They come with H2 or later and are additive.
 - **Tests:** unit tests per module; `crates/hub/tests/fleet.rs` (25 simulated members over real mutual TLS, one with a wrong pin and one refusing; the budget line); `ci/hub-test.sh` (node and hub installed with systemd on one runner, paired over loopback: consent, pull, cursors through the hub equal to direct, offline and back, consent withdrawn, clean uninstall).
+
+## 20. Members on more than one network, and a config check (0.28.0)
+
+Additive to H1; nothing in section 16's frozen list changed.
+
+- **`[collect] listen` takes a list.** One entry stays valid (`listen = "tailnet"`). A list, such as `listen = ["tailnet", "192.168.1.10:7420"]` (at most 8 entries), makes the collector answer members' pings on each address, so a member that is only on the LAN (no Tailscale, reaching the hub host directly) sees the hub as a reachable peer. Entries are `tailnet`, `lan` (this host's LAN address, see below), `ip:port` (never `0.0.0.0` or `::`), or empty. `tailnet` and `lan` entries are looked up again every 30 s, so a new tailnet or DHCP address moves the listener. Pulls never depended on this: the collector connects out to members either way.
+- **Where to see them.** `fleet.overview` keeps `listening` (the first address) and adds `listenAll` (all of them, in config order). `nightgrid-hub allow collect --json` reports `listening` and `listenAll` too. Pair a LAN-only member with the hub's LAN entry.
+- **`[collect] networks`** still limits who the collector may talk to: add the LAN range (or the member's `/32`) when members are on the LAN, then run `nightgrid-hub allow collect` again.
+- **`nightgrid-hub doctor [--config PATH] [--json]`** checks the host, the hub's binary and the node it needs, the config (the given file, or the installed one), both units, the socket, the collector (reporting, and answering on every `listen` entry), the members that can't be pulled, and the store (against `max_gb` and the free space on its disk). Same shape as `nightgrid-node doctor`: `{"version", "findings": [{"check", "level", "detail"}], "arch", "libc", "init", "kernel", …}`, levels `ok`, `info`, `warn`, `fail`, exit status 1 on any `fail`. The app runs it with `--config <uploaded file>` before saving a hub config, as it does with the node's.
+- **The hub needs systemd.** On a host without it, `install --json` refuses with `{"error":{"code":"no_systemd",…}}`.
+- **Tests:** `ci/hub-test.sh` now has the collector on two loopback addresses and checks `listenAll`, and runs the hub doctor (clean, and a bad `--config` refused). CI runs the same script on Debian 12 armhf under qemu.

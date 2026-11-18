@@ -5,7 +5,7 @@
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
-use nightgrid_node::install::{valid_user, Sys};
+use nightgrid_node::install::{valid_user, write_unit, Sys};
 use serde::Serialize;
 
 pub const SERVICE: &str = "nightgrid-hub";
@@ -58,6 +58,10 @@ impl Layout {
     fn is_system(&self) -> bool {
         self.root == Path::new("/")
     }
+    /// The node's view of the same root (init system, systemd version, facts).
+    fn node(&self) -> nightgrid_node::install::Layout {
+        nightgrid_node::install::Layout { root: self.root.clone() }
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -80,6 +84,12 @@ pub struct Report {
     /// their `peers.set`), once it does.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub listening: Option<String>,
+    /// `allow collect`: every address it answers on, `listening` first.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub listen_all: Vec<String>,
+    /// `install`: what kind of host this is, as in the node's report.
+    #[serde(flatten)]
+    pub host: Option<nightgrid_node::host::HostFacts>,
 }
 
 impl Report {
@@ -242,6 +252,8 @@ pub fn install(
         ));
     }
     let mut rep = Report::new("install");
+    rep.host = Some(layout.node().facts());
+    let version = layout.node().systemd_version();
     if copy_binary(self_exe, &layout.bin())? {
         rep.step(format!("installed {}", layout.bin().display()));
     } else {
@@ -252,9 +264,16 @@ pub fn install(
             rep.warnings.push(format!("restorecon: {e}"));
         }
     }
-    write_file(&layout.sysusers(), SYSUSERS, 0o644)?;
-    sys.run("systemd-sysusers", &[&layout.sysusers().to_string_lossy()])?;
-    rep.step(format!("service account {USER} ready"));
+    let step = nightgrid_node::install::ensure_account(
+        &layout.root,
+        sys,
+        nightgrid_node::host::Init::Systemd,
+        USER,
+        crate::config::DEFAULT_DATA_DIR,
+        &layout.sysusers(),
+        SYSUSERS,
+    )?;
+    rep.step(step);
     if !layout.config().exists() {
         write_file(&layout.config(), crate::config::TEMPLATE, 0o644)?;
         rep.step(format!("wrote {}", layout.config().display()));
@@ -265,17 +284,23 @@ pub fn install(
     if open_dir(&layout.config_dir())? {
         rep.step(format!("made {} readable to the service (was closed by the umask)", layout.config_dir().display()));
     }
-    write_file(&layout.unit(SERVICE), UNIT, 0o644)?;
+    let dropped = write_unit(&layout.unit(SERVICE), UNIT, version, &layout.root, sys)?;
     rep.step(format!("wrote {}", layout.unit(SERVICE).display()));
+    if !dropped.is_empty() {
+        rep.warnings.push(format!(
+            "systemd {} is older than some of the unit's sandbox settings; left out: {}",
+            version.unwrap_or(0),
+            dropped.join(", ")
+        ));
+    }
     let collect = layout.unit(COLLECT_SERVICE).exists();
     if collect {
-        write_file(&layout.unit(COLLECT_SERVICE), COLLECT_UNIT, 0o644)?;
-        write_file(&layout.collect_dropin(), &collect_dropin(layout), 0o644)?;
+        write_collector(layout, sys, version, &mut rep)?;
         rep.step("updated the collector".to_string());
     }
     for u in users {
         sys.run("id", &["-u", u]).map_err(|_| format!("no such user: {u}"))?;
-        sys.run("usermod", &["-a", "-G", USER, u])?;
+        nightgrid_node::install::add_to_group(sys, u, USER)?;
         rep.users.push(u.clone());
         rep.step(format!("{u} may use the hub (from their next login)"));
     }
@@ -318,6 +343,10 @@ fn collector_details(layout: &Layout, rep: &mut Report) {
                 if let Some(fp) = v["fingerprint"].as_str() {
                     rep.fingerprint = Some(fp.to_owned());
                     rep.listening = v["listening"].as_str().map(str::to_owned);
+                    rep.listen_all = v["listenAll"]
+                        .as_array()
+                        .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_owned)).collect())
+                        .unwrap_or_default();
                     rep.step(format!("collector fingerprint {fp}"));
                     return;
                 }
@@ -333,6 +362,21 @@ pub fn collect_allowed(layout: &Layout) -> bool {
     layout.unit(COLLECT_SERVICE).exists()
 }
 
+/// The collector's unit and its networks drop-in, fitted to this systemd.
+fn write_collector(layout: &Layout, sys: &mut dyn Sys, version: Option<u32>, rep: &mut Report) -> Result<(), String> {
+    write_unit(&layout.unit(COLLECT_SERVICE), COLLECT_UNIT, version, &layout.root, sys)?;
+    let a = nightgrid_node::units::adapt(&collect_dropin(layout), version);
+    write_file(&layout.collect_dropin(), &a.text, 0o644)?;
+    if !a.dropped.is_empty() {
+        rep.warnings.push(format!(
+            "systemd {} can't limit the collector to [collect] networks (IPAddressAllow needs 235); it only \
+             talks to the members the app named, over mutual TLS",
+            version.unwrap_or(0)
+        ));
+    }
+    Ok(())
+}
+
 pub fn allow_collect(layout: &Layout, sys: &mut dyn Sys, no_start: bool) -> Result<Report, String> {
     preflight(layout)?;
     if !layout.unit(SERVICE).exists() {
@@ -345,8 +389,7 @@ pub fn allow_collect(layout: &Layout, sys: &mut dyn Sys, no_start: bool) -> Resu
          member's root allows (`sync` in its [peers] serve) and can't change or run anything there."
             .into(),
     );
-    write_file(&layout.unit(COLLECT_SERVICE), COLLECT_UNIT, 0o644)?;
-    write_file(&layout.collect_dropin(), &collect_dropin(layout), 0o644)?;
+    write_collector(layout, sys, layout.node().systemd_version(), &mut rep)?;
     rep.step(format!("wrote {}", layout.unit(COLLECT_SERVICE).display()));
     sys.run("systemctl", &["daemon-reload"])?;
     if no_start {

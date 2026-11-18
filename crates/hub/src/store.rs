@@ -290,6 +290,32 @@ impl Store {
         r.collect()
     }
 
+    /// Like `events_after`, only the given kinds (all when `None`).
+    pub fn events_after_kinds(
+        &self,
+        id: &str,
+        after: i64,
+        limit: usize,
+        kinds: Option<&[String]>,
+    ) -> Result<Vec<(i64, String)>> {
+        let Some(kinds) = kinds else { return self.events_after(id, after, limit) };
+        let kinds: Vec<&String> = kinds.iter().take(64).collect();
+        let marks: Vec<String> = (0..kinds.len()).map(|i| format!("?{}", i + 3)).collect();
+        let marks = marks.join(",");
+        let mut st = self.conn.prepare(&format!(
+            "SELECT seq, event FROM events WHERE id = ?1 AND seq > ?2 AND json_extract(event, '$.kind') IN ({marks}) \
+             ORDER BY seq LIMIT {limit}"
+        ))?;
+        let mut args: Vec<&dyn rusqlite::ToSql> = vec![&id, &after];
+        args.extend(kinds.iter().map(|k| *k as &dyn rusqlite::ToSql));
+        let r = st.query_map(args.as_slice(), |r| Ok((r.get(0)?, r.get(1)?)))?;
+        r.collect()
+    }
+
+    pub fn events_newest(&self, id: &str) -> Result<Option<i64>> {
+        self.conn.query_row("SELECT MAX(seq) FROM events WHERE id = ?1", [id], |r| r.get(0))
+    }
+
     pub fn events_oldest(&self, id: &str) -> Result<Option<i64>> {
         self.conn.query_row("SELECT MIN(seq) FROM events WHERE id = ?1", [id], |r| r.get(0))
     }

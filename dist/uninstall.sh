@@ -5,7 +5,23 @@
 #   sh uninstall.sh --purge    remove everything, including the account
 set -u
 [ "$(id -u)" = 0 ] || { echo "run as root" >&2; exit 1; }
+# Without systemd (OpenRC, sysvinit): stop the service script and unlink it.
+if [ -e /etc/init.d/nightgrid-node ]; then
+  if command -v rc-service >/dev/null 2>&1; then
+    rc-service nightgrid-node stop 2>/dev/null || true
+    rc-update del nightgrid-node default 2>/dev/null || true
+  else
+    /etc/init.d/nightgrid-node stop 2>/dev/null || true
+  fi
+  rm -f /etc/init.d/nightgrid-node
+  if command -v update-rc.d >/dev/null 2>&1; then update-rc.d nightgrid-node remove >/dev/null 2>&1 || true; fi
+  if command -v chkconfig >/dev/null 2>&1; then chkconfig --del nightgrid-node 2>/dev/null || true; fi
+  for l in /etc/rc[0-6].d/[SK][0-9][0-9]nightgrid-node /etc/rc.d/rc[0-6].d/[SK][0-9][0-9]nightgrid-node; do
+    if [ -L "$l" ]; then rm -f "$l"; fi
+  done
+fi
 # One at a time: systemctl gives up on the whole list if one unit is missing.
+command -v systemctl >/dev/null 2>&1 || systemctl() { :; }
 for u in nightgrid-node nightgrid-node-netwatch nightgrid-node-helper.socket nightgrid-node-health.socket nightgrid-node-checks \
   nightgrid-node-peer nightgrid-node-status; do
   systemctl disable --now "$u" 2>/dev/null || true
@@ -31,8 +47,13 @@ rm -f /usr/local/bin/nightgrid-node /usr/local/bin/nightgrid-node.prev
 if [ "${1:-}" = "--purge" ]; then
   rm -rf /var/lib/nightgrid-node /var/lib/nightgrid-node-rollback /var/lib/nightgrid-node-peer /etc/nightgrid-node /run/nightgrid-node
   rm -f /etc/sysusers.d/nightgrid-node.conf
-  if id nightgrid-node >/dev/null 2>&1; then userdel nightgrid-node; fi
-  if getent group nightgrid-node >/dev/null 2>&1; then groupdel nightgrid-node; fi
+  # userdel/groupdel, or BusyBox's deluser/delgroup.
+  if id nightgrid-node >/dev/null 2>&1; then
+    if command -v userdel >/dev/null 2>&1; then userdel nightgrid-node; else deluser nightgrid-node; fi
+  fi
+  if grep -q '^nightgrid-node:' /etc/group 2>/dev/null; then
+    if command -v groupdel >/dev/null 2>&1; then groupdel nightgrid-node; else delgroup nightgrid-node; fi
+  fi
   echo "Nightgrid Node removed (with history, config and account)"
 else
   echo "Nightgrid Node removed (history in /var/lib/nightgrid-node and config in /etc/nightgrid-node kept)"

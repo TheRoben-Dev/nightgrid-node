@@ -1,0 +1,54 @@
+#!/bin/sh
+### BEGIN INIT INFO
+# Provides:          nightgrid-node
+# Required-Start:    $local_fs $remote_fs $syslog
+# Required-Stop:     $local_fs $remote_fs $syslog
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# Short-Description: Nightgrid Node (optional Nightgrid agent)
+### END INIT INFO
+# Installed by `nightgrid-node install` on hosts without systemd; removed by
+# `nightgrid-node uninstall`. Same account, socket and data directory as the
+# systemd unit, without systemd's sandbox. It opens no network ports.
+# POSIX sh and BusyBox start-stop-daemon flags only.
+
+NAME=nightgrid-node
+DAEMON=/usr/local/bin/nightgrid-node
+PIDFILE=/var/run/nightgrid-node.pid
+ACCOUNT=nightgrid-node
+
+[ -x "$DAEMON" ] || exit 0
+
+# By /proc, so `status` works for any user (kill -0 needs the same uid).
+running() {
+	[ -f "$PIDFILE" ] && [ -d "/proc/$(cat "$PIDFILE")" ]
+}
+
+do_start() {
+	running && return 0
+	umask 0007
+	mkdir -p /run/nightgrid-node /var/lib/nightgrid-node
+	chown "$ACCOUNT:$ACCOUNT" /run/nightgrid-node /var/lib/nightgrid-node
+	chmod 0750 /run/nightgrid-node
+	chmod 0700 /var/lib/nightgrid-node
+	start-stop-daemon -S -q -b -m -p "$PIDFILE" -c "$ACCOUNT:$ACCOUNT" -x "$DAEMON" -- run
+}
+
+do_stop() {
+	start-stop-daemon -K -q -p "$PIDFILE" -s TERM 2>/dev/null
+	i=0
+	while running && [ "$i" -lt 15 ]; do sleep 1; i=$((i + 1)); done
+	running && kill -KILL "$(cat "$PIDFILE")" 2>/dev/null
+	rm -f "$PIDFILE"
+	return 0
+}
+
+case "$1" in
+	start) echo "Starting $NAME"; do_start ;;
+	stop) echo "Stopping $NAME"; do_stop ;;
+	restart|force-reload) do_stop; do_start ;;
+	status)
+		if running; then echo "$NAME is running"; exit 0; fi
+		echo "$NAME is not running"; exit 3 ;;
+	*) echo "Usage: $0 {start|stop|restart|status}" >&2; exit 1 ;;
+esac
