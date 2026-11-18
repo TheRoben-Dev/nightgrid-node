@@ -68,7 +68,7 @@ The app speaks a small, versioned JSON-lines protocol to the socket. It starts w
 The app will do this for you (see [docs/app-integration](docs/app-integration/)). By hand, on the server:
 
 ```sh
-VER=v0.26.0; ARCH=$(uname -m)                  # x86_64 or aarch64
+VER=v0.26.1; ARCH=$(uname -m)                  # x86_64 or aarch64
 URL=https://github.com/TheRoben-Dev/nightgrid-node/releases/download/$VER
 curl -fL -O "$URL/nightgrid-node-$VER-$ARCH-linux" -O "$URL/SHA256SUMS"
 sha256sum -c --ignore-missing SHA256SUMS
@@ -135,8 +135,38 @@ sha256sum -c --ignore-missing SHA256SUMS
 chmod +x nightgrid-hub-$VER-$ARCH-linux
 sudo ./nightgrid-hub-$VER-$ARCH-linux install   # copies itself to /usr/local/bin, writes the nightgrid-hub and nightgrid-hub-collect units
 sudo nightgrid-hub allow collect                 # prints the hub id and fingerprint the app pairs
-# on each member that the hub should read:
+# on each member that the hub should read (the hub host is a member too):
+sudo nightgrid-node allow peers                  # the node-to-node link; the hub reads members over it
 sudo nightgrid-node serve add sync
+```
+
+Both links listen on the host's tailnet address by default, so each host needs Tailscale (or Headscale) up: `tailscale ip -4` should print a `100.x` address.
+
+The app pairs the hub with its members. Until it does, pair by hand. On the hub host:
+
+```sh
+j() { python3 -c "import json,sys; print(json.load(sys.stdin)$1)"; }
+sudo nightgrid-hub allow collect --json > hub.json
+HUB_ID=$(j '["hubId"]' < hub.json); HUB_FP=$(j '["fingerprint"]' < hub.json); HUB_ADDR=$(j '["listening"]' < hub.json)
+echo "$HUB_ID $HUB_FP $HUB_ADDR"
+```
+
+On each member (with those three values copied over):
+
+```sh
+j() { python3 -c "import json,sys; print(json.load(sys.stdin)$1)"; }
+sudo nightgrid-node query peers.set "{\"peers\":[{\"id\":\"$HUB_ID\",\"name\":\"hub\",\"address\":\"$HUB_ADDR\",\"fingerprint\":\"$HUB_FP\"}]}"
+sudo nightgrid-node query hub.member.set "{\"hubId\":\"$HUB_ID\"}"
+sudo nightgrid-node query node.info | j '["node"]["nodeId"]'      # this member's id
+sudo nightgrid-node query peers.latest | j '["fingerprint"]'      # its fingerprint
+sudo nightgrid-node query peers.latest | j '["listening"]'        # its address
+```
+
+`peers.set` replaces the node's whole peer list, so list any other peers there too. Then on the hub, list every member in one `fleet.members.set` (it also replaces the list) and check:
+
+```sh
+sudo nightgrid-hub query fleet.members.set '{"members":[{"id":"NODE_ID","name":"lumen","address":"NODE_ADDR","fingerprint":"NODE_FP"}]}'
+nightgrid-hub status      # each member should show "ok" within a minute or two
 ```
 
 Use the same version of `nightgrid-node` and `nightgrid-hub` on the hub host.

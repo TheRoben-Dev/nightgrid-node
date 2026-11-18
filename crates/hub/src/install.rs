@@ -102,9 +102,46 @@ fn preflight(layout: &Layout) -> Result<(), String> {
     Ok(())
 }
 
+/// Creates `dir` and any missing parents as 0755. `create_dir_all` alone
+/// takes the umask of the shell that ran sudo: with a 0077 or 0027 umask the
+/// config directory came out 0700/0750 root:root and the service account
+/// couldn't read its own config.
+fn make_dirs(dir: &Path) -> Result<(), String> {
+    let mut missing = Vec::new();
+    let mut d = Some(dir);
+    while let Some(p) = d {
+        if p.as_os_str().is_empty() || p.exists() {
+            break;
+        }
+        missing.push(p.to_path_buf());
+        d = p.parent();
+    }
+    std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    for p in missing {
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755))
+            .map_err(|e| format!("{}: {e}", p.display()))?;
+    }
+    Ok(())
+}
+
+/// Makes an existing directory the service reads from (its config directory)
+/// traversable and listable by everyone, as /etc directories normally are.
+/// Repairs installs made by 0.26.0 under a strict umask. Returns true if it
+/// changed anything.
+fn open_dir(dir: &Path) -> Result<bool, String> {
+    let meta = std::fs::metadata(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let mode = meta.permissions().mode() & 0o7777;
+    if mode & 0o755 == 0o755 {
+        return Ok(false);
+    }
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755))
+        .map_err(|e| format!("{}: {e}", dir.display()))?;
+    Ok(true)
+}
+
 fn write_file(path: &Path, body: &str, mode: u32) -> Result<(), String> {
     let dir = path.parent().ok_or("no parent dir")?;
-    std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    make_dirs(dir)?;
     let tmp = path.with_extension("ngh-tmp");
     std::fs::write(&tmp, body).map_err(|e| format!("{}: {e}", tmp.display()))?;
     std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(mode)).map_err(|e| e.to_string())?;
@@ -117,8 +154,7 @@ fn copy_binary(from: &Path, to: &Path) -> Result<bool, String> {
             return Ok(false);
         }
     }
-    let dir = to.parent().ok_or("no parent dir")?;
-    std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    make_dirs(to.parent().ok_or("no parent dir")?)?;
     let tmp = to.with_extension("ngh-tmp");
     std::fs::copy(from, &tmp).map_err(|e| format!("copy to {}: {e}", tmp.display()))?;
     std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755)).map_err(|e| e.to_string())?;
@@ -225,6 +261,9 @@ pub fn install(
     } else {
         crate::config::Config::load(&layout.config())?;
         rep.step(format!("kept {}", layout.config().display()));
+    }
+    if open_dir(&layout.config_dir())? {
+        rep.step(format!("made {} readable to the service (was closed by the umask)", layout.config_dir().display()));
     }
     write_file(&layout.unit(SERVICE), UNIT, 0o644)?;
     rep.step(format!("wrote {}", layout.unit(SERVICE).display()));
@@ -402,6 +441,13 @@ mod tests {
         let r = install(&l, &mut sys, &exe, &["alice".into()], true).unwrap();
         assert!(l.bin().exists() && l.config().exists() && l.unit(SERVICE).exists());
         assert_eq!(r.users, ["alice"]);
+        // A config dir closed by a strict umask (0.26.0) is opened again on reinstall.
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&l.config_dir()), 0o755);
+        std::fs::set_permissions(l.config_dir(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let r = install(&l, &mut sys, &exe, &[], true).unwrap();
+        assert_eq!(mode(&l.config_dir()), 0o755);
+        assert!(r.steps.iter().any(|s| s.contains("readable to the service")), "{:?}", r.steps);
         assert!(sys.0.iter().any(|c| c == "usermod -a -G nightgrid-hub alice"));
         assert!(!l.unit(COLLECT_SERVICE).exists(), "the collector is a separate allow");
         assert!(install(&l, &mut sys, &exe, &["nightgrid-hub".into()], true).is_err());

@@ -24,6 +24,7 @@ The Nightgrid app repository is developed elsewhere and is read-only from here. 
 | [0018 · Status page link](0018-status-page.md) | N8d | proposed |
 | [0019 · Daily summary facts for DRIFT](0019-daily-summary.md) | N9 | proposed |
 | [0020 · Hub: fleet sync and notifications](0020-hub-fleet-sync.md) | H1, H2 | future (additive, after the compatibility work) |
+| [0021 · Probe: "installed, not running" right after install](0021-probe-group-not-yet-active.md) | any | proposed (app bug fix) |
 
 Rules every spec follows:
 
