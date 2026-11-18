@@ -20,6 +20,17 @@ fail() {
 q() { /usr/local/bin/nightgrid-node query "$@"; }
 h() { /usr/local/bin/nightgrid-hub query "$@"; }
 as_user() { su -s /bin/sh "$user" -c "$1"; }
+# Resident kB of PID itself. Under qemu-user (CI's armv7 job) VmRSS also
+# counts the emulator, so only the guest's pages are summed: a 32-bit guest
+# lives below 4 GiB, qemu above it. Natively this is VmRSS.
+emulated() { grep -q qemu /proc/"$1"/maps 2>/dev/null; }
+rss_of() {
+  if emulated "$1"; then
+    awk '/^[0-9a-f]+-/ {split($1, a, "-"); lo = length(a[1]) <= 8} /^Rss:/ && lo {s += $2} END {print s + 0}' /proc/"$1"/smaps
+  else
+    awk '/VmRSS/ {print $2}' /proc/"$1"/status
+  fi
+}
 json() { python3 -c "import json,sys; d=json.load(sys.stdin); print($1)"; }
 wait_until() { # SECONDS DESCRIPTION COMMAND
   n=$1; what=$2; shift 2
@@ -101,7 +112,7 @@ as_user "/usr/local/bin/nightgrid-hub query fleet.ingest '{\"fingerprint\":\"x\"
 say "budget"
 for u in nightgrid-hub nightgrid-hub-collect; do
   p=$(systemctl show -p MainPID --value "$u")
-  rss=$(awk '/VmRSS/ {print $2}' /proc/"$p"/status)
+  rss=$(rss_of "$p")
   echo "$u RSS ${rss} kB"
   [ "$rss" -lt 81920 ] || fail "$u RSS ${rss} kB is over 80 MB"
 done

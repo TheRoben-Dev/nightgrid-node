@@ -8,6 +8,17 @@ user=$2
 say() { printf '\n== %s\n' "$*"; }
 fail() { printf 'FAIL: %s\n' "$*" >&2; journalctl -u nightgrid-node --no-pager -n 50 >&2 || true; exit 1; }
 as_user() { su -s /bin/sh "$user" -c "$1"; }
+# Resident kB of PID itself. Under qemu-user (CI's armv7 job) VmRSS also
+# counts the emulator, so only the guest's pages are summed: a 32-bit guest
+# lives below 4 GiB, qemu above it. Natively this is VmRSS.
+emulated() { grep -q qemu /proc/"$1"/maps 2>/dev/null; }
+rss_of() {
+  if emulated "$1"; then
+    awk '/^[0-9a-f]+-/ {split($1, a, "-"); lo = length(a[1]) <= 8} /^Rss:/ && lo {s += $2} END {print s + 0}' /proc/"$1"/smaps
+  else
+    awk '/VmRSS/ {print $2}' /proc/"$1"/status
+  fi
+}
 
 say "install"
 "$bin" install --user "$user" --json | tee /tmp/ngn-install.json
@@ -50,7 +61,8 @@ fi
 say "footprint"
 pid=$(systemctl show -p MainPID --value nightgrid-node)
 grep -E 'VmRSS|Threads' /proc/"$pid"/status
-rss=$(awk '/VmRSS/ {print $2}' /proc/"$pid"/status)
+rss=$(rss_of "$pid")
+! emulated "$pid" || echo "under qemu: ${rss} kB of guest pages"
 [ "$rss" -lt 20480 ] || fail "RSS ${rss} kB is over 20 MB"
 systemd-analyze security nightgrid-node --no-pager 2>/dev/null | tail -n 1 || true
 
@@ -738,7 +750,12 @@ UNIT
   say "footprint after every feature ran: peak memory stays in budget"
   pid=$(systemctl show -p MainPID --value nightgrid-node)
   grep -E 'VmHWM|VmRSS|Threads' /proc/"$pid"/status
-  hwm=$(awk '/VmHWM/ {print $2}' /proc/"$pid"/status)
+  if emulated "$pid"; then
+    # The peak would include qemu's own; check the guest's pages now instead.
+    hwm=$(rss_of "$pid")
+  else
+    hwm=$(awk '/VmHWM/ {print $2}' /proc/"$pid"/status)
+  fi
   [ "$hwm" -lt 20480 ] || fail "peak RSS ${hwm} kB is over 20 MB"
 fi
 
