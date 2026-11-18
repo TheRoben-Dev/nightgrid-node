@@ -122,6 +122,15 @@ App-facing interfaces are frozen (N-048); this milestone polishes the node from 
 - **0.24.0:** `nightgrid-node doctor`, a read-only self-check of the install; CI gates for the sandbox scores and peak memory; every method fed malformed input in tests (N-049).
 - **0.25.0:** a readable `status`; `events`, `audit` and `audit verify` (the whole SHA-256 chain); shell completions and a manual page.
 
+## N11 · Fix menu and opt-in automation — **done (0.27.0)**
+
+Roben, 2026-11-18: act on issues on the server through the user's choice, in a menu like Bazzite's `ujust`, with the node optionally acting by itself on chosen events; every settings-style command uses the same menu, themed after Nightgrid. Shell-side only; the frozen protocol is unchanged (N-060 to N-064).
+
+- `nightgrid-node fix`: detected issues, fixes grouped by kind, automation presets; `fix list [--json]`, `fix NAME [TARGET] [-y]`, `fix auto [NAME on|preview|off]`.
+- Node-local actions `fix.unit-reset`, `fix.journal-vacuum`, `fix.logrotate`, `fix.package-cache`, `fix.ssh-permissions`, `fix.runbook` through the root helper, run as transient units.
+- Root's `fixes.toml`: extra allow and units, `journal_keep`, runbooks, automation rules, re-read by the service when it changes.
+- A shared Nightgrid-themed terminal menu (`tui`), used by `fix`, `allow`/`deny`, `serve`, the bare `nightgrid-node` and `nightgrid-hub`.
+
 ## Hub profile
 
 A separate, heavier `nightgrid-hub` for one always-on host per network, next to the unchanged Lite agent. Design in [HUB.md](HUB.md), decisions N-051 to N-059, app spec [0020](app-integration/0020-hub-fleet-sync.md) (future). Nothing here changes a frozen interface; the Lite additions are additive.

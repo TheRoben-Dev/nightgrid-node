@@ -90,6 +90,43 @@ Works on any systemd distro. It is tested in CI on Debian 12, Ubuntu 22.04/24.04
 
 ## Commands
 
+On a terminal, `nightgrid-node` (or `nightgrid-hub`) on its own opens a menu: arrow keys or j/k, number keys, Enter, q. Every settings-style command (`fix`, `allow`/`deny` with no name, `serve` with no arguments) opens the same menu, in the Nightgrid app's colours. Piped, or with `NO_COLOR` or `NIGHTGRID_PLAIN=1`, it prints a plain numbered list instead.
+
+### Fix things on the host
+
+```
+nightgrid-node fix                     menu: what looks wrong, every fix, automation
+nightgrid-node fix list [--json]       the same as a list
+nightgrid-node fix restart nginx.service   restart a unit (or a container: fix restart web)
+nightgrid-node fix reset UNIT          clear a unit's failed state
+nightgrid-node fix start CONTAINER     start a stopped container
+nightgrid-node fix journal             shrink the journal (to journal_keep, 500M)
+nightgrid-node fix logs                rotate all logs now (logrotate --force)
+nightgrid-node fix packages            clean the package cache (apt, dnf, zypper, pacman, apk)
+nightgrid-node fix prune               remove unused container images
+nightgrid-node fix ssh [USER]          fix ~/.ssh and authorized_keys permissions
+nightgrid-node fix reboot              reboot in one minute (type "reboot" to confirm)
+nightgrid-node fix run RUNBOOK         run a command root defined in fixes.toml
+nightgrid-node fix auto                menu: what the node may fix by itself
+nightgrid-node fix auto NAME on|preview|off   services, containers, stopped, journal, packages, images (root)
+```
+
+Each fix says what it will run and asks first (`-y` skips the question; a reboot asks you to type the word). Nothing new is trusted: a run goes to the node as an ordinary action, so root's allow list, `max_per_hour`, the hash-chained audit log (`nightgrid-node audit`) and the root helper apply, and the menu itself runs nothing privileged. With `sudo`, the menu offers to allow what isn't allowed yet and saves that in `/etc/nightgrid-node/fixes.toml`, next to `config.toml` (which it never rewrites). Fixes that write outside the helper's sandbox run as a short transient unit with their own limits.
+
+Automation is off until root turns a preset on. `preview` only logs what it would do; `on` acts after the condition has held for a while (5 or 10 minutes), at most a few times an hour and a day per target, and gives up after a few tries until the condition clears. It's the same engine as the app's self-healing rules.
+
+`fixes.toml` can also hold runbooks:
+
+```toml
+[[runbook]]
+name = "renew-certs"
+description = "Renew TLS certificates"
+run = ["/usr/bin/certbot", "renew", "--quiet"]   # absolute path, no shell
+timeout_secs = 300                                # 1-600
+```
+
+### Everything else
+
 ```
 nightgrid-node run                 the service (systemd starts it)
 nightgrid-node install [--user NAME]... [--no-start] [--json]
@@ -105,6 +142,7 @@ nightgrid-node allow peers         start the node-to-node link for nodes the app
 nightgrid-node allow statuspage    start the read-only status page and print its link (root)
 nightgrid-node serve add|remove ping|ups|sync   what paired peers may ask this node (root; `sync` lets its hub read it)
 nightgrid-node deny docker|journal|netwatch|helper|health|power|checks|peers|statuspage   take that away again
+nightgrid-node allow | deny | serve menus of the above, with what's on
 nightgrid-node netwatch            the helper (its unit starts it)
 nightgrid-node upgrade FILE --sha256 HEX   verified upgrade that reverts itself (root)
 nightgrid-node status              what the running node reports (--json: raw)
@@ -125,6 +163,8 @@ Configuration: `/etc/nightgrid-node/config.toml` (root-owned; every setting is i
 
 ```
 nightgrid-hub install [--user NAME]... [--json]   install next to Nightgrid Node (root)
+nightgrid-hub                      menu (on a terminal)
+nightgrid-hub allow | deny         menu: the collector, on or off
 nightgrid-hub allow collect        start the collector; prints the hub id and fingerprint to pair (root)
 nightgrid-hub deny collect         stop it (root)
 nightgrid-hub status               the members and their state

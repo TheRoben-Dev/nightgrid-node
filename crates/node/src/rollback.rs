@@ -594,7 +594,13 @@ mod tests {
                 let mut line = String::new();
                 BufReader::new(&s).read_line(&mut line).unwrap();
                 let req: HelperRequest = serde_json::from_str(&line).unwrap();
-                let r = crate::helper::handle(&config, &req, &store, &mut Log(tx.clone()));
+                let r = crate::helper::handle(
+                    &config,
+                    &crate::fixes::LocalFixes::default(),
+                    &req,
+                    &store,
+                    &mut Log(tx.clone()),
+                );
                 let mut out = serde_json::to_vec(&r).unwrap();
                 out.push(b'\n');
                 (&s).write_all(&out).unwrap();

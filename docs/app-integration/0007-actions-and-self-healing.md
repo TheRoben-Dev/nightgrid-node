@@ -80,3 +80,7 @@ If the app can't reach the host any more, it does nothing: the node reverts at t
 - A host without `actions`/`heal` shows no self-healing section.
 - A change that the fixture never confirms shows the countdown and then "change reverted"; Keep calls `changes.confirm`.
 - `access.helper: denied` offers Install; with `actions` 2, a listed unit's Restart goes through `actions.run`; power shows the cancel hint.
+
+## Note (node 0.27.0): host fixes from the terminal
+
+Nothing to build. The node's terminal menu (`nightgrid-node fix`) runs node-local action types (`fix.unit-reset`, `fix.journal-vacuum`, `fix.logrotate`, `fix.package-cache`, `fix.ssh-permissions`, `fix.runbook`) and root's automation rules through the same path as `actions.run`. So `actions.log` and `action` events may show those action names and the sources `menu (uid N)` and `autofix NAME`. Show them as text like any other entry; `actions.policy` still lists only the types in this spec.

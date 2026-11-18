@@ -18,21 +18,26 @@ use std::time::Duration;
 
 use nightgrid_node_proto::{
     action, ActionOutcome, ActionRequest, AlertKind, ContainerInfo, EventKind, HealRule, HealRules, HealStatus,
-    HealStatusResult, HealWhen, Level,
+    HealStatusResult, Level,
 };
+
+use crate::fixes::{AutoRule, When};
 
 use crate::daemon::{now_secs, Shared};
 use crate::events::NewEvent;
 use crate::store::Store;
 
 pub const META_RULES: &str = "heal_rules";
+/// Root's automation rules (`fixes.toml`) are tracked under this prefix, so
+/// they never collide with the app's rule ids or show in `heal.status`.
+pub const LOCAL_PREFIX: &str = "local:";
 const CHANGES_TICK: Duration = Duration::from_secs(5);
 const DAY: i64 = 86_400;
 
 /// A condition that holds now: what kind, and on which container or mount.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Cond {
-    pub when: HealWhen,
+    pub when: When,
     pub target: String,
 }
 
@@ -54,6 +59,8 @@ pub enum Plan {
 #[derive(Debug, Default)]
 pub struct Heal {
     rules: Vec<HealRule>,
+    /// Root's automation rules from `fixes.toml`, ids already prefixed.
+    local: Vec<AutoRule>,
     track: BTreeMap<(String, String), Track>,
     /// Run times per (rule, target) over the last day; survives the
     /// condition clearing so a flapping container still hits the caps.
@@ -75,7 +82,23 @@ impl Heal {
     /// tracking starts over; the per-day run counts stay.
     pub fn set_rules(&mut self, rules: HealRules) {
         self.rules = rules.rules;
-        self.track.clear();
+        self.track.retain(|(id, _), _| id.starts_with(LOCAL_PREFIX));
+    }
+
+    /// Replaces root's automation rules (already validated).
+    pub fn set_local(&mut self, rules: Vec<AutoRule>) {
+        self.local = rules.into_iter().map(|r| AutoRule { id: format!("{LOCAL_PREFIX}{}", r.id), ..r }).collect();
+        self.track.retain(|(id, _), _| !id.starts_with(LOCAL_PREFIX));
+    }
+
+    /// Whether an enabled automation rule waits for this condition.
+    pub fn wants(&self, when: When) -> bool {
+        self.local.iter().any(|r| r.enabled && r.when == when)
+    }
+
+    /// Unit targets of enabled unit-failed rules (`*` means every listed unit).
+    pub fn unit_targets(&self) -> Vec<String> {
+        self.local.iter().filter(|r| r.enabled && r.when == When::UnitFailed).map(|r| r.target.clone()).collect()
     }
 
     pub fn status(&self) -> HealStatusResult {
@@ -84,6 +107,7 @@ impl Heal {
             tracking: self
                 .track
                 .iter()
+                .filter(|((rule, _), _)| !rule.starts_with(LOCAL_PREFIX))
                 .map(|((rule, target), t)| HealStatus {
                     rule: rule.clone(),
                     target: target.clone(),
@@ -100,7 +124,8 @@ impl Heal {
     pub fn step(&mut self, now: i64, conds: &[Cond]) -> Vec<Plan> {
         let mut plans = Vec::new();
         let mut live = Vec::new();
-        for rule in self.rules.iter().filter(|r| r.enabled) {
+        let all: Vec<AutoRule> = self.rules.iter().map(AutoRule::from_heal).chain(self.local.iter().cloned()).collect();
+        for rule in all.iter().filter(|r| r.enabled) {
             for c in conds {
                 if c.when != rule.when || (rule.target != "*" && rule.target != c.target) {
                     continue;
@@ -126,7 +151,8 @@ impl Heal {
                 runs.push(now);
                 t.attempts += 1;
                 t.last_run = Some(now);
-                let target = action::takes_container(&rule.action).then(|| c.target.clone());
+                let target = (action::takes_container(&rule.action) || crate::fixes::takes_unit(&rule.action))
+                    .then(|| c.target.clone());
                 plans.push(Plan::Run {
                     rule: rule.id.clone(),
                     target: c.target.clone(),
@@ -141,13 +167,21 @@ impl Heal {
     }
 }
 
-/// The conditions that hold now, from the alert engine and the container list.
-pub fn conditions(active: &[nightgrid_node_proto::Alert], containers: &[ContainerInfo]) -> Vec<Cond> {
+/// The conditions that hold now, from the alert engine, the container list
+/// and the failed units among the ones root listed.
+pub fn conditions(
+    active: &[nightgrid_node_proto::Alert],
+    containers: &[ContainerInfo],
+    failed: &[String],
+) -> Vec<Cond> {
     let mut out = Vec::new();
     for c in containers {
         if c.state == "running" && c.health.as_deref() == Some("unhealthy") {
-            out.push(Cond { when: HealWhen::ContainerUnhealthy, target: c.name.clone() });
+            out.push(Cond { when: When::ContainerUnhealthy, target: c.name.clone() });
         }
+    }
+    for u in failed {
+        out.push(Cond { when: When::UnitFailed, target: u.clone() });
     }
     for a in active.iter().filter(|a| a.resolved.is_none()) {
         if let Some(name) = a.key.strip_prefix("docker:") {
@@ -155,31 +189,77 @@ pub fn conditions(active: &[nightgrid_node_proto::Alert], containers: &[Containe
             // (and still exists, or there is nothing to start).
             let down = containers.iter().any(|c| c.name == name && c.state != "running");
             if a.kind == AlertKind::ContainerDown && down {
-                out.push(Cond { when: HealWhen::ContainerDown, target: name.to_owned() });
+                out.push(Cond { when: When::ContainerDown, target: name.to_owned() });
             }
         } else if let Some(mount) = a.key.strip_prefix("disk:") {
             if a.kind == AlertKind::DiskFull {
-                out.push(Cond { when: HealWhen::DiskFull, target: mount.to_owned() });
+                out.push(Cond { when: When::DiskFull, target: mount.to_owned() });
             }
         }
     }
     out
 }
 
+/// Picks up changes to root's `fixes.toml` (allow list, automation rules).
+pub fn refresh_fixes(shared: &Shared) {
+    let rules = shared.fixes.lock().unwrap_or_else(|e| e.into_inner()).refresh(&shared.fixes_path);
+    if let Some(rules) = rules {
+        shared.heal.lock().unwrap_or_else(|e| e.into_inner()).set_local(rules);
+    }
+}
+
+/// Which of the units are in the failed state (`systemctl is-failed`
+/// prints one line per unit, in order, whatever its exit status).
+fn failed_units(units: &[String]) -> Vec<String> {
+    if units.is_empty() {
+        return Vec::new();
+    }
+    let mut cmd = std::process::Command::new("systemctl");
+    cmd.arg("is-failed").arg("--").args(units).env("SYSTEMD_PAGER", "");
+    match cmd.output() {
+        Ok(out) => String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .zip(units)
+            .filter(|(state, _)| state.trim() == "failed")
+            .map(|(_, u)| u.clone())
+            .collect(),
+        Err(e) => {
+            crate::debug!("systemctl is-failed: {e}");
+            Vec::new()
+        }
+    }
+}
+
 fn tick(shared: &Shared) {
+    refresh_fixes(shared);
     let active = shared.active.lock().unwrap_or_else(|e| e.into_inner()).clone();
     let containers = shared.containers.lock().unwrap_or_else(|e| e.into_inner()).result.containers.clone();
-    let conds = conditions(&active, &containers);
+    let targets = shared.heal.lock().unwrap_or_else(|e| e.into_inner()).unit_targets();
+    let failed = if targets.is_empty() {
+        Vec::new()
+    } else {
+        let local = shared.fixes.lock().unwrap_or_else(|e| e.into_inner()).local.clone();
+        let listed = crate::fixes::units(&shared.config, &local);
+        // Only units root listed: `*` means all of them, a name only if listed.
+        let units: Vec<String> = listed.into_iter().filter(|u| targets.iter().any(|t| t == "*" || t == u)).collect();
+        failed_units(&units)
+    };
+    let conds = conditions(&active, &containers, &failed);
     let plans = shared.heal.lock().unwrap_or_else(|e| e.into_inner()).step(now_secs(), &conds);
     for p in plans {
         match p {
             Plan::Run { rule, target, request } => {
-                let rec = crate::actions::run(shared, &request, &format!("rule {rule}"));
+                let source = match rule.strip_prefix(LOCAL_PREFIX) {
+                    Some(id) => format!("autofix {id}"),
+                    None => format!("rule {rule}"),
+                };
+                let rec = crate::actions::run(shared, &request, &source);
                 if rec.outcome == ActionOutcome::Refused {
                     crate::debug!("rule {rule} on {target}: {}", rec.detail);
                 }
             }
             Plan::GiveUp { rule, target, attempts } => {
+                let rule = rule.strip_prefix(LOCAL_PREFIX).map_or(rule.clone(), |id| format!("autofix {id}"));
                 crate::warn!("self-healing rule {rule} gave up on {target} after {attempts} runs");
                 let e = NewEvent::new(
                     now_secs(),
@@ -234,13 +314,47 @@ impl Healer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nightgrid_node_proto::HealWhen;
+
+    #[test]
+    fn local_rules_run_beside_the_apps_and_stay_out_of_its_status() {
+        let mut h = Heal::default();
+        h.set_rules(HealRules { rules: vec![HealRule { for_minutes: 1, ..rule("r") }] });
+        h.set_local(vec![AutoRule {
+            id: "r".into(),
+            enabled: true,
+            dry_run: false,
+            when: When::UnitFailed,
+            for_minutes: 1,
+            ..Default::default()
+        }]);
+        assert!(h.wants(When::UnitFailed) && !h.wants(When::DiskFull));
+        assert_eq!(h.unit_targets(), ["*"]);
+        let c = [unhealthy("web"), Cond { when: When::UnitFailed, target: "nginx.service".into() }];
+        h.step(0, &c);
+        let p = h.step(60, &c);
+        assert_eq!(runs(&p), [("r", "web"), ("local:r", "nginx.service")]);
+        let Plan::Run { request, .. } = &p[1] else { panic!() };
+        assert_eq!((request.action.as_str(), request.target.as_deref()), ("unit.restart", Some("nginx.service")));
+        assert_eq!(h.status().tracking.len(), 1, "the app sees only its own rules");
+        assert_eq!(h.status().enabled, 1);
+        // Replacing the app's rules keeps tracking root's, and the other way round.
+        h.set_rules(HealRules::default());
+        assert_eq!(h.track.len(), 1);
+        h.set_local(Vec::new());
+        assert!(h.track.is_empty());
+        assert!(
+            conditions(&[], &[], &["a.service".into()])
+                == [Cond { when: When::UnitFailed, target: "a.service".into() }]
+        );
+    }
 
     fn rule(id: &str) -> HealRule {
         HealRule { id: id.into(), enabled: true, dry_run: false, ..Default::default() }
     }
 
     fn unhealthy(name: &str) -> Cond {
-        Cond { when: HealWhen::ContainerUnhealthy, target: name.into() }
+        Cond { when: When::ContainerUnhealthy, target: name.into() }
     }
 
     fn runs(p: &[Plan]) -> Vec<(&str, &str)> {
@@ -309,7 +423,7 @@ mod tests {
                 },
             ],
         });
-        let c = [unhealthy("web"), unhealthy("db"), Cond { when: HealWhen::DiskFull, target: "/".into() }];
+        let c = [unhealthy("web"), unhealthy("db"), Cond { when: When::DiskFull, target: "/".into() }];
         h.step(0, &c);
         let p = h.step(60, &c);
         assert_eq!(runs(&p), [("only-db", "db"), ("disk", "/")]);
@@ -349,13 +463,13 @@ mod tests {
             al("docker:gone", AlertKind::ContainerDown),
             al("disk:/srv", AlertKind::DiskFull),
         ];
-        let c = conditions(&alerts, &cs);
+        let c = conditions(&alerts, &cs, &[]);
         assert_eq!(
             c,
             [
                 unhealthy("web"),
-                Cond { when: HealWhen::ContainerDown, target: "db".into() },
-                Cond { when: HealWhen::DiskFull, target: "/srv".into() },
+                Cond { when: When::ContainerDown, target: "db".into() },
+                Cond { when: When::DiskFull, target: "/srv".into() },
             ]
         );
     }

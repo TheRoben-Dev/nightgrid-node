@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.27.0 · N11: fix menu and opt-in automation (unreleased)
+
+- `nightgrid-node fix`: a ujust-style menu that lists what looks wrong on the host (failed units, unhealthy or stopped containers, disks at 90% or more, a journal over 2 GB, a pending reboot, loose `~/.ssh` permissions), every fix grouped by kind with whether root allows it, and automation. Each fix explains what it runs and asks first; a reboot needs the word typed.
+  - Short commands: `fix list [--json]`, `fix restart|reset|start|journal|logs|packages|prune|ssh|reboot|run [TARGET] [-y]`, `fix auto [NAME on|preview|off]`.
+  - Node-local action types `fix.unit-reset`, `fix.journal-vacuum`, `fix.logrotate`, `fix.package-cache`, `fix.ssh-permissions`, `fix.runbook`, all through the root helper, which runs the ones that write outside its sandbox as short transient units (N-060, N-062). The helper unit's `RuntimeMaxSec` is now 630 s; run `sudo nightgrid-node allow helper` again after upgrading to pick it up.
+  - Root's `/etc/nightgrid-node/fixes.toml`, written by `sudo nightgrid-node fix` and safe to edit: extra allow and units, `journal_keep`, runbooks and automation rules; `config.toml` is never rewritten (N-061).
+  - Automation presets on the self-healing engine, off by default, root only: `services` (a new `unit-failed` condition, listed units only), `containers`, `stopped`, `journal`, `packages`, `images`, each off, preview or on (N-063).
+- One terminal menu for every settings-style command, in the Nightgrid app's colours and glyphs: `nightgrid-node` and `nightgrid-hub` on their own, `fix`, `allow`/`deny` with no name, `serve` with no arguments. Plain numbered lists with `NO_COLOR`, `NIGHTGRID_PLAIN=1` or piped output (N-064).
+- Protocol: unchanged (the frozen protocol test passes as it was). `actions.policy` lists only protocol action types; `actions.log` may now carry `fix.*` actions and the sources `menu (uid N)` and `autofix NAME`.
+
 ## 0.26.0 · H1: the hub (unreleased)
 
 - New, optional binary `nightgrid-hub` for one always-on host per network ([docs/HUB.md](docs/HUB.md)). It needs Nightgrid Node on the same host and changes nothing on hosts that don't opt in.

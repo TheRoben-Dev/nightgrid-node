@@ -18,6 +18,7 @@ use sha2::{Digest, Sha256};
 use crate::config::Config;
 use crate::daemon::{now_secs, Shared};
 use crate::events::NewEvent;
+use crate::fixes::LocalFixes;
 use crate::store::{Result, Store};
 
 const GENESIS: &str = "0000000000000000000000000000000000000000000000000000000000000000";
@@ -25,12 +26,17 @@ const GENESIS: &str = "000000000000000000000000000000000000000000000000000000000
 const KEEP_ROWS: i64 = 100_000;
 pub const MAX_LOG: usize = 500;
 
-pub fn policy(config: &Config) -> ActionsPolicy {
+/// What the app sees: root's allow list from `config.toml` and `fixes.toml`,
+/// limited to the protocol's action types (`fix.*` are node-local).
+pub fn policy(config: &Config, local: &LocalFixes) -> ActionsPolicy {
     ActionsPolicy {
-        allowed: config.actions.allow.clone(),
+        allowed: crate::fixes::allow_list(config, local)
+            .into_iter()
+            .filter(|a| action::ALL.contains(&a.as_str()))
+            .collect(),
         known: action::ALL.iter().map(|s| (*s).to_owned()).collect(),
         max_per_hour: config.actions.max_per_hour,
-        units: config.actions.units.clone(),
+        units: crate::fixes::units(config, local),
         helper: crate::helper::installed(std::path::Path::new(crate::helper::SOCKET)),
     }
 }
@@ -56,6 +62,12 @@ fn verb(a: &str) -> (&'static str, &'static str) {
         action::POWER_POWEROFF => ("power off", "powering off"),
         action::FIREWALL_BLOCK => ("block", "blocked"),
         action::FIREWALL_UNBLOCK => ("unblock", "unblocked"),
+        crate::fixes::UNIT_RESET => ("clear the failed state of", "cleared"),
+        crate::fixes::JOURNAL_VACUUM => ("vacuum the journal", "vacuumed the journal"),
+        crate::fixes::LOGROTATE => ("rotate logs", "rotated logs"),
+        crate::fixes::PACKAGE_CACHE => ("clean the package cache", "cleaned the package cache"),
+        crate::fixes::SSH_PERMISSIONS => ("fix ssh permissions for", "fixed ssh permissions for"),
+        crate::fixes::RUNBOOK => ("run runbook", "ran runbook"),
         _ => ("run", "ran"),
     }
 }
@@ -205,27 +217,40 @@ fn runs_last_hour(store: &Store, now: i64) -> Result<u32> {
 
 /// Decides whether `req` may run; `Err` is the refusal reason.
 fn check(shared: &Shared, req: &ActionRequest, now: i64) -> std::result::Result<(), String> {
-    if !action::ALL.contains(&req.action.as_str()) {
+    if !crate::fixes::known(&req.action) {
         return Err(format!("unknown action {:?}", req.action));
     }
     if req.action == action::FILES_ROLLBACK {
         return Err("files.rollback runs through changes.begin".into());
     }
-    if !shared.config.actions.allow.iter().any(|a| a == &req.action) {
+    // Root may just have allowed it from the menu.
+    crate::heal::refresh_fixes(shared);
+    let local = shared.fixes.lock().unwrap_or_else(|e| e.into_inner()).local.clone();
+    if !crate::fixes::allowed(&shared.config, &local, &req.action) {
         return Err(format!(
-            "{} is not allowed on this host (root can add it to [actions] allow in /etc/nightgrid-node/config.toml)",
+            "{} is not allowed on this host (root can allow it with `sudo nightgrid-node fix`, or add it to \
+             [actions] allow in /etc/nightgrid-node/config.toml)",
             req.action
         ));
     }
-    if action::needs_helper(&req.action) {
-        if action::takes_unit(&req.action) {
+    if crate::fixes::needs_helper(&req.action) {
+        if crate::fixes::takes_unit(&req.action) {
             let unit = req.target.as_deref().unwrap_or("");
-            if !shared.config.actions.units.iter().any(|u| u == unit) {
+            if !crate::fixes::unit_listed(&shared.config, &local, unit) {
                 return Err(format!(
-                    "{unit:?} is not a unit root listed (root can add it to [actions] units in \
-                     /etc/nightgrid-node/config.toml)"
+                    "{unit:?} is not a unit root listed (root can add it with `sudo nightgrid-node fix`, or to \
+                     [actions] units in /etc/nightgrid-node/config.toml)"
                 ));
             }
+        }
+        match req.action.as_str() {
+            crate::fixes::SSH_PERMISSIONS if !crate::install::valid_user(req.target.as_deref().unwrap_or("")) => {
+                return Err(format!("not a user name: {:?}", req.target.as_deref().unwrap_or("")));
+            }
+            crate::fixes::RUNBOOK if local.runbook(req.target.as_deref().unwrap_or("")).is_none() => {
+                return Err(format!("no runbook named {:?}", req.target.as_deref().unwrap_or("")));
+            }
+            _ => {}
         }
         if action::takes_address(&req.action) {
             let target = req.target.as_deref().unwrap_or("");
@@ -281,7 +306,7 @@ fn human_bytes(b: u64) -> String {
 
 /// Carries out an allowed, checked action through the engine.
 fn execute(shared: &Shared, req: &ActionRequest) -> std::result::Result<String, String> {
-    if action::needs_helper(&req.action) {
+    if crate::fixes::needs_helper(&req.action) {
         let r = crate::helper::call(&shared.helper_socket, &req.into())?;
         return if r.ok { Ok(r.detail) } else { Err(r.detail) };
     }
@@ -311,11 +336,7 @@ pub fn run(shared: &Shared, req: &ActionRequest, source: &str) -> ActionRecord {
     let now = now_secs();
     let (word, _) = verb(&req.action);
     let what = match req.target.as_deref() {
-        Some(t)
-            if action::takes_container(&req.action)
-                || action::takes_unit(&req.action)
-                || action::takes_address(&req.action) =>
-        {
+        Some(t) if crate::fixes::takes_target(&req.action) => {
             format!("{word} {t}")
         }
         _ => word.to_owned(),
@@ -480,6 +501,6 @@ mod tests {
         let r = run(&shared, &req("unit.restart", Some("nginx.service"), false), "rule r");
         assert_eq!((r.outcome, r.detail.as_str()), (ActionOutcome::Ok, "restarted nginx.service"));
         t.join().unwrap();
-        assert!(policy(&shared.config).units == ["nginx.service"]);
+        assert!(policy(&shared.config, &LocalFixes::default()).units == ["nginx.service"]);
     }
 }

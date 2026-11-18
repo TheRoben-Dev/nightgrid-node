@@ -652,6 +652,67 @@ except urllib.error.HTTPError as e:
   test ! -e /etc/nightgrid-node/status-token || fail "token left after deny"
   systemctl is-active --quiet nightgrid-node-status && fail "status page still running after deny"
 
+  say "fix: lists without colour, root allows from it, fixes go through the helper into the audit log"
+  as_user "/usr/local/bin/nightgrid-node fix list" | tee /tmp/ngn-fix.txt
+  grep -q 'NIGHTGRID NODE · FIX' /tmp/ngn-fix.txt || fail "fix list"
+  esc=$(printf '\033')
+  grep -q "$esc" /tmp/ngn-fix.txt && fail "colour codes in piped output"
+  as_user "/usr/local/bin/nightgrid-node fix list --json" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert {f["name"] for f in d["fixes"]} >= {"journal","restart","ssh"}, d' || fail "fix list --json"
+  as_user "/usr/local/bin/nightgrid-node fix journal -y" </dev/null && fail "a login user allowed a fix"
+  /usr/local/bin/nightgrid-node fix journal -y </dev/null | tee /tmp/ngn-fixj.txt || { journalctl -u 'nightgrid-node-helper@*' --no-pager -n 30; fail "fix journal"; }
+  grep -q 'done' /tmp/ngn-fixj.txt || fail "fix journal did not finish"
+  grep -q 'fix.journal-vacuum' /etc/nightgrid-node/fixes.toml || fail "fixes.toml not written"
+  [ "$(stat -c '%a %U' /etc/nightgrid-node/fixes.toml)" = "644 root" ] || fail "fixes.toml mode"
+  as_user "/usr/local/bin/nightgrid-node audit --count 3" | grep 'fix.journal-vacuum' | grep -q 'menu (uid 0)' || fail "fix not in the audit log"
+
+  say "fix ssh: tightens ~/.ssh, never follows a link"
+  h=$(getent passwd "$user" | cut -d: -f6)
+  mkdir -p "$h/.ssh" && echo 'ssh-ed25519 AAAA ci' > "$h/.ssh/authorized_keys"
+  chown -R "$user:" "$h/.ssh" && chmod 755 "$h/.ssh" && chmod 664 "$h/.ssh/authorized_keys"
+  as_user "/usr/local/bin/nightgrid-node fix list" | grep -q "SSH key permissions are too open" || fail "loose ssh permissions not detected"
+  /usr/local/bin/nightgrid-node fix ssh "$user" -y </dev/null | tee /tmp/ngn-fixs.txt || { journalctl -u 'nightgrid-node-helper@*' --no-pager -n 30; fail "fix ssh"; }
+  [ "$(stat -c '%a' "$h/.ssh") $(stat -c '%a' "$h/.ssh/authorized_keys")" = "700 600" ] || fail "ssh permissions not fixed"
+  ln -s /etc/shadow "$h/.ssh/authorized_keys2"
+  shadow=$(stat -c '%a %U' /etc/shadow)
+  /usr/local/bin/nightgrid-node fix ssh "$user" -y </dev/null && fail "fix ssh followed a link"
+  [ "$(stat -c '%a %U' /etc/shadow)" = "$shadow" ] || fail "/etc/shadow touched"
+  rm -f "$h/.ssh/authorized_keys2"
+
+  say "fix run: a runbook root wrote, no shell"
+  cat >> /etc/nightgrid-node/fixes.toml <<'TOML'
+
+[[runbook]]
+name = "hello"
+description = "Say hello"
+run = ["/bin/echo", "hello from a runbook"]
+TOML
+  /usr/local/bin/nightgrid-node fix run hello -y </dev/null | tee /tmp/ngn-fixr.txt || fail "fix run"
+  grep -q 'hello from a runbook' /tmp/ngn-fixr.txt || fail "runbook output"
+
+  say "fix auto: a failed unit root listed is restarted by itself, audited"
+  cat > /etc/systemd/system/ngn-flaky.service <<'UNIT'
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/test -e /run/ngn-flaky-ok
+UNIT
+  systemctl daemon-reload && { systemctl start ngn-flaky || true; }
+  [ "$(systemctl is-failed ngn-flaky)" = failed ] || fail "ngn-flaky should have failed"
+  as_user "/usr/local/bin/nightgrid-node fix list" | grep -q 'ngn-flaky.service has failed' || fail "failed unit not detected"
+  /usr/local/bin/nightgrid-node fix reset ngn-flaky.service -y </dev/null || fail "fix reset"
+  [ "$(systemctl is-failed ngn-flaky)" != failed ] || fail "failed state not cleared"
+  systemctl start ngn-flaky || true
+  /usr/local/bin/nightgrid-node fix auto services on -y </dev/null || fail "fix auto on"
+  sed -i '/^id = "services"/,/^give_up_after/ s/^for_minutes = .*/for_minutes = 1/' /etc/nightgrid-node/fixes.toml
+  touch /run/ngn-flaky-ok
+  i=0; until systemctl is-active --quiet ngn-flaky; do
+    i=$((i+1)); [ $i -lt 120 ] || { journalctl -u 'nightgrid-node-helper@*' --no-pager -n 20; fail "autofix didn't restart ngn-flaky"; }; sleep 1; done
+  as_user "/usr/local/bin/nightgrid-node audit --count 5" | grep 'ngn-flaky.service' | grep -q 'autofix services' || fail "autofix run not in the audit log"
+  /usr/local/bin/nightgrid-node fix auto services off -y </dev/null || fail "fix auto off"
+  grep -q 'id = "services"' /etc/nightgrid-node/fixes.toml && fail "preset still in fixes.toml"
+  rm -f /etc/nightgrid-node/fixes.toml /run/ngn-flaky-ok
+  systemctl stop ngn-flaky; rm -f /etc/systemd/system/ngn-flaky.service; systemctl daemon-reload
+
   say "doctor: a clean bill with the link on; a stopped link unit is named"
   /usr/local/bin/nightgrid-node allow peers >/dev/null
   as_user "/usr/local/bin/nightgrid-node doctor" | tee /tmp/ngn-doctor.txt || fail "doctor found a failure"

@@ -23,6 +23,7 @@ use nightgrid_node_proto::{action, ActionRequest};
 use serde::{Deserialize, Serialize};
 
 use crate::config::Config;
+use crate::fixes::LocalFixes;
 
 /// Where the helper's socket unit listens.
 pub const SOCKET: &str = "/run/nightgrid-node-helper.sock";
@@ -58,7 +59,7 @@ pub struct Reply {
 }
 
 impl Reply {
-    fn no(detail: impl Into<String>) -> Self {
+    pub fn no(detail: impl Into<String>) -> Self {
         Self { ok: false, detail: detail.into() }
     }
 }
@@ -66,6 +67,10 @@ impl Reply {
 /// Runs a fixed command; `Err` carries what it printed.
 pub trait Runner {
     fn run(&mut self, prog: &str, args: &[&str]) -> Result<(), String>;
+    /// Like `run`, but also returns what it printed (stdout, then stderr).
+    fn output(&mut self, prog: &str, args: &[&str]) -> Result<String, String> {
+        self.run(prog, args).map(|()| String::new())
+    }
 }
 
 pub struct RealRunner;
@@ -82,10 +87,25 @@ impl Runner for RealRunner {
             Err(if msg.is_empty() { format!("{prog} failed ({})", out.status) } else { msg })
         }
     }
+
+    fn output(&mut self, prog: &str, args: &[&str]) -> Result<String, String> {
+        let out =
+            Command::new(prog).args(args).env("SYSTEMD_PAGER", "").output().map_err(|e| format!("{prog}: {e}"))?;
+        let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
+        text.push_str(&String::from_utf8_lossy(&out.stderr));
+        if out.status.success() {
+            Ok(text)
+        } else {
+            let tail: Vec<&str> = text.lines().rev().filter(|l| !l.trim().is_empty()).take(3).collect();
+            let msg: Vec<&str> = tail.into_iter().rev().collect();
+            let msg = crate::events::tidy(msg.join(" / ").trim(), 300);
+            Err(if msg.is_empty() { format!("{prog} failed ({})", out.status) } else { msg })
+        }
+    }
 }
 
 /// Checks a request against root's config and carries it out.
-pub fn handle(config: &Config, req: &HelperRequest, store: &Path, run: &mut dyn Runner) -> Reply {
+pub fn handle(config: &Config, local: &LocalFixes, req: &HelperRequest, store: &Path, run: &mut dyn Runner) -> Reply {
     let a = req.action.as_str();
     if let Some(op) = a.strip_prefix("files.").filter(|op| matches!(*op, "snapshot" | "restore" | "discard")) {
         if !config.actions.allow.iter().any(|x| x == action::FILES_ROLLBACK) {
@@ -102,18 +122,21 @@ pub fn handle(config: &Config, req: &HelperRequest, store: &Path, run: &mut dyn 
             Err(e) => Reply::no(e),
         };
     }
-    if !action::needs_helper(a) || a == action::FILES_ROLLBACK {
+    if !crate::fixes::needs_helper(a) || a == action::FILES_ROLLBACK {
         return Reply::no(format!("the helper doesn't do {a:?}"));
     }
-    if !config.actions.allow.iter().any(|x| x == a) {
+    if !crate::fixes::allowed(config, local, a) {
         return Reply::no(format!("{a} is not in [actions] allow"));
+    }
+    if crate::fixes::is_local(a) {
+        return crate::fixes::helper_run(config, local, a, req.target.as_deref(), run);
     }
     if action::takes_address(a) {
         return crate::firewall::handle(&config.block, a, req.target.as_deref().unwrap_or(""), run);
     }
     if action::takes_unit(a) {
         let unit = req.target.as_deref().unwrap_or("");
-        if !action::valid_unit(unit) || !config.actions.units.iter().any(|u| u == unit) {
+        if !crate::fixes::unit_listed(config, local, unit) {
             return Reply::no(format!("{unit:?} is not in [actions] units"));
         }
         let (verb, done) = match a {
@@ -165,7 +188,14 @@ pub fn serve(config_path: &Path) -> Result<(), String> {
         match (read, serde_json::from_str::<HelperRequest>(&line)) {
             (Ok(_), Ok(req)) => {
                 let reply = match Config::load(config_path) {
-                    Ok(config) => handle(&config, &req, Path::new(ROLLBACK_DIR), &mut RealRunner),
+                    Ok(config) => {
+                        // A broken fixes.toml adds nothing (config.toml still counts).
+                        let local = LocalFixes::load(&crate::fixes::path_for(config_path)).unwrap_or_else(|e| {
+                            crate::warn!("helper: {e}");
+                            LocalFixes::default()
+                        });
+                        handle(&config, &local, &req, Path::new(ROLLBACK_DIR), &mut RealRunner)
+                    }
                     Err(e) => Reply::no(format!("config: {e}")),
                 };
                 crate::info!(
@@ -197,7 +227,9 @@ pub fn installed(socket: &Path) -> bool {
 /// Asks the helper (from the service). `Err` is a transport problem.
 pub fn call(socket: &Path, req: &HelperRequest) -> Result<Reply, String> {
     let mut s = UnixStream::connect(socket).map_err(|e| format!("root helper ({}): {e}", socket.display()))?;
-    s.set_read_timeout(Some(Duration::from_secs(90))).map_err(|e| e.to_string())?;
+    // Fixes run up to fixes::MAX_SECS in their own unit; the rest are quick.
+    let wait = if crate::fixes::is_local(&req.action) { u64::from(crate::fixes::MAX_SECS) + 60 } else { 90 };
+    s.set_read_timeout(Some(Duration::from_secs(wait))).map_err(|e| e.to_string())?;
     let mut line = serde_json::to_vec(req).map_err(|e| e.to_string())?;
     line.push(b'\n');
     s.write_all(&line).map_err(|e| format!("root helper: {e}"))?;
@@ -236,24 +268,69 @@ mod tests {
     fn checks_roots_config_itself() {
         let mut c = Config::default();
         let mut f = Fake::default();
-        assert!(!handle(&c, &req("unit.restart", Some("nginx.service")), Path::new("/nonexistent"), &mut f).ok);
+        assert!(
+            !handle(
+                &c,
+                &LocalFixes::default(),
+                &req("unit.restart", Some("nginx.service")),
+                Path::new("/nonexistent"),
+                &mut f
+            )
+            .ok
+        );
         c.actions.allow = vec!["unit.restart".into(), "power.reboot".into()];
-        let r = handle(&c, &req("unit.restart", Some("nginx.service")), Path::new("/nonexistent"), &mut f);
+        let r = handle(
+            &c,
+            &LocalFixes::default(),
+            &req("unit.restart", Some("nginx.service")),
+            Path::new("/nonexistent"),
+            &mut f,
+        );
         assert_eq!(r, Reply::no("\"nginx.service\" is not in [actions] units"));
         c.actions.units = vec!["nginx.service".into()];
-        let r = handle(&c, &req("unit.restart", Some("nginx.service")), Path::new("/nonexistent"), &mut f);
+        let r = handle(
+            &c,
+            &LocalFixes::default(),
+            &req("unit.restart", Some("nginx.service")),
+            Path::new("/nonexistent"),
+            &mut f,
+        );
         assert_eq!(r, Reply { ok: true, detail: "restarted nginx.service".into() });
         assert!(
-            !handle(&c, &req("unit.stop", Some("nginx.service")), Path::new("/nonexistent"), &mut f).ok,
+            !handle(
+                &c,
+                &LocalFixes::default(),
+                &req("unit.stop", Some("nginx.service")),
+                Path::new("/nonexistent"),
+                &mut f
+            )
+            .ok,
             "stop not allowed"
         );
-        assert!(!handle(&c, &req("container.restart", Some("web")), Path::new("/nonexistent"), &mut f).ok);
-        assert!(!handle(&c, &req("power.poweroff", None), Path::new("/nonexistent"), &mut f).ok);
-        let r = handle(&c, &req("power.reboot", None), Path::new("/nonexistent"), &mut f);
+        assert!(
+            !handle(
+                &c,
+                &LocalFixes::default(),
+                &req("container.restart", Some("web")),
+                Path::new("/nonexistent"),
+                &mut f
+            )
+            .ok
+        );
+        assert!(
+            !handle(&c, &LocalFixes::default(), &req("power.poweroff", None), Path::new("/nonexistent"), &mut f).ok
+        );
+        let r = handle(&c, &LocalFixes::default(), &req("power.reboot", None), Path::new("/nonexistent"), &mut f);
         assert!(r.ok && r.detail.contains("shutdown -c"), "{r:?}");
         assert_eq!(f.log, ["systemctl restart -- nginx.service", "shutdown -r +1 requested from Nightgrid Node"]);
         f.fail = true;
-        let r = handle(&c, &req("unit.restart", Some("nginx.service")), Path::new("/nonexistent"), &mut f);
+        let r = handle(
+            &c,
+            &LocalFixes::default(),
+            &req("unit.restart", Some("nginx.service")),
+            Path::new("/nonexistent"),
+            &mut f,
+        );
         assert_eq!(r, Reply::no("Unit x.service not found."));
     }
 

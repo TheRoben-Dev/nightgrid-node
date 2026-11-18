@@ -206,6 +206,8 @@ pub struct Session {
     pub proto: Option<u32>,
     /// The peer's uid, for the log.
     pub uid: String,
+    /// What the client called itself in `hello`.
+    pub client: String,
     /// Streams subscribed to (protocol 2).
     pub streams: BTreeSet<String>,
 }
@@ -407,6 +409,7 @@ fn dispatch(shared: &Shared, session: &mut Session, req: &Request) -> Result<Res
         };
         session.proto = Some(v);
         let client: String = h.client.chars().filter(|c| !c.is_control()).take(80).collect();
+        session.client = client.clone();
         // The node's own units (link, check runner, helpers) connect often.
         // SAFETY: geteuid has no preconditions.
         if session.uid.parse::<u32>().ok() == Some(unsafe { libc::geteuid() }) && client.starts_with("nightgrid-node") {
@@ -555,10 +558,15 @@ fn dispatch(shared: &Shared, session: &mut Session, req: &Request) -> Result<Res
             let r = shared.net.lock().unwrap_or_else(|e| e.into_inner()).clone();
             Ok(Response::ok(0, r))
         }
-        method::ACTIONS_POLICY => Ok(Response::ok(0, crate::actions::policy(&shared.config))),
+        method::ACTIONS_POLICY => {
+            let local = shared.fixes.lock().unwrap_or_else(|e| e.into_inner()).local.clone();
+            Ok(Response::ok(0, crate::actions::policy(&shared.config, &local)))
+        }
         method::ACTIONS_RUN => {
             let r: ActionRequest = params(&req.params)?;
-            let source = format!("app (uid {})", session.uid);
+            // The label is what the client says it is; the uid is what counts.
+            let who = if session.client == crate::menu::CLIENT { "menu" } else { "app" };
+            let source = format!("{who} (uid {})", session.uid);
             Ok(Response::ok(0, crate::actions::run(shared, &r, &source)))
         }
         method::ACTIONS_LOG => {
