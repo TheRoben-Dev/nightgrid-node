@@ -191,10 +191,12 @@ jobs:
             arch: armv7
             target: armv7-unknown-linux-musleabihf
             platform: linux/arm/v7
+          # The i686 binary is static, so it runs in the amd64 Debian image on
+          # the x86_64 kernel; i386 Debian images can't resolve DNS on the
+          # runner, so apt can't set up sysvinit there.
           - init: sysvinit
             arch: i686
             target: i686-unknown-linux-musl
-            platform: linux/386
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
