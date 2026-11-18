@@ -617,10 +617,11 @@ impl Config {
         {
             return Err("network.dhcp_servers takes at most 32 IPv4 addresses".into());
         }
-        if let Some(a) = self.actions.allow.iter().find(|a| !nightgrid_node_proto::action::ALL.contains(&a.as_str())) {
+        if let Some(a) = self.actions.allow.iter().find(|a| !crate::fixes::known(a)) {
             return Err(format!(
-                "actions.allow: unknown action {a:?} (known: {})",
-                nightgrid_node_proto::action::ALL.join(", ")
+                "actions.allow: unknown action {a:?} (known: {}, {})",
+                nightgrid_node_proto::action::ALL.join(", "),
+                crate::fixes::LOCAL.join(", ")
             ));
         }
         if !(1..=1000).contains(&self.actions.max_per_hour) {
@@ -750,6 +751,11 @@ dhcp_servers = []
 #   unit.restart, unit.start, unit.stop      (need allow helper, and units)
 #   power.reboot, power.poweroff             (need allow helper; one minute
 #                                             later, cancel with shutdown -c)
+# Host fixes for `nightgrid-node fix` (need allow helper; node-local):
+#   fix.unit-reset, fix.journal-vacuum, fix.logrotate, fix.package-cache,
+#   fix.ssh-permissions, fix.runbook
+# `sudo nightgrid-node fix` can also allow these for you; it keeps its own
+# list (and runbooks and autofix rules) in fixes.toml next to this file.
 allow = []
 # Most real runs per hour, all rules and the app together (1-1000).
 max_per_hour = 20

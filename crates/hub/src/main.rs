@@ -10,6 +10,7 @@ use nightgrid_node::install::RealSys;
 const HELP: &str = "nightgrid-hub: optional Nightgrid hub, one per network
 
 USAGE:
+    nightgrid-hub                   (on a terminal: the menu)
     nightgrid-hub <command> [options]
 
 COMMANDS:
@@ -28,6 +29,7 @@ COMMANDS:
                             node-to-node link, read-only, and prints the hub's id
                             and fingerprint for pairing (root)
     deny collect            Stop the collector (root)
+    allow | deny            Menu: the hub's access and whether it's on
     status                  The members and their state
     query METHOD [JSON]     Send one request to the hub and print the answer
     bridge                  Connect stdin/stdout to the hub's socket
@@ -222,9 +224,96 @@ fn status(a: &Args) -> Result<(), String> {
     Ok(())
 }
 
+fn euid() -> u32 {
+    // SAFETY: geteuid has no preconditions.
+    unsafe { libc::geteuid() }
+}
+
+/// `nightgrid-hub allow` / `deny` with no name: the hub's access, on or off.
+fn access_menu(a: &Args) -> Result<(), String> {
+    use nightgrid_node::tui::{self, Item, Menu, Tone};
+    const ABOUT: &str = "Pull the members over their node-to-node link, read-only, and print the hub's id and \
+                         fingerprint for pairing.";
+    loop {
+        let l = install::Layout::system();
+        let on = install::collect_allowed(&l);
+        let mut m = Menu::new("hub", "access");
+        m.subtitle = "what root lets the hub do".into();
+        m.section("Access");
+        m.item(
+            Item::new("collect", "Collect from the members", ABOUT)
+                .state(if on { Tone::Ok } else { Tone::Dim }, if on { "on" } else { "off" }),
+        );
+        if !tui::interactive() {
+            println!("{}", m.plain_with_title());
+            println!("\nChange it (root): nightgrid-hub allow collect | deny collect");
+            return Ok(());
+        }
+        if tui::pick(&m).is_none() {
+            return Ok(());
+        }
+        println!("\n{}\n  {ABOUT}", tui::banner("hub", "access · collect"));
+        if euid() != 0 {
+            println!(
+                "{} Run: sudo nightgrid-hub {} collect",
+                tui::pill(Tone::Dim, "root only"),
+                if on { "deny" } else { "allow" }
+            );
+        } else if tui::confirm(if on { "Stop the collector?" } else { "Start the collector?" }, !on) {
+            let r = if on {
+                install::deny_collect(&l, &mut RealSys)
+            } else {
+                install::allow_collect(&l, &mut RealSys, a.no_start)
+            };
+            match r {
+                Ok(rep) => print_report(&rep, false),
+                Err(e) => println!("{} {e}", tui::pill(Tone::Danger, "error")),
+            }
+        }
+        tui::pause();
+    }
+}
+
+/// `nightgrid-hub` alone on a terminal.
+fn home_menu() -> Option<&'static str> {
+    use nightgrid_node::tui::{self, Item, Menu};
+    const ENTRIES: &[(&str, &str, &str, &str)] = &[
+        ("Look", "status", "Members and their state", "Every member node and when it was last pulled."),
+        ("Settings", "access", "Access", "Start or stop the collector (allow/deny collect)."),
+        ("Help", "help", "All commands", "The full command list."),
+    ];
+    let mut m = Menu::new("hub", "");
+    m.subtitle = format!("v{}", env!("CARGO_PKG_VERSION"));
+    let mut group = "";
+    for (g, key, label, about) in ENTRIES {
+        if *g != group {
+            m.section(g);
+            group = g;
+        }
+        m.item(Item::new(*key, *label, *about));
+    }
+    tui::pick(&m).map(|i| ENTRIES[i].1)
+}
+
 fn real_main() -> Result<(), String> {
     nightgrid_node::log::set_name("nightgrid-hub");
     let a = parse_args()?;
+    if a.cmd.is_empty() && nightgrid_node::tui::interactive() {
+        while let Some(cmd) = home_menu() {
+            let b = Args { cmd: if cmd == "access" { "allow".into() } else { cmd.into() }, ..parse_args()? };
+            if let Err(e) = dispatch(b) {
+                eprintln!("nightgrid-hub: {e}");
+            }
+            if cmd != "access" {
+                nightgrid_node::tui::pause();
+            }
+        }
+        return Ok(());
+    }
+    dispatch(a)
+}
+
+fn dispatch(a: Args) -> Result<(), String> {
     if matches!(a.cmd.as_str(), "status" | "query" | "version" | "help" | "") {
         // SAFETY: setting a signal's disposition to its default has no preconditions.
         unsafe { libc::signal(libc::SIGPIPE, libc::SIG_DFL) };
@@ -251,6 +340,7 @@ fn real_main() -> Result<(), String> {
             print_report(&r, a.json);
             Ok(())
         }
+        "allow" | "deny" if a.rest.is_empty() => access_menu(&a),
         "allow" | "deny" => {
             if a.rest.first().map(String::as_str) != Some("collect") {
                 return Err(format!("{} what? (collect)", a.cmd));

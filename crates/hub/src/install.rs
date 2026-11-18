@@ -328,6 +328,11 @@ fn collector_details(layout: &Layout, rep: &mut Report) {
     rep.warnings.push(format!("the collector hasn't reported yet; see: journalctl -u {COLLECT_SERVICE}"));
 }
 
+/// Whether root started the collector (`allow collect`).
+pub fn collect_allowed(layout: &Layout) -> bool {
+    layout.unit(COLLECT_SERVICE).exists()
+}
+
 pub fn allow_collect(layout: &Layout, sys: &mut dyn Sys, no_start: bool) -> Result<Report, String> {
     preflight(layout)?;
     if !layout.unit(SERVICE).exists() {

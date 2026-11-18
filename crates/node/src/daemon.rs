@@ -47,6 +47,9 @@ pub struct Shared {
     pub dhcp: Mutex<crate::dhcp::Dhcp>,
     /// Self-healing rules and what they are tracking.
     pub heal: Mutex<crate::heal::Heal>,
+    /// Root's `fixes.toml` (allow, units, runbooks, autofix), re-read when it changes.
+    pub fixes: Mutex<crate::fixes::FixesState>,
+    pub fixes_path: PathBuf,
     /// The root helper's socket (tests point it elsewhere).
     pub helper_socket: PathBuf,
     /// Host health readings from the health helper.
@@ -105,6 +108,8 @@ impl Shared {
             net_inbox: Mutex::new(crate::netwatch::Inbox::default()),
             dhcp: Mutex::new(dhcp),
             heal: Mutex::new(heal),
+            fixes: Mutex::new(crate::fixes::FixesState::default()),
+            fixes_path: PathBuf::from("/etc/nightgrid-node").join(crate::fixes::FILE_NAME),
             helper_socket: PathBuf::from(crate::helper::SOCKET),
             health: Mutex::new(crate::health::watch::HealthState::default()),
             health_socket: PathBuf::from(crate::health::watch::SOCKET),
@@ -126,6 +131,8 @@ impl Shared {
 #[derive(Debug, Clone)]
 pub struct Paths {
     pub data_dir: PathBuf,
+    /// Root's `fixes.toml` (next to the config file).
+    pub fixes: PathBuf,
 }
 
 impl Paths {
@@ -135,7 +142,7 @@ impl Paths {
             .map(|v| PathBuf::from(v.to_string_lossy().split(':').next().unwrap_or_default().to_owned()))
             .filter(|p| p.is_absolute())
             .unwrap_or_else(|| PathBuf::from(crate::config::DEFAULT_DATA_DIR));
-        Self { data_dir }
+        Self { data_dir, fixes: PathBuf::from("/etc/nightgrid-node").join(crate::fixes::FILE_NAME) }
     }
 
     pub fn db(&self) -> PathBuf {
@@ -266,7 +273,11 @@ pub fn sd_notify(state: &str) {
 pub fn run(config: Config, paths: Paths) -> Result<(), String> {
     std::fs::create_dir_all(&paths.data_dir).map_err(|e| format!("{}: {e}", paths.data_dir.display()))?;
     let (store, recovered) = Store::open_or_recover(&paths.db())?;
-    let shared = Shared::new(config.clone(), store);
+    let mut shared = Shared::new(config.clone(), store);
+    if let Some(s) = Arc::get_mut(&mut shared) {
+        s.fixes_path = paths.fixes.clone();
+    }
+    crate::heal::refresh_fixes(&shared);
     if let Some(note) = recovered {
         crate::warn!("{note}");
         use nightgrid_node_proto::{EventKind, Level};

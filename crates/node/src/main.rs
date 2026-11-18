@@ -7,7 +7,21 @@ use nightgrid_node::{cli, client, daemon, install};
 const HELP: &str = "nightgrid-node: optional agent for the Nightgrid homelab app
 
 USAGE:
+    nightgrid-node                  (on a terminal: the menu)
     nightgrid-node <command> [options]
+
+FIX THINGS:
+    fix                     Menu: what looks wrong, every fix root allows,
+                            and automation. Asks before anything runs
+    fix list [--json]       The same as a list
+    fix NAME [TARGET] [-y]  Run one fix (asks first; -y doesn't):
+                              restart UNIT|CONTAINER  reset UNIT  start CONTAINER
+                              journal  logs  packages  prune  ssh [USER]
+                              reboot  run RUNBOOK
+    fix auto                Menu: what the node may fix by itself
+    fix auto NAME on|preview|off
+                            Switch a preset (root): services, containers,
+                            stopped, journal, packages, images
 
 COMMANDS:
     run                     Run the service (systemd starts this)
@@ -39,6 +53,8 @@ COMMANDS:
                             its secret link (root; again to see the link)
     deny docker|journal|netwatch|helper|health|power|checks|peers|statuspage
                             Take that access away again (root)
+    allow | deny            Menu: every access and whether it's on
+    serve                   Menu: what paired peers may ask this node
     serve add|remove ping|ups|sync
                             Change what paired peers may ask this node ([peers] serve),
                             then restart the service and the link (root)
@@ -72,6 +88,7 @@ COMMANDS:
 OPTIONS:
     --config PATH           Config file (default /etc/nightgrid-node/config.toml)
     --socket PATH           Socket to connect to (default: from the config)
+    -y, --yes               Don't ask (fix)
     --data-dir PATH         History directory for `run` (default: systemd's
                             StateDirectory, else /var/lib/nightgrid-node)
 ";
@@ -89,6 +106,7 @@ struct Args {
     count: Option<u64>,
     sha256: Option<String>,
     allow_downgrade: bool,
+    yes: bool,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -106,6 +124,7 @@ fn parse_args() -> Result<Args, String> {
         count: None,
         sha256: None,
         allow_downgrade: false,
+        yes: false,
     };
     while let Some(x) = it.next() {
         let mut val = |name: &str| it.next().ok_or_else(|| format!("{name} needs a value"));
@@ -120,6 +139,7 @@ fn parse_args() -> Result<Args, String> {
             "--count" => a.count = Some(val("--count")?.parse().map_err(|_| "--count needs a number")?),
             "--sha256" => a.sha256 = Some(val("--sha256")?.to_ascii_lowercase()),
             "--allow-downgrade" => a.allow_downgrade = true,
+            "-y" | "--yes" => a.yes = true,
             "-h" | "--help" => a.cmd = "help".into(),
             "-V" | "--version" => a.cmd = "version".into(),
             s if s.starts_with("--") => return Err(format!("unknown option {s}")),
@@ -161,17 +181,66 @@ fn real_main() -> Result<(), String> {
     let a = parse_args()?;
     if matches!(
         a.cmd.as_str(),
-        "status" | "doctor" | "events" | "audit" | "query" | "watch" | "completions" | "man" | "version" | "help" | ""
+        "status"
+            | "doctor"
+            | "events"
+            | "audit"
+            | "query"
+            | "watch"
+            | "completions"
+            | "man"
+            | "version"
+            | "help"
+            | ""
+            | "fix"
     ) {
         // Rust ignores SIGPIPE; let `nightgrid-node events | head` end quietly
         // instead of panicking on the closed pipe.
         // SAFETY: setting a signal's disposition to its default has no preconditions.
         unsafe { libc::signal(libc::SIGPIPE, libc::SIG_DFL) };
     }
+    if a.cmd.is_empty() && nightgrid_node::tui::interactive() {
+        // `nightgrid-node` alone on a terminal: the home menu.
+        while let Some(cmd) = nightgrid_node::menu::home() {
+            let mut b = Args { cmd: cmd.to_owned(), ..parse_args()? };
+            if cmd == "access" {
+                b.cmd = "allow".into();
+            }
+            if let Err(e) = dispatch(b) {
+                if !e.is_empty() {
+                    eprintln!("nightgrid-node: {e}");
+                }
+            }
+            if !matches!(cmd, "fix" | "access" | "serve") {
+                nightgrid_node::tui::pause();
+            }
+        }
+        return Ok(());
+    }
+    dispatch(a)
+}
+
+fn fix_ctx(a: &Args) -> nightgrid_node::menu::Ctx {
+    nightgrid_node::menu::Ctx { config_path: a.config.clone(), socket: socket(a), yes: a.yes, json: a.json }
+}
+
+fn dispatch(a: Args) -> Result<(), String> {
     match a.cmd.as_str() {
+        "fix" => nightgrid_node::menu::fix(&fix_ctx(&a), &a.rest),
+        "fix-apply" => match a.rest.as_slice() {
+            [what, user] if what == "ssh-permissions" => {
+                let msg = nightgrid_node::fixes::apply_ssh_permissions(user)?;
+                println!("{msg}");
+                Ok(())
+            }
+            _ => Err("fix-apply is run by the root helper".into()),
+        },
+        "allow" | "deny" if a.rest.is_empty() => nightgrid_node::menu::access(&a.config),
+        "serve" if a.rest.is_empty() => nightgrid_node::menu::serve(&a.config),
         "run" => {
             let config = Config::load(&a.config)?;
             let mut paths = daemon::Paths::from_env();
+            paths.fixes = nightgrid_node::fixes::path_for(&a.config);
             if let Some(d) = &a.data_dir {
                 paths.data_dir = d.clone();
             }
@@ -435,7 +504,9 @@ fn main() -> ExitCode {
     match real_main() {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("nightgrid-node: {e}");
+            if !e.is_empty() {
+                eprintln!("nightgrid-node: {e}");
+            }
             ExitCode::FAILURE
         }
     }

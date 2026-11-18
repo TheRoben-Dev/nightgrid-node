@@ -194,6 +194,7 @@ impl Verify {
 
 /// The commands and options, for completions.
 const COMMANDS: &[&str] = &[
+    "fix",
     "run",
     "install",
     "upgrade",
@@ -215,7 +216,10 @@ const COMMANDS: &[&str] = &[
 ];
 const GRANTS: &[&str] =
     &["docker", "journal", "netwatch", "helper", "health", "power", "checks", "peers", "statuspage"];
+const FIX_WORDS: &str = "list auto restart reset start journal logs packages prune ssh reboot run";
+
 const OPTIONS: &[&str] = &[
+    "--yes",
     "--config",
     "--socket",
     "--data-dir",
@@ -237,6 +241,8 @@ pub fn completions(shell: &str) -> Option<String> {
     let grants = GRANTS.join(" ");
     let opts = OPTIONS.join(" ");
     let streams = STREAMS.join(" ");
+    let fix = FIX_WORDS;
+    let auto = crate::menu::PRESETS.iter().map(|p| p.key).collect::<Vec<_>>().join(" ");
     match shell {
         "bash" => Some(format!(
             r#"# bash completion for nightgrid-node
@@ -248,6 +254,7 @@ _nightgrid_node() {{
     case $cmd in
         allow|deny) [[ $COMP_CWORD -eq 2 ]] && COMPREPLY=($(compgen -W "{grants}" -- "$cur")) ;;
         watch) COMPREPLY=($(compgen -W "{streams}" -- "$cur")) ;;
+        fix) [[ $COMP_CWORD -eq 2 ]] && COMPREPLY=($(compgen -W "{fix}" -- "$cur")); [[ $COMP_CWORD -eq 3 && ${{COMP_WORDS[2]}} == auto ]] && COMPREPLY=($(compgen -W "{auto}" -- "$cur")); [[ $COMP_CWORD -eq 4 && ${{COMP_WORDS[2]}} == auto ]] && COMPREPLY=($(compgen -W "on preview off" -- "$cur")) ;;
         audit) [[ $COMP_CWORD -eq 2 ]] && COMPREPLY=($(compgen -W "verify" -- "$cur")) ;;
         serve) [[ $COMP_CWORD -eq 2 ]] && COMPREPLY=($(compgen -W "add remove" -- "$cur")); [[ $COMP_CWORD -eq 3 ]] && COMPREPLY=($(compgen -W "ping ups sync" -- "$cur")) ;;
         completions) [[ $COMP_CWORD -eq 2 ]] && COMPREPLY=($(compgen -W "bash zsh fish" -- "$cur")) ;;
@@ -267,6 +274,7 @@ _nightgrid-node() {{
     case $words[2] in
         allow|deny) (( CURRENT == 3 )) && compadd -- {grants} ;;
         watch) compadd -- {streams} ;;
+        fix) (( CURRENT == 3 )) && compadd -- {fix}; (( CURRENT == 4 )) && [[ $words[3] == auto ]] && compadd -- {auto}; (( CURRENT == 5 )) && [[ $words[3] == auto ]] && compadd -- on preview off ;;
         audit) (( CURRENT == 3 )) && compadd -- verify ;;
         serve) (( CURRENT == 3 )) && compadd -- add remove; (( CURRENT == 4 )) && compadd -- ping ups sync ;;
         completions) (( CURRENT == 3 )) && compadd -- bash zsh fish ;;
@@ -284,6 +292,10 @@ _nightgrid-node "$@"
             o += &format!("complete -c nightgrid-node -n '__fish_seen_subcommand_from allow deny' -a '{grants}'\n");
             o += &format!("complete -c nightgrid-node -n '__fish_seen_subcommand_from watch' -a '{streams}'\n");
             o += "complete -c nightgrid-node -n '__fish_seen_subcommand_from audit' -a verify\n";
+            o += &format!("complete -c nightgrid-node -n '__fish_seen_subcommand_from fix; and not __fish_seen_subcommand_from auto' -a '{fix}'\n");
+            o += &format!(
+                "complete -c nightgrid-node -n '__fish_seen_subcommand_from auto' -a '{auto} on preview off'\n"
+            );
             o += "complete -c nightgrid-node -n '__fish_seen_subcommand_from serve' -a 'add remove ping ups sync'\n";
             o += "complete -c nightgrid-node -n '__fish_seen_subcommand_from completions' -a 'bash zsh fish'\n";
             o += "complete -c nightgrid-node -n '__fish_seen_subcommand_from upgrade' -F\n";
