@@ -16,8 +16,8 @@ error_logger="logger -t nightgrid-node -p daemon.warning"
 retry="TERM/15/KILL/5"
 
 depend() {
-	need localmount
-	after bootmisc logger
+	use localmount logger
+	after bootmisc
 }
 
 start_pre() {

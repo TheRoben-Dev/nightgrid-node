@@ -11,12 +11,14 @@ name=ngn-rc-$$
 case "$init" in
   openrc)
     image=alpine:3.20
-    # OpenRC outside of boot: mark the runlevel as started.
-    setup="apk add -q openrc procps-ng >/dev/null && mkdir -p /run/openrc && touch /run/openrc/softlevel && adduser -D -s /bin/sh tester"
+    # OpenRC as after a boot: a container system (rc_sys), then the boot and
+    # default runlevels once, so /run/openrc has its state as on a real host.
+    setup="apk add -q openrc procps-ng >/dev/null && sed -i 's/^#*rc_sys=.*/rc_sys=\"docker\"/' /etc/rc.conf && mkdir -p /run/openrc && touch /run/openrc/softlevel && (openrc boot && openrc default) >/dev/null 2>&1; adduser -D -s /bin/sh tester"
     ;;
   sysvinit)
     image=debian:12
-    setup="apt-get -qq update && DEBIAN_FRONTEND=noninteractive apt-get -qq install -y procps sysv-rc >/dev/null && useradd -m -s /bin/sh tester"
+    # apt-get update succeeds even when DNS fails, so retry the install.
+    setup="for i in 1 2 3; do apt-get -qq update; DEBIAN_FRONTEND=noninteractive apt-get -qq install -y procps sysv-rc >/dev/null && break; [ \$i = 3 ] && exit 1; sleep 15; done; useradd -m -s /bin/sh tester"
     ;;
   *) echo "openrc or sysvinit"; exit 2 ;;
 esac

@@ -759,10 +759,21 @@ fn install_rc(
         rep.step("enabled at boot, not started".to_string());
         return Ok(rep);
     }
-    if init == Init::Openrc {
-        sys.run("rc-service", &[SERVICE, "restart"])?;
+    let started = if init == Init::Openrc {
+        // OpenRC's `restart` of a service it doesn't count as started can
+        // trip over its own state ("already starting"); start it plainly
+        // unless it runs.
+        let running = sys.run("rc-service", &[SERVICE, "status"]).is_ok();
+        sys.run("rc-service", &[SERVICE, if running { "restart" } else { "start" }])
     } else {
-        sys.run(&script, &["restart"])?;
+        sys.run(&script, &["restart"])
+    };
+    match started {
+        Ok(_) => {}
+        // Someone (or OpenRC itself) is starting it already: the socket
+        // check below tells whether it came up.
+        Err(e) if e.contains("already start") => rep.warnings.push(e),
+        Err(e) => return Err(e),
     }
     rep.step("service started".to_string());
     if layout.is_system() {
@@ -1391,6 +1402,7 @@ mod tests {
                 }
                 ("getent", ["group", g]) if self.groups && g.parse::<u32>().is_ok() => Ok(format!("docker:x:{g}:")),
                 ("getent", _) => Err("no".into()),
+                ("rc-service", [_, "status"]) => Err(" * status: stopped".into()),
                 ("systemd-sysusers", _) => {
                     self.account = true;
                     Ok(String::new())
@@ -1722,7 +1734,14 @@ mod tests {
         assert_eq!(rep.host.as_ref().unwrap().init, "openrc");
         assert!(rep.warnings.iter().any(|w| w.contains("without systemd's sandbox")), "{:?}", rep.warnings);
         assert!(sys.log.contains(&"rc-update add nightgrid-node default".to_string()), "{:?}", sys.log);
-        assert!(sys.log.ends_with(&["rc-service nightgrid-node restart".to_string()]), "{:?}", sys.log);
+        assert!(
+            sys.log.ends_with(&[
+                "rc-service nightgrid-node status".to_string(),
+                "rc-service nightgrid-node start".to_string()
+            ]),
+            "{:?}",
+            sys.log
+        );
         // No systemd-sysusers here: useradd makes the account.
         assert!(sys.log.iter().any(|l| l.starts_with("useradd -r -M -d /var/lib/nightgrid-node")), "{:?}", sys.log);
         let json = serde_json::to_value(&rep).unwrap();
