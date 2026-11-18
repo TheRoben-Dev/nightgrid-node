@@ -172,7 +172,7 @@ jobs:
           path: dist-bin
       - run: chmod +x dist-bin/nightgrid-node dist-bin/nightgrid-hub && file dist-bin/nightgrid-node
       - name: Debian 12 armhf with systemd as PID 1, install, doctor and a hub pairing
-        run: CONTAINER_ARGS="--platform linux/arm/v7" BOOT_SECS=600 sh ci/container-test.sh debian:12 "$PWD/dist-bin/nightgrid-node" "$PWD/dist-bin/nightgrid-hub"
+        run: CONTAINER_ARGS="--platform linux/arm/v7" BOOT_SECS=600 FAST_SU=1 sh ci/container-test.sh debian:12 "$PWD/dist-bin/nightgrid-node" "$PWD/dist-bin/nightgrid-hub"
 
   install-rc:
     name: Install e2e without systemd (${{ matrix.init }}, ${{ matrix.arch }})

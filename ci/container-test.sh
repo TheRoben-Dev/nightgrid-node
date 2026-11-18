@@ -27,9 +27,9 @@ docker cp "$bin" "$name":/root/nightgrid-node
 docker cp "$here/install-test.sh" "$name":/root/install-test.sh
 docker cp "$here/../dist/uninstall.sh" "$name":/root/uninstall.sh
 docker exec "$name" useradd -m -s /bin/sh tester
-docker exec -e UNINSTALL_SH=/root/uninstall.sh "$name" sh /root/install-test.sh /root/nightgrid-node tester
+docker exec -e UNINSTALL_SH=/root/uninstall.sh -e FAST_SU="${FAST_SU:-}" "$name" sh /root/install-test.sh /root/nightgrid-node tester
 if [ -n "$hub" ]; then
   docker cp "$hub" "$name":/root/nightgrid-hub
   docker cp "$here/hub-test.sh" "$name":/root/hub-test.sh
-  docker exec "$name" sh /root/hub-test.sh /root/nightgrid-node /root/nightgrid-hub tester
+  docker exec -e FAST_SU="${FAST_SU:-}" "$name" sh /root/hub-test.sh /root/nightgrid-node /root/nightgrid-hub tester
 fi

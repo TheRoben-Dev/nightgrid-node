@@ -19,7 +19,18 @@ fail() {
 }
 q() { /usr/local/bin/nightgrid-node query "$@"; }
 h() { /usr/local/bin/nightgrid-hub query "$@"; }
-as_user() { su -s /bin/sh "$user" -c "$1"; }
+# Runs a command as another account. su goes through PAM, which under
+# qemu-user (CI's armv7 job) takes over a minute per call; FAST_SU=1 uses
+# setpriv instead, with the same uid, gid and groups from /etc/group.
+run_as() {
+  if [ -n "${FAST_SU:-}" ] && command -v setpriv >/dev/null; then
+    setpriv --reuid="$1" --regid="$(id -g "$1")" --init-groups \
+      env HOME="$(getent passwd "$1" | cut -d: -f6)" USER="$1" LOGNAME="$1" sh -c "$2"
+  else
+    su -s /bin/sh "$1" -c "$2"
+  fi
+}
+as_user() { run_as "$user" "$1"; }
 # Resident kB of PID itself. Under qemu-user (CI's armv7 job) VmRSS also
 # counts the emulator, so only the guest's pages are summed: a 32-bit guest
 # lives below 4 GiB, qemu above it. Natively this is VmRSS.
@@ -57,7 +68,7 @@ systemctl is-active --quiet nightgrid-hub || fail "hub not active"
 [ "$(stat -c %a /run/nightgrid-hub/hub.sock)" = 660 ] || fail "hub socket mode"
 [ "$(stat -c %a /var/lib/nightgrid-hub)" = 700 ] || fail "hub state dir mode"
 as_user "/usr/local/bin/nightgrid-hub status" | grep -q 'no members yet' || fail "status for the allowed user"
-if su -s /bin/sh nobody -c "/usr/local/bin/nightgrid-hub status" >/dev/null 2>&1; then fail "nobody could connect"; fi
+if run_as nobody "/usr/local/bin/nightgrid-hub status" >/dev/null 2>&1; then fail "nobody could connect"; fi
 pid=$(systemctl show -p MainPID --value nightgrid-hub)
 if command -v ss >/dev/null; then ss -tulpnH | grep "pid=$pid," && fail "hub main unit has a network socket" || true; fi
 
