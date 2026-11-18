@@ -10,8 +10,6 @@
 - One terminal menu for every settings-style command, in the Nightgrid app's colours and glyphs: `nightgrid-node` and `nightgrid-hub` on their own, `fix`, `allow`/`deny` with no name, `serve` with no arguments. Plain numbered lists with `NO_COLOR`, `NIGHTGRID_PLAIN=1` or piped output (N-064).
 - Protocol: unchanged (the frozen protocol test passes as it was). `actions.policy` lists only protocol action types; `actions.log` may now carry `fix.*` actions and the sources `menu (uid N)` and `autofix NAME`.
 
-## 0.26.0 · H1: the hub (unreleased)
-
 ## 0.26.1 · install fix (2026-11-18)
 
 - `install` (node and hub) now creates its directories as 0755 whatever the umask of the shell that ran sudo. Under a strict umask (0077 or 0027) 0.26.0 created `/etc/nightgrid-node` (or `/etc/nightgrid-hub`) closed to the service account, so the service exited with `config.toml: Permission denied` and restarted in a loop.
