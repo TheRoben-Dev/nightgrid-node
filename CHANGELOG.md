@@ -3,6 +3,8 @@
 ## 0.26.1 · install fix (2026-11-18)
 
 - `install` (node and hub) now creates its directories as 0755 whatever the umask of the shell that ran sudo. Under a strict umask (0077 or 0027) 0.26.0 created `/etc/nightgrid-node` (or `/etc/nightgrid-hub`) closed to the service account, so the service exited with `config.toml: Permission denied` and restarted in a loop.
+- `nightgrid-node serve add|remove` no longer fails with `Unit nightgrid-node-peer.service not found` when the node-to-node link is off. It restarts only the node and says to run `sudo nightgrid-node allow peers` (the config change itself was already saved).
+- README: the hub steps now include `allow peers` on each member, the tailnet requirement, and how to pair a hub and its members by hand until the app does it.
 - Running `install` again on a host installed with 0.26.0 opens that directory (0755) and says so. By hand: `sudo chmod 755 /etc/nightgrid-node && sudo systemctl restart nightgrid-node`.
 
 ## 0.26.0 · H1: the hub (2026-11-18)

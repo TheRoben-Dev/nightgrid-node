@@ -759,9 +759,23 @@ pub fn serve(layout: &Layout, sys: &mut dyn Sys, name: &str, add: bool) -> Resul
                 .into(),
         );
     }
-    if layout.is_system() {
-        sys.run("systemctl", &["try-restart", SERVICE, PEER_SERVICE])?;
+    if layout.has(&PEERS) {
+        if layout.is_system() {
+            sys.run("systemctl", &["try-restart", SERVICE, PEER_SERVICE])?;
+        }
         rep.step("restarted the service and the link (where running)".to_string());
+    } else {
+        if layout.is_system() {
+            sys.run("systemctl", &["try-restart", SERVICE])?;
+        }
+        rep.step("restarted the service (where running)".to_string());
+        if add {
+            rep.warnings.push(
+                "the node-to-node link is off, so no peer can ask for this yet. Turn it on with: \
+                 sudo nightgrid-node allow peers"
+                    .into(),
+            );
+        }
     }
     Ok(rep)
 }
@@ -1220,6 +1234,21 @@ mod tests {
         allow(&layout, &mut sys, Grant::Power, Path::new("/x"), true).unwrap();
         uninstall(&layout, &mut sys, false).unwrap();
         assert!(!layout.at(POWER_RULE).exists());
+    }
+
+    #[test]
+    fn serve_without_the_link_says_how_to_turn_it_on() {
+        let (_d, layout, exe) = setup();
+        let mut sys = FakeSys::default();
+        install(&layout, &mut sys, &exe, &InstallOptions::default()).unwrap();
+        let rep = serve(&layout, &mut sys, "sync", true).unwrap();
+        assert!(std::fs::read_to_string(layout.config()).unwrap().contains(r#"serve = ["ping", "sync"]"#));
+        assert!(rep.warnings.iter().any(|w| w.contains("sudo nightgrid-node allow peers")), "{:?}", rep.warnings);
+        assert!(rep.steps.last().unwrap().contains("restarted the service (where"), "{:?}", rep.steps);
+        allow(&layout, &mut sys, Grant::Peers, Path::new("/x"), true).unwrap();
+        let rep = serve(&layout, &mut sys, "ups", true).unwrap();
+        assert!(!rep.warnings.iter().any(|w| w.contains("allow peers")), "{:?}", rep.warnings);
+        assert!(rep.steps.last().unwrap().contains("and the link"), "{:?}", rep.steps);
     }
 
     #[test]
