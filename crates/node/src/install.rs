@@ -18,7 +18,13 @@ use std::process::Command;
 
 use serde::Serialize;
 
+pub use crate::host::Init;
+
 pub const SERVICE: &str = "nightgrid-node";
+/// The service script for hosts with OpenRC instead of systemd.
+pub const OPENRC_SCRIPT: &str = include_str!("../../../dist/openrc/nightgrid-node");
+/// The service script for hosts with sysvinit (and start-stop-daemon).
+pub const SYSVINIT_SCRIPT: &str = include_str!("../../../dist/sysvinit/nightgrid-node");
 pub const USER: &str = "nightgrid-node";
 pub const UNIT: &str = include_str!("../../../dist/systemd/nightgrid-node.service");
 /// The opt-in network watch helper (`allow netwatch`).
@@ -126,16 +132,20 @@ impl Layout {
         let name = e.dropin.map_or("rollback.conf", |(n, _)| n);
         self.system_unit(&format!("{}.d", e.files[e.files.len() - 1].0)).join(name)
     }
-    fn write_extra(&self, e: &Extra, rep: &mut Report, verb: &str) -> Result<(), String> {
+    fn write_extra(&self, e: &Extra, rep: &mut Report, verb: &str, sys: &mut dyn Sys) -> Result<(), String> {
+        let version = self.systemd_version();
         for (name, body) in e.files {
-            write_file(&self.system_unit(name), body, 0o644)?;
+            let dropped = write_unit(&self.system_unit(name), body, version, &self.root, sys)?;
             rep.step(format!("{verb} {}", self.system_unit(name).display()));
+            note_unsupported(rep, name, version, dropped);
         }
         if let Some((_, f)) = e.dropin {
             let path = self.extra_dropin(e);
             make_dirs(path.parent().unwrap_or(Path::new("/")))?;
-            write_file(&path, &f(self), 0o644)?;
+            let a = crate::units::adapt(&f(self), version);
+            write_file(&path, &a.text, 0o644)?;
             rep.step(format!("{verb} {}", path.display()));
+            note_unsupported(rep, &path.to_string_lossy(), version, a.dropped);
         }
         Ok(())
     }
@@ -300,12 +310,182 @@ impl Layout {
     fn is_system(&self) -> bool {
         self.root == Path::new("/")
     }
+    /// The init system. A test root without markers counts as systemd.
+    pub fn init(&self) -> Init {
+        match crate::host::init_at(&self.root) {
+            Init::Other if !self.is_system() => Init::Systemd,
+            i => i,
+        }
+    }
+    /// The running systemd's version (a test root: `run/systemd/version`).
+    pub fn systemd_version(&self) -> Option<u32> {
+        if self.is_system() {
+            crate::host::systemd_version()
+        } else {
+            std::fs::read_to_string(self.at("/run/systemd/version")).ok()?.trim().parse().ok()
+        }
+    }
+    /// What kind of host this is, for the reports.
+    pub fn facts(&self) -> crate::host::HostFacts {
+        if self.is_system() {
+            crate::host::facts()
+        } else {
+            crate::host::facts_at(&self.root, "x86_64", "test", self.systemd_version())
+        }
+    }
+    /// `/etc/init.d/nightgrid-node` on hosts without systemd.
+    pub fn init_script(&self) -> PathBuf {
+        self.at("/etc/init.d/nightgrid-node")
+    }
+    /// A file under the root (for the account files and markers).
+    pub fn path(&self, p: &str) -> PathBuf {
+        self.at(p)
+    }
+}
+
+/// The error for something that needs systemd on a host without it. `install
+/// --json` and the others print it as `{"error":{"code":"no_systemd",...}}`.
+pub fn no_systemd(what: &str, init: Init) -> String {
+    format!(
+        "{what} needs systemd, and this host's init is {} (Nightgrid Node installs on systemd, OpenRC and sysvinit \
+         with start-stop-daemon; the extra access and the hub need systemd)",
+        init.name()
+    )
+}
+
+/// The `code` for a failed command's JSON error: `no_systemd`, `not_root` or `failed`.
+pub fn error_code(message: &str) -> &'static str {
+    if message.contains(" needs systemd, and this host") {
+        "no_systemd"
+    } else if message.starts_with("run this as root") {
+        "not_root"
+    } else {
+        "failed"
+    }
+}
+
+/// `{"error":{"code":...,"message":...}}`, one line.
+pub fn error_json(message: &str) -> String {
+    serde_json::json!({ "error": { "code": error_code(message), "message": message } }).to_string()
+}
+
+/// Whether `prog` is on the PATH.
+pub fn has(sys: &mut dyn Sys, prog: &str) -> bool {
+    sys.run("sh", &["-c", &format!("command -v {prog} >/dev/null 2>&1")]).is_ok()
+}
+
+/// Whether `/etc/passwd` (or `/etc/group`) under `root` lists `name`.
+fn listed(root: &Path, file: &str, name: &str) -> bool {
+    std::fs::read_to_string(root.join(file))
+        .map(|t| t.lines().any(|l| l.split(':').next() == Some(name)))
+        .unwrap_or(false)
+}
+
+/// Makes the service account (no shell, no password) and its group:
+/// `systemd-sysusers` with systemd, else `useradd`, else BusyBox `adduser`.
+/// Returns the step to report.
+#[allow(clippy::too_many_arguments)]
+pub fn ensure_account(
+    root: &Path,
+    sys: &mut dyn Sys,
+    init: Init,
+    user: &str,
+    home: &str,
+    sysusers: &Path,
+    sysusers_body: &str,
+) -> Result<String, String> {
+    if init == Init::Systemd && has(sys, "systemd-sysusers") {
+        write_file(sysusers, sysusers_body, 0o644)?;
+        sys.run("systemd-sysusers", &[&sysusers.to_string_lossy()])?;
+        return Ok(format!("service account {user} ready"));
+    }
+    if listed(root, "etc/passwd", user) {
+        return Ok(format!("service account {user} ready (already there)"));
+    }
+    let shell = ["/usr/sbin/nologin", "/sbin/nologin", "/bin/false"]
+        .into_iter()
+        .find(|p| root.join(p.trim_start_matches('/')).exists())
+        .unwrap_or("/bin/false");
+    if has(sys, "useradd") {
+        if !listed(root, "etc/group", user) {
+            sys.run("groupadd", &["-r", user])?;
+        }
+        sys.run("useradd", &["-r", "-M", "-d", home, "-s", shell, "-g", user, user])?;
+    } else if has(sys, "adduser") {
+        // BusyBox.
+        if !listed(root, "etc/group", user) {
+            sys.run("addgroup", &["-S", user])?;
+        }
+        sys.run("adduser", &["-S", "-D", "-H", "-h", home, "-s", shell, "-G", user, user])?;
+    } else {
+        return Err("no way to make the service account here (no systemd-sysusers, useradd or adduser)".into());
+    }
+    Ok(format!("made the service account {user}"))
+}
+
+/// Adds a login user to the service's group: `usermod`, else BusyBox `addgroup`.
+pub fn add_to_group(sys: &mut dyn Sys, login: &str, group: &str) -> Result<(), String> {
+    if has(sys, "usermod") {
+        sys.run("usermod", &["-a", "-G", group, login]).map(|_| ())
+    } else if has(sys, "addgroup") {
+        sys.run("addgroup", &[login, group]).map(|_| ())
+    } else {
+        sys.run("gpasswd", &["-a", login, group]).map(|_| ())
+    }
+}
+
+/// Writes a systemd unit fitted to the running systemd, creating the state
+/// directories an old systemd won't. Returns the settings left out.
+pub fn write_unit(
+    path: &Path,
+    body: &str,
+    version: Option<u32>,
+    root: &Path,
+    sys: &mut dyn Sys,
+) -> Result<Vec<String>, String> {
+    let a = crate::units::adapt(body, version);
+    write_file(path, &a.text, 0o644)?;
+    for (dir, mode, user) in &a.state_dirs {
+        let d = root.join(dir.trim_start_matches('/'));
+        make_dirs(&d)?;
+        std::fs::set_permissions(&d, std::fs::Permissions::from_mode(*mode)).map_err(|e| e.to_string())?;
+        if root == Path::new("/") {
+            sys.run("chown", &[&format!("{user}:{user}"), dir])?;
+        }
+    }
+    Ok(a.dropped)
+}
+
+/// Records settings an old systemd lacks; for the link and the checks
+/// runner that includes the kernel-enforced network limit, which is worth a
+/// warning of its own.
+fn note_unsupported(rep: &mut Report, unit: &str, version: Option<u32>, dropped: Vec<String>) {
+    if dropped.iter().any(|d| d.starts_with("IPAddress")) {
+        rep.warnings.push(format!(
+            "systemd {} can't limit {unit} to its networks (IPAddressAllow needs 235); it only talks to the \
+             nodes the app paired, over mutual TLS",
+            version.unwrap_or(0)
+        ));
+    }
+    for d in dropped {
+        if !rep.unsupported.contains(&d) {
+            rep.unsupported.push(d);
+        }
+    }
 }
 
 /// The commands install and uninstall run.
 pub trait Sys {
     /// Runs a program; `Err` with its stderr when it fails.
     fn run(&mut self, prog: &str, args: &[&str]) -> Result<String, String>;
+
+    /// Runs an init script that starts a daemon. Like `run`, but the output
+    /// must not go through pipes this process waits on: the daemon (and
+    /// OpenRC's `output_logger`) inherit them and would hold them open for
+    /// as long as the service runs.
+    fn run_starter(&mut self, prog: &str, args: &[&str]) -> Result<String, String> {
+        self.run(prog, args)
+    }
 }
 
 /// Runs real commands.
@@ -318,6 +498,36 @@ impl Sys for RealSys {
             Ok(String::from_utf8_lossy(&out.stdout).into_owned())
         } else {
             Err(format!("{prog} {}: {}", args.join(" "), String::from_utf8_lossy(&out.stderr).trim()))
+        }
+    }
+
+    fn run_starter(&mut self, prog: &str, args: &[&str]) -> Result<String, String> {
+        // Output goes to an unlinked temp file, read back after the script exits.
+        use std::os::unix::fs::OpenOptionsExt;
+        let path = std::env::temp_dir().join(format!("nightgrid-node-start.{}", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let mut f = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path)
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        let _ = std::fs::remove_file(&path);
+        let status = Command::new(prog)
+            .args(args)
+            .stdin(std::process::Stdio::null())
+            .stdout(f.try_clone().map_err(|e| format!("temp file: {e}"))?)
+            .stderr(f.try_clone().map_err(|e| format!("temp file: {e}"))?)
+            .status()
+            .map_err(|e| format!("{prog}: {e}"))?;
+        use std::io::{Read, Seek};
+        let mut out = String::new();
+        let _ = f.seek(std::io::SeekFrom::Start(0)).and_then(|_| f.read_to_string(&mut out));
+        if status.success() {
+            Ok(out)
+        } else {
+            Err(format!("{prog} {}: {}", args.join(" "), out.trim()))
         }
     }
 }
@@ -344,6 +554,13 @@ pub struct Report {
     /// `allow statuspage`: the page's secret link.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
+    /// `install`: what kind of host this is (`arch`, `assetArch`, `libc`,
+    /// `init`, `initVersion`, `kernel`, `busybox`, `limits`).
+    #[serde(flatten)]
+    pub host: Option<crate::host::HostFacts>,
+    /// systemd settings left out because this systemd is too old for them.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub unsupported: Vec<String>,
 }
 
 impl Report {
@@ -426,7 +643,18 @@ fn copy_binary(from: &Path, to: &Path) -> Result<bool, String> {
     Ok(true)
 }
 
+/// Root and systemd: for everything but install and uninstall, which also
+/// work with OpenRC and sysvinit.
 pub fn preflight(layout: &Layout) -> Result<(), String> {
+    preflight_root(layout)?;
+    match layout.init() {
+        Init::Systemd => Ok(()),
+        other => Err(no_systemd("this", other)),
+    }
+}
+
+/// Only root.
+pub fn preflight_root(layout: &Layout) -> Result<(), String> {
     if !layout.is_system() {
         return Ok(());
     }
@@ -434,20 +662,26 @@ pub fn preflight(layout: &Layout) -> Result<(), String> {
     if unsafe { libc::geteuid() } != 0 {
         return Err("run this as root (sudo nightgrid-node ...)".into());
     }
-    if !Path::new("/run/systemd/system").is_dir() {
-        return Err("systemd is not running on this host; Nightgrid Node needs it".into());
-    }
     Ok(())
 }
 
 pub fn install(layout: &Layout, sys: &mut dyn Sys, self_exe: &Path, opts: &InstallOptions) -> Result<Report, String> {
-    preflight(layout)?;
+    preflight_root(layout)?;
     for u in &opts.allow_users {
         if !valid_user(u) {
             return Err(format!("not a usable login name: {u:?}"));
         }
     }
-    let mut rep = Report { action: "install", version: env!("CARGO_PKG_VERSION"), ..Default::default() };
+    let init = layout.init();
+    if init == Init::Other {
+        return Err(no_systemd("installing the service", init));
+    }
+    let mut rep = Report {
+        action: "install",
+        version: env!("CARGO_PKG_VERSION"),
+        host: Some(layout.facts()),
+        ..Default::default()
+    };
 
     if copy_binary(self_exe, &layout.bin())? {
         rep.step(format!("installed {}", layout.bin().display()));
@@ -461,9 +695,9 @@ pub fn install(layout: &Layout, sys: &mut dyn Sys, self_exe: &Path, opts: &Insta
         }
     }
 
-    write_file(&layout.sysusers(), SYSUSERS, 0o644)?;
-    sys.run("systemd-sysusers", &[&layout.sysusers().to_string_lossy()])?;
-    rep.step(format!("service account {USER} ready"));
+    let step =
+        ensure_account(&layout.root, sys, init, USER, crate::config::DEFAULT_DATA_DIR, &layout.sysusers(), SYSUSERS)?;
+    rep.step(step);
 
     if !layout.config().exists() {
         write_file(&layout.config(), crate::config::TEMPLATE, 0o644)?;
@@ -476,19 +710,25 @@ pub fn install(layout: &Layout, sys: &mut dyn Sys, self_exe: &Path, opts: &Insta
         rep.step(format!("made {} readable to the service (was closed by the umask)", layout.config_dir().display()));
     }
 
-    write_file(&layout.unit(), UNIT, 0o644)?;
+    if init != Init::Systemd {
+        return install_rc(layout, sys, init, opts, rep);
+    }
+    let version = layout.systemd_version();
+    rep.unsupported = write_unit(&layout.unit(), UNIT, version, &layout.root, sys)?;
     rep.step(format!("wrote {}", layout.unit().display()));
+    if !rep.unsupported.is_empty() {
+        rep.warnings.push(format!(
+            "systemd {} is older than some of the unit's sandbox settings; left out: {}",
+            version.unwrap_or(0),
+            rep.unsupported.join(", ")
+        ));
+    }
     let extras: Vec<&Extra> = EXTRAS.into_iter().filter(|e| layout.has(e)).collect();
     for e in &extras {
-        layout.write_extra(e, &mut rep, "updated")?;
+        layout.write_extra(e, &mut rep, "updated", sys)?;
     }
 
-    for u in &opts.allow_users {
-        sys.run("id", &["-u", u]).map_err(|_| format!("no such user: {u}"))?;
-        sys.run("usermod", &["-a", "-G", USER, u])?;
-        rep.users.push(u.clone());
-        rep.step(format!("{u} may use the node (from their next login)"));
-    }
+    add_users(sys, opts, &mut rep)?;
 
     sys.run("systemctl", &["daemon-reload"])?;
     sys.run("systemctl", &["enable", SERVICE])?;
@@ -510,6 +750,140 @@ pub fn install(layout: &Layout, sys: &mut dyn Sys, self_exe: &Path, opts: &Insta
     Ok(rep)
 }
 
+fn add_users(sys: &mut dyn Sys, opts: &InstallOptions, rep: &mut Report) -> Result<(), String> {
+    for u in &opts.allow_users {
+        sys.run("id", &["-u", u]).map_err(|_| format!("no such user: {u}"))?;
+        add_to_group(sys, u, USER)?;
+        rep.users.push(u.clone());
+        rep.step(format!("{u} may use the node (from their next login)"));
+    }
+    Ok(())
+}
+
+/// The rest of `install` on a host with OpenRC or sysvinit: the same
+/// account, config, socket and data directory, started by a service script
+/// instead of a unit, and without systemd's sandbox.
+fn install_rc(
+    layout: &Layout,
+    sys: &mut dyn Sys,
+    init: Init,
+    opts: &InstallOptions,
+    mut rep: Report,
+) -> Result<Report, String> {
+    let script = if init == Init::Openrc { OPENRC_SCRIPT } else { SYSVINIT_SCRIPT };
+    write_file(&layout.init_script(), script, 0o755)?;
+    rep.step(format!("wrote {} ({})", layout.init_script().display(), init.name()));
+    let data = layout.data_dir();
+    make_dirs(&data)?;
+    std::fs::set_permissions(&data, std::fs::Permissions::from_mode(0o700)).map_err(|e| e.to_string())?;
+    if layout.is_system() {
+        sys.run("chown", &[&format!("{USER}:{USER}"), &data.to_string_lossy()])?;
+    }
+    rep.warnings.push(format!(
+        "no systemd here ({}): the service runs as {USER} without systemd's sandbox (no kernel-enforced network \
+         ban or memory cap). It still opens no network ports. The extra access (allow ...) and the hub need systemd.",
+        init.name()
+    ));
+    add_users(sys, opts, &mut rep)?;
+    let script = layout.init_script();
+    let script = script.to_string_lossy();
+    match init {
+        Init::Openrc => {
+            sys.run("rc-update", &["add", SERVICE, "default"])?;
+        }
+        _ => enable_sysv(layout, sys)?,
+    }
+    if opts.no_start {
+        rep.step("enabled at boot, not started".to_string());
+        return Ok(rep);
+    }
+    let started = if init == Init::Openrc {
+        // OpenRC's `restart` of a service it doesn't count as started can
+        // trip over its own state ("already starting"); start it plainly
+        // unless it runs.
+        let running = sys.run("rc-service", &[SERVICE, "status"]).is_ok();
+        sys.run_starter("rc-service", &[SERVICE, if running { "restart" } else { "start" }])
+    } else {
+        sys.run_starter(&script, &["restart"])
+    };
+    match started {
+        Ok(_) => {}
+        // Someone (or OpenRC itself) is starting it already: the socket
+        // check below tells whether it came up.
+        Err(e) if e.contains("already start") => rep.warnings.push(e),
+        Err(e) => return Err(e),
+    }
+    rep.step("service started".to_string());
+    if layout.is_system() {
+        wait_ready(&mut rep);
+    }
+    Ok(rep)
+}
+
+/// Enables the sysvinit script at boot: `update-rc.d`, `chkconfig`, or the
+/// rc*.d links by hand.
+fn enable_sysv(layout: &Layout, sys: &mut dyn Sys) -> Result<(), String> {
+    if has(sys, "update-rc.d") {
+        return sys.run("update-rc.d", &[SERVICE, "defaults"]).map(|_| ());
+    }
+    if has(sys, "chkconfig") {
+        return sys.run("chkconfig", &["--add", SERVICE]).map(|_| ());
+    }
+    let base = ["/etc", "/etc/rc.d"].into_iter().find(|b| layout.at(&format!("{b}/rc2.d")).is_dir());
+    let Some(base) = base else {
+        return Err("can't enable the service at boot: no update-rc.d, chkconfig or /etc/rc2.d".into());
+    };
+    for (lvl, name) in
+        [("2", "S90"), ("3", "S90"), ("4", "S90"), ("5", "S90"), ("0", "K10"), ("1", "K10"), ("6", "K10")]
+    {
+        let dir = layout.at(&format!("{base}/rc{lvl}.d"));
+        if dir.is_dir() {
+            let link = dir.join(format!("{name}{SERVICE}"));
+            let _ = std::fs::remove_file(&link);
+            std::os::unix::fs::symlink("../init.d/nightgrid-node", &link)
+                .map_err(|e| format!("{}: {e}", link.display()))?;
+        }
+    }
+    Ok(())
+}
+
+/// Takes the sysvinit/OpenRC service away again.
+fn uninstall_rc(layout: &Layout, sys: &mut dyn Sys, init: Init, rep: &mut Report) {
+    let script = layout.init_script();
+    if !script.exists() {
+        return;
+    }
+    let s = script.to_string_lossy().into_owned();
+    let stopped = if init == Init::Openrc { sys.run("rc-service", &[SERVICE, "stop"]) } else { sys.run(&s, &["stop"]) };
+    match stopped {
+        Ok(_) => rep.step("service stopped".to_string()),
+        Err(e) => rep.warnings.push(e),
+    }
+    let disabled = match init {
+        Init::Openrc => sys.run("rc-update", &["del", SERVICE, "default"]).map(|_| ()),
+        _ if has(sys, "update-rc.d") => {
+            let _ = std::fs::remove_file(&script);
+            sys.run("update-rc.d", &[SERVICE, "remove"]).map(|_| ())
+        }
+        _ if has(sys, "chkconfig") => sys.run("chkconfig", &["--del", SERVICE]).map(|_| ()),
+        _ => {
+            for base in ["/etc", "/etc/rc.d"] {
+                for lvl in ["0", "1", "2", "3", "4", "5", "6"] {
+                    for p in ["S90", "K10"] {
+                        let _ = std::fs::remove_file(layout.at(&format!("{base}/rc{lvl}.d/{p}{SERVICE}")));
+                    }
+                }
+            }
+            Ok(())
+        }
+    };
+    match disabled {
+        Ok(()) => rep.step("disabled at boot".to_string()),
+        Err(e) => rep.warnings.push(e),
+    }
+    let _ = remove(&script, rep);
+}
+
 fn wait_ready(rep: &mut Report) {
     let sock = crate::config::Config::load(Path::new(crate::config::DEFAULT_CONFIG))
         .map(|c| c.server.socket)
@@ -527,8 +901,15 @@ fn wait_ready(rep: &mut Report) {
 /// Stops and removes the service. `purge` also removes history, config and
 /// the service account (so a later install starts with a new node id).
 pub fn uninstall(layout: &Layout, sys: &mut dyn Sys, purge: bool) -> Result<Report, String> {
-    preflight(layout)?;
+    preflight_root(layout)?;
     let mut rep = Report { action: "uninstall", version: env!("CARGO_PKG_VERSION"), ..Default::default() };
+    let init = layout.init();
+    if init != Init::Systemd {
+        uninstall_rc(layout, sys, init, &mut rep);
+        remove(&layout.bin(), &mut rep)?;
+        remove(&crate::upgrade::previous(layout), &mut rep)?;
+        return finish_uninstall(layout, sys, purge, rep);
+    }
     for e in EXTRAS.into_iter().filter(|e| layout.has(e)) {
         match sys.run("systemctl", &["disable", "--now", e.unit]) {
             Ok(_) => rep.step(format!("{} stopped and disabled", e.what)),
@@ -559,19 +940,31 @@ pub fn uninstall(layout: &Layout, sys: &mut dyn Sys, purge: bool) -> Result<Repo
             rep.warnings.push(e);
         }
     }
+    finish_uninstall(layout, sys, purge, rep)
+}
+
+/// History, config and the account: kept, or gone with `--purge`.
+fn finish_uninstall(layout: &Layout, sys: &mut dyn Sys, purge: bool, mut rep: Report) -> Result<Report, String> {
     if purge {
         remove_dir(&layout.data_dir(), &mut rep)?;
         remove_dir(&layout.at(crate::helper::ROLLBACK_DIR), &mut rep)?;
         remove_dir(&layout.at("/var/lib/nightgrid-node-peer"), &mut rep)?;
         remove_dir(&layout.config_dir(), &mut rep)?;
         remove(&layout.sysusers(), &mut rep)?;
-        // userdel also drops the group and every membership in it.
+        // userdel also drops the group and every membership in it. BusyBox
+        // has deluser/delgroup instead (and maybe no getent).
+        let busybox = !has(sys, "userdel");
         if sys.run("id", &["-u", USER]).is_ok() {
-            sys.run("userdel", &[USER])?;
+            sys.run(if busybox { "deluser" } else { "userdel" }, &[USER])?;
             rep.step(format!("removed the {USER} account"));
         }
-        if sys.run("getent", &["group", USER]).is_ok() {
-            sys.run("groupdel", &[USER])?;
+        let group = if layout.at("/etc/group").exists() {
+            listed(&layout.root, "etc/group", USER)
+        } else {
+            sys.run("getent", &["group", USER]).is_ok()
+        };
+        if group {
+            sys.run(if busybox { "delgroup" } else { "groupdel" }, &[USER])?;
             rep.step(format!("removed the {USER} group"));
         }
     } else {
@@ -812,7 +1205,7 @@ pub fn allow(
     let mut rep = Report { action: "allow", version: env!("CARGO_PKG_VERSION"), ..Default::default() };
     if let Some(e) = grant.extra() {
         rep.warnings.push(e.warning.into());
-        layout.write_extra(e, &mut rep, "wrote")?;
+        layout.write_extra(e, &mut rep, "wrote", sys)?;
         if std::ptr::eq(e, &STATUSPAGE) {
             rep.url = Some(status_token(layout, sys, &mut rep)?);
         }
@@ -1017,10 +1410,18 @@ mod tests {
         users: Vec<&'static str>,
         account: bool,
         groups: bool,
+        /// Programs `command -v` doesn't find.
+        missing: Vec<&'static str>,
     }
 
     impl Sys for FakeSys {
         fn run(&mut self, prog: &str, args: &[&str]) -> Result<String, String> {
+            if let ("sh", ["-c", cmd]) = (prog, args) {
+                if let Some(p) = cmd.strip_prefix("command -v ") {
+                    let p = p.split_whitespace().next().unwrap_or("");
+                    return if self.missing.contains(&p) { Err("not found".into()) } else { Ok(String::new()) };
+                }
+            }
             self.log.push(format!("{prog} {}", args.join(" ")));
             match (prog, args) {
                 ("id", [_, u]) if *u == USER => {
@@ -1039,6 +1440,7 @@ mod tests {
                 }
                 ("getent", ["group", g]) if self.groups && g.parse::<u32>().is_ok() => Ok(format!("docker:x:{g}:")),
                 ("getent", _) => Err("no".into()),
+                ("rc-service", [_, "status"]) => Err(" * status: stopped".into()),
                 ("systemd-sysusers", _) => {
                     self.account = true;
                     Ok(String::new())
@@ -1050,6 +1452,17 @@ mod tests {
                 _ => Ok(String::new()),
             }
         }
+    }
+
+    #[test]
+    fn a_starter_that_leaves_a_daemon_behind_returns() {
+        // The child keeps stdout open, as a daemon or OpenRC's logger does.
+        let t = std::time::Instant::now();
+        let out = RealSys.run_starter("sh", &["-c", "sleep 20 & echo started"]).unwrap();
+        assert!(t.elapsed() < std::time::Duration::from_secs(10), "waited for the daemon");
+        assert_eq!(out.trim(), "started");
+        let err = RealSys.run_starter("sh", &["-c", "echo already starting >&2; exit 1"]).unwrap_err();
+        assert!(err.contains("already starting"), "{err}");
     }
 
     fn setup() -> (tempfile::TempDir, Layout, PathBuf) {
@@ -1352,5 +1765,102 @@ mod tests {
         let mut sys = FakeSys::default();
         install(&layout, &mut sys, &exe, &InstallOptions { no_start: true, ..Default::default() }).unwrap();
         assert!(!sys.log.iter().any(|l| l.contains("restart")));
+    }
+
+    #[test]
+    fn openrc_host_gets_a_service_script() {
+        let (_d, layout, exe) = setup();
+        std::fs::create_dir_all(layout.path("/run/openrc")).unwrap();
+        let mut sys = FakeSys { users: vec!["alice"], ..Default::default() };
+        let opts = InstallOptions { allow_users: vec!["alice".into()], no_start: false };
+        let rep = install(&layout, &mut sys, &exe, &opts).unwrap();
+        let script = std::fs::read_to_string(layout.init_script()).unwrap();
+        assert!(
+            script.starts_with("#!/sbin/openrc-run")
+                && script.contains("command_user=\"nightgrid-node:nightgrid-node\"")
+        );
+        assert!(!layout.unit().exists(), "no systemd unit");
+        assert_eq!(rep.host.as_ref().unwrap().init, "openrc");
+        assert!(rep.warnings.iter().any(|w| w.contains("without systemd's sandbox")), "{:?}", rep.warnings);
+        assert!(sys.log.contains(&"rc-update add nightgrid-node default".to_string()), "{:?}", sys.log);
+        assert!(
+            sys.log.ends_with(&[
+                "rc-service nightgrid-node status".to_string(),
+                "rc-service nightgrid-node start".to_string()
+            ]),
+            "{:?}",
+            sys.log
+        );
+        // No systemd-sysusers here: useradd makes the account.
+        assert!(sys.log.iter().any(|l| l.starts_with("useradd -r -M -d /var/lib/nightgrid-node")), "{:?}", sys.log);
+        let json = serde_json::to_value(&rep).unwrap();
+        assert_eq!((json["init"].as_str(), json["arch"].as_str()), (Some("openrc"), Some("x86_64")), "{json}");
+        assert!(json["kernel"].is_string() && json["libc"].is_string());
+
+        // The extra access needs systemd and says so in a way the app can tell.
+        let e = allow(&layout, &mut sys, Grant::Peers, Path::new("/x"), false).unwrap_err();
+        assert_eq!(error_code(&e), "no_systemd", "{e}");
+        let j: serde_json::Value = serde_json::from_str(&error_json(&e)).unwrap();
+        assert_eq!(j["error"]["code"], "no_systemd");
+
+        let rep = uninstall(&layout, &mut sys, true).unwrap();
+        assert!(!layout.init_script().exists() && !layout.bin().exists(), "{:?}", rep.steps);
+        assert!(sys.log.contains(&"rc-update del nightgrid-node default".to_string()));
+    }
+
+    #[test]
+    fn busybox_sysvinit_host_without_shadow_tools() {
+        let (_d, layout, exe) = setup();
+        for d in ["/etc/init.d", "/etc/rc2.d", "/etc/rc3.d", "/etc/rc0.d"] {
+            std::fs::create_dir_all(layout.path(d)).unwrap();
+        }
+        std::fs::create_dir_all(layout.path("/sbin")).unwrap();
+        std::fs::write(layout.path("/sbin/start-stop-daemon"), "").unwrap();
+        let mut sys = FakeSys {
+            users: vec!["admin"],
+            missing: vec!["systemd-sysusers", "useradd", "usermod", "userdel", "update-rc.d", "chkconfig"],
+            ..Default::default()
+        };
+        let opts = InstallOptions { allow_users: vec!["admin".into()], no_start: false };
+        let rep = install(&layout, &mut sys, &exe, &opts).unwrap();
+        assert_eq!(rep.host.as_ref().unwrap().init, "sysvinit");
+        let script = std::fs::read_to_string(layout.init_script()).unwrap();
+        assert!(script.contains("start-stop-daemon -S -q -b -m -p"));
+        assert!(sys.log.contains(&"addgroup -S nightgrid-node".to_string()), "{:?}", sys.log);
+        assert!(sys.log.iter().any(|l| l.starts_with("adduser -S -D -H -h /var/lib/nightgrid-node")));
+        assert!(sys.log.contains(&"addgroup admin nightgrid-node".to_string()), "{:?}", sys.log);
+        let link = layout.path("/etc/rc2.d/S90nightgrid-node");
+        assert_eq!(std::fs::read_link(&link).unwrap(), Path::new("../init.d/nightgrid-node"));
+        assert!(std::fs::read_link(layout.path("/etc/rc0.d/K10nightgrid-node")).is_ok());
+        let restart = format!("{} restart", layout.init_script().display());
+        assert!(sys.log.ends_with(&[restart]), "{:?}", sys.log);
+        uninstall(&layout, &mut sys, false).unwrap();
+        assert!(std::fs::read_link(&link).is_err() && !layout.init_script().exists());
+    }
+
+    #[test]
+    fn old_systemd_gets_a_unit_it_understands() {
+        let (_d, layout, exe) = setup();
+        std::fs::create_dir_all(layout.path("/run/systemd/system")).unwrap();
+        std::fs::write(layout.path("/run/systemd/version"), "215\n").unwrap();
+        let mut sys = FakeSys::default();
+        let rep = install(&layout, &mut sys, &exe, &InstallOptions::default()).unwrap();
+        let unit = std::fs::read_to_string(layout.unit()).unwrap();
+        assert!(unit.contains("# needs systemd 235: IPAddressDeny=any") && unit.contains("\nMemoryLimit=64M\n"));
+        assert!(rep.unsupported.iter().any(|u| u.starts_with("StateDirectory=")), "{:?}", rep.unsupported);
+        assert!(layout.data_dir().is_dir(), "made the state directory itself");
+        assert_eq!(rep.host.as_ref().unwrap().init_version, Some(215));
+        // The link's network limit can't be enforced: said out loud.
+        let rep = allow(&layout, &mut sys, Grant::Peers, Path::new("/x"), true).unwrap();
+        assert!(rep.warnings.iter().any(|w| w.contains("IPAddressAllow needs 235")), "{:?}", rep.warnings);
+        let dropin = std::fs::read_to_string(layout.extra_dropin(&PEERS)).unwrap();
+        assert!(dropin.contains("# needs systemd 235: IPAddressAllow="), "{dropin}");
+    }
+
+    #[test]
+    fn error_codes_for_the_app() {
+        assert_eq!(error_code(&no_systemd("installing the service", Init::Other)), "no_systemd");
+        assert_eq!(error_code("run this as root (sudo nightgrid-node ...)"), "not_root");
+        assert_eq!(error_code("usermod: boom"), "failed");
     }
 }

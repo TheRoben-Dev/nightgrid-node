@@ -32,6 +32,7 @@ pub struct Hub {
 pub struct CollectorState {
     pub fingerprint: Option<String>,
     pub listening: Option<String>,
+    pub listen_all: Vec<String>,
     pub reported: i64,
 }
 
@@ -112,6 +113,11 @@ pub fn ingest(hub: &Hub, batch: IngestBatch, now: i64) -> Result<(), String> {
         let mut c = hub.collector.lock().unwrap_or_else(|e| e.into_inner());
         c.fingerprint = Some(batch.fingerprint.clone()).filter(|f| !f.is_empty());
         c.listening = batch.listening.clone();
+        c.listen_all = if batch.listen_all.is_empty() {
+            batch.listening.iter().cloned().collect()
+        } else {
+            batch.listen_all.clone()
+        };
         c.reported = now;
     }
     let mut st = hub.store();
@@ -243,6 +249,7 @@ pub fn overview(hub: &Hub, now: i64) -> Result<Overview, String> {
         hub_id: hub.identity.node_id.clone(),
         fingerprint: c.fingerprint,
         listening: c.listening,
+        listen_all: c.listen_all,
         collector: collector.into(),
         store_bytes: st.size(),
         members,
@@ -293,10 +300,15 @@ pub fn sync(hub: &Hub, p: &SyncParams) -> Result<Value, (ErrorCode, String)> {
         method::EVENTS_SYNC => {
             let c = cursor()?;
             let limit = c.limit.unwrap_or(MAX_ROWS).clamp(1, MAX_ROWS);
-            let mut rows = st.events_after(id, c.after, limit + 1).map_err(internal)?;
+            let kinds = c.kinds.as_deref().filter(|k| !k.is_empty());
+            let mut rows = st.events_after_kinds(id, c.after, limit + 1, kinds).map_err(internal)?;
             let more = rows.len() > limit;
             rows.truncate(limit);
-            let next = rows.last().map_or(c.after, |r| r.0);
+            let mut next = rows.last().map_or(c.after, |r| r.0);
+            if kinds.is_some() && !more {
+                // Past the events the filter skipped, as the node does.
+                next = st.events_newest(id).map_err(internal)?.unwrap_or(c.after).max(c.after);
+            }
             let oldest = st.events_oldest(id).map_err(internal)?;
             Ok(json!({"events": parse_rows(rows), "next": next, "more": more, "oldest": oldest}))
         }
@@ -437,6 +449,7 @@ mod tests {
         let batch = IngestBatch {
             fingerprint: "f".repeat(64),
             listening: Some("100.64.0.1:7420".into()),
+            listen_all: vec![],
             answers: vec![
                 ans(&a.id, 200, "peer.ping", Value::Null, Some(json!({"version": "0.26.0", "hostname": "nas"})), None),
                 ans(&a.id, 200, "events.sync", json!({"after": 0}), Some(ev.clone()), None),
@@ -452,6 +465,21 @@ mod tests {
         assert_eq!((got["next"].as_i64(), got["oldest"].as_i64()), (Some(8), Some(7)));
         let r: nightgrid_node_proto::EventsResult = serde_json::from_value(got).unwrap();
         assert_eq!(r.events[0].seq, 8, "the node's own seq, so the app's cursor fits");
+        let only_boot = |after: i64| {
+            sync(
+                &h,
+                &SyncParams {
+                    node_id: a.id.clone(),
+                    method: "events.sync".into(),
+                    params: json!({"after": after, "kinds": ["boot"]}),
+                },
+            )
+            .unwrap()
+        };
+        let got = only_boot(0);
+        assert_eq!((got["events"][0]["seq"].as_i64(), got["next"].as_i64()), (Some(7), Some(8)), "{got}");
+        assert_eq!(only_boot(7)["events"].as_array().unwrap().len(), 0);
+        assert_eq!(only_boot(7)["next"].as_i64(), Some(8), "past the skipped event");
         let m = sync(
             &h,
             &SyncParams {
@@ -495,7 +523,7 @@ mod tests {
         };
         ingest(&h, ok, 1310).unwrap();
         assert_eq!(check_offline(&h, 1320).unwrap(), vec!["host-a back online"]);
-        let ev = hub_events(&h, &CursorParams { after: 0, limit: None }).unwrap();
+        let ev = hub_events(&h, &CursorParams { after: 0, limit: None, kinds: None }).unwrap();
         let r: nightgrid_node_proto::EventsResult = serde_json::from_value(ev).unwrap();
         assert_eq!(r.events.len(), 2);
         assert_eq!(r.events[0].alert.as_ref().unwrap().kind, AlertKind::HostOffline);

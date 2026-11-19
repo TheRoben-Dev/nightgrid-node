@@ -19,7 +19,29 @@ fail() {
 }
 q() { /usr/local/bin/nightgrid-node query "$@"; }
 h() { /usr/local/bin/nightgrid-hub query "$@"; }
-as_user() { su -s /bin/sh "$user" -c "$1"; }
+# Runs a command as another account. su goes through PAM, which under
+# qemu-user (CI's armv7 job) takes over a minute per call; FAST_SU=1 uses
+# setpriv instead, with the same uid, gid and groups from /etc/group.
+run_as() {
+  if [ -n "${FAST_SU:-}" ] && command -v setpriv >/dev/null; then
+    setpriv --reuid="$1" --regid="$(id -g "$1")" --init-groups \
+      env HOME="$(getent passwd "$1" | cut -d: -f6)" USER="$1" LOGNAME="$1" sh -c "$2"
+  else
+    su -s /bin/sh "$1" -c "$2"
+  fi
+}
+as_user() { run_as "$user" "$1"; }
+# Resident kB of PID itself. Under qemu-user (CI's armv7 job) VmRSS also
+# counts the emulator, so only the guest's pages are summed: a 32-bit guest
+# lives below 4 GiB, qemu above it. Natively this is VmRSS.
+emulated() { grep -q qemu /proc/"$1"/maps 2>/dev/null; }
+rss_of() {
+  if emulated "$1"; then
+    awk '/^[0-9a-f]+-/ {split($1, a, "-"); lo = length(a[1]) <= 8} /^Rss:/ && lo {s += $2} END {print s + 0}' /proc/"$1"/smaps
+  else
+    awk '/VmRSS/ {print $2}' /proc/"$1"/status
+  fi
+}
 json() { python3 -c "import json,sys; d=json.load(sys.stdin); print($1)"; }
 wait_until() { # SECONDS DESCRIPTION COMMAND
   n=$1; what=$2; shift 2
@@ -46,12 +68,12 @@ systemctl is-active --quiet nightgrid-hub || fail "hub not active"
 [ "$(stat -c %a /run/nightgrid-hub/hub.sock)" = 660 ] || fail "hub socket mode"
 [ "$(stat -c %a /var/lib/nightgrid-hub)" = 700 ] || fail "hub state dir mode"
 as_user "/usr/local/bin/nightgrid-hub status" | grep -q 'no members yet' || fail "status for the allowed user"
-if su -s /bin/sh nobody -c "/usr/local/bin/nightgrid-hub status" >/dev/null 2>&1; then fail "nobody could connect"; fi
+if run_as nobody "/usr/local/bin/nightgrid-hub status" >/dev/null 2>&1; then fail "nobody could connect"; fi
 pid=$(systemctl show -p MainPID --value nightgrid-hub)
 if command -v ss >/dev/null; then ss -tulpnH | grep "pid=$pid," && fail "hub main unit has a network socket" || true; fi
 
 say "collector on loopback"
-sed -i '/^\[collect\]/,/^\[/ { s/^listen = "tailnet"$/listen = "127.0.0.1:17420"/; s#^networks = .*#networks = ["127.0.0.0/8"]#; s/^interval_secs = 60$/interval_secs = 30/; }' /etc/nightgrid-hub/config.toml
+sed -i '/^\[collect\]/,/^\[/ { s/^listen = "tailnet"$/listen = ["127.0.0.1:17420", "127.0.0.2:17420"]/; s#^networks = .*#networks = ["127.0.0.0/8"]#; s/^interval_secs = 60$/interval_secs = 30/; }' /etc/nightgrid-hub/config.toml
 sed -i 's/^offline_secs = 120$/offline_secs = 60/' /etc/nightgrid-hub/config.toml
 systemctl restart nightgrid-hub
 /usr/local/bin/nightgrid-hub allow collect --json | tee /tmp/ngh-allow.json
@@ -60,6 +82,8 @@ grep -q '^IPAddressAllow=127.0.0.0/8$' /etc/systemd/system/nightgrid-hub-collect
 hid=$(json 'd["hubId"]' </tmp/ngh-allow.json)
 hfp=$(json 'd["fingerprint"]' </tmp/ngh-allow.json)
 [ "$(json 'd.get("listening")' </tmp/ngh-allow.json)" = 127.0.0.1:17420 ] || fail "collector not listening on loopback"
+[ "$(json '",".join(d.get("listenAll", []))' </tmp/ngh-allow.json)" = 127.0.0.1:17420,127.0.0.2:17420 ] || fail "collector not on both addresses"
+h fleet.overview | grep -q '"listenAll":\["127.0.0.1:17420","127.0.0.2:17420"\]' || fail "overview lacks listenAll"
 
 say "pairing: the node names the hub but serves nothing until root adds sync"
 q peers.set "{\"peers\":[{\"id\":\"$hid\",\"name\":\"hub\",\"address\":\"127.0.0.1:17420\",\"fingerprint\":\"$hfp\"}]}" >/dev/null
@@ -85,13 +109,21 @@ python3 -c "import sys; a=$direct; b=$via; sys.exit(0 if b and b == a[:len(b)] e
 as_user "/usr/local/bin/nightgrid-hub query fleet.sync '{\"nodeId\":\"$nid\",\"method\":\"node.info\"}'" | grep -q "$nid" || fail "node.info through the hub"
 as_user "/usr/local/bin/nightgrid-hub query fleet.sync '{\"nodeId\":\"$nid\",\"method\":\"actions.log\"}'" 2>&1 | grep -q 'not kept' || fail "hub answered a non-read"
 
+say "hub doctor: clean with the collector on, a bad config is refused"
+as_user "/usr/local/bin/nightgrid-hub doctor" | tee /tmp/ngh-doctor.txt || fail "hub doctor found a failure"
+grep -Eq '^  ok  +collector +reports; answers pings on 127.0.0.1:17420, 127.0.0.2:17420$' /tmp/ngh-doctor.txt || fail "hub doctor: collector"
+as_user "/usr/local/bin/nightgrid-hub doctor --json" | grep -q '"check":"store","level":"ok"' || fail "hub doctor: store"
+printf '[store]\nmax_gb = 0\n' >/tmp/ngh-bad.toml
+if /usr/local/bin/nightgrid-hub doctor --config /tmp/ngh-bad.toml --json >/tmp/ngh-bad.json; then fail "a bad config passed"; fi
+grep -q '"check":"config","level":"fail"' /tmp/ngh-bad.json || fail "hub doctor: config"
+
 say "only the collector may report"
 as_user "/usr/local/bin/nightgrid-hub query fleet.ingest '{\"fingerprint\":\"x\",\"answers\":[]}'" 2>&1 | grep -q 'only the hub' || fail "a login user could ingest"
 
 say "budget"
 for u in nightgrid-hub nightgrid-hub-collect; do
   p=$(systemctl show -p MainPID --value "$u")
-  rss=$(awk '/VmRSS/ {print $2}' /proc/"$p"/status)
+  rss=$(rss_of "$p")
   echo "$u RSS ${rss} kB"
   [ "$rss" -lt 81920 ] || fail "$u RSS ${rss} kB is over 80 MB"
 done

@@ -38,7 +38,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Shell scripts pass shellcheck
-        run: shellcheck -s sh -S warning dist/uninstall.sh ci/*.sh
+        run: shellcheck -s sh -S warning dist/uninstall.sh dist/sysvinit/nightgrid-node ci/*.sh
       - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@v2
         with:
@@ -49,13 +49,51 @@ jobs:
       - name: Builds on the minimum supported Rust (1.89, from rusqlite)
         run: cargo +1.89 check --locked --all-targets
 
+  test-32bit:
+    name: Tests on 32-bit (${{ matrix.target }})
+    # i686 runs natively on the x86_64 runner; armv7 under qemu-user.
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [i686-unknown-linux-musl, armv7-unknown-linux-musleabihf]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: test-${{ matrix.target }}
+      - uses: docker/setup-qemu-action@v3
+        if: startsWith(matrix.target, 'armv7')
+        with:
+          platforms: arm
+      - name: Install zig and cargo-zigbuild
+        run: |
+          pip3 install --user ziglang==0.17.1
+          cargo install --locked cargo-zigbuild@0.24.1
+      - name: Clippy for the 32-bit target (c_char, usize and time_t differ)
+        run: cargo-zigbuild clippy --locked --all-targets --target ${{ matrix.target }} -- -D warnings
+      - name: Unit and end-to-end tests
+        run: TEST_LIMIT_SECS=1500 sh ci/test-or-dump.sh --target ${{ matrix.target }}
+        env:
+          TEST_CMD: cargo-zigbuild test
+
   build:
     name: Static build (${{ matrix.target }})
     needs: check
     strategy:
       fail-fast: false
       matrix:
-        target: [x86_64-unknown-linux-musl, aarch64-unknown-linux-musl]
+        target:
+          - x86_64-unknown-linux-musl
+          - aarch64-unknown-linux-musl
+          - armv7-unknown-linux-musleabihf
+          - arm-unknown-linux-musleabihf
+          - i686-unknown-linux-musl
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -100,6 +138,10 @@ jobs:
             target: x86_64-unknown-linux-musl
           - runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-musl
+          # Ubuntu 22.04 (systemd 249) on a real host: in a container its apt
+          # downloads from the Ubuntu archive stalled for minutes (2026-11-19).
+          - runner: ubuntu-22.04
+            target: x86_64-unknown-linux-musl
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     steps:
@@ -113,10 +155,68 @@ jobs:
       # Real smartctl for the health helper (SMART through its sandbox), nft for blocks.
       - run: sudo apt-get update -q && sudo apt-get install -y --no-install-recommends smartmontools nftables
       - name: systemd sandbox scores stay where they are
+        # --offline needs systemd 250; one runner checking is enough.
+        if: matrix.runner != 'ubuntu-22.04'
         run: sh ci/sandbox-scores.sh
       - run: sudo WAIT_FOR_MINUTE=1 UNINSTALL_SH="$PWD/dist/uninstall.sh" sh ci/install-test.sh "$PWD/dist-bin/nightgrid-node" tester
       - name: Hub e2e (node and hub on one host, link on loopback)
         run: sudo sh ci/hub-test.sh "$PWD/dist-bin/nightgrid-node" "$PWD/dist-bin/nightgrid-hub" tester
+
+  install-qemu-armv7:
+    name: Install and hub e2e (armv7 under qemu, systemd)
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm
+      - uses: actions/download-artifact@v4
+        with:
+          name: nightgrid-node-armv7-unknown-linux-musleabihf
+          path: dist-bin
+      - run: chmod +x dist-bin/nightgrid-node dist-bin/nightgrid-hub && file dist-bin/nightgrid-node
+      - name: Debian 12 armhf with systemd as PID 1, install, doctor and a hub pairing
+        run: CONTAINER_ARGS="--platform linux/arm/v7" BOOT_SECS=600 FAST_SU=1 sh ci/container-test.sh debian:12 "$PWD/dist-bin/nightgrid-node" "$PWD/dist-bin/nightgrid-hub"
+
+  install-rc:
+    name: Install e2e without systemd (${{ matrix.init }}, ${{ matrix.arch }})
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - init: openrc
+            arch: x86_64
+            target: x86_64-unknown-linux-musl
+          - init: sysvinit
+            arch: x86_64
+            target: x86_64-unknown-linux-musl
+          - init: openrc
+            arch: armv7
+            target: armv7-unknown-linux-musleabihf
+            platform: linux/arm/v7
+          # The i686 binary is static, so it runs in the amd64 Debian image on
+          # the x86_64 kernel; i386 Debian images can't resolve DNS on the
+          # runner, so apt can't set up sysvinit there.
+          - init: sysvinit
+            arch: i686
+            target: i686-unknown-linux-musl
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+        if: matrix.arch == 'armv7'
+        with:
+          platforms: arm
+      - uses: actions/download-artifact@v4
+        with:
+          name: nightgrid-node-${{ matrix.target }}
+          path: dist-bin
+      - run: chmod +x dist-bin/nightgrid-node
+      - run: sh ci/rc-container-test.sh ${{ matrix.init }} "$PWD/dist-bin/nightgrid-node" ${{ matrix.platform }}
 
   install-distros:
     name: Install e2e (${{ matrix.image }})
@@ -124,7 +224,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        image: ["debian:12", "ubuntu:22.04", "fedora:41"]
+        image: ["debian:12", "fedora:41"]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:

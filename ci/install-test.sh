@@ -7,11 +7,36 @@ bin=$1
 user=$2
 say() { printf '\n== %s\n' "$*"; }
 fail() { printf 'FAIL: %s\n' "$*" >&2; journalctl -u nightgrid-node --no-pager -n 50 >&2 || true; exit 1; }
-as_user() { su -s /bin/sh "$user" -c "$1"; }
+# Runs a command as another account. su goes through PAM, which under
+# qemu-user (CI's armv7 job) takes over a minute per call; FAST_SU=1 uses
+# setpriv instead, with the same uid, gid and groups from /etc/group.
+run_as() {
+  if [ -n "${FAST_SU:-}" ] && command -v setpriv >/dev/null; then
+    setpriv --reuid="$1" --regid="$(id -g "$1")" --init-groups \
+      env HOME="$(getent passwd "$1" | cut -d: -f6)" USER="$1" LOGNAME="$1" sh -c "$2"
+  else
+    su -s /bin/sh "$1" -c "$2"
+  fi
+}
+as_user() { run_as "$user" "$1"; }
+# Resident kB of PID itself. Under qemu-user (CI's armv7 job) VmRSS also
+# counts the emulator, so only the guest's pages are summed: a 32-bit guest
+# lives below 4 GiB, qemu above it. Natively this is VmRSS.
+emulated() { grep -q qemu /proc/"$1"/maps 2>/dev/null; }
+rss_of() {
+  if emulated "$1"; then
+    awk '/^[0-9a-f]+-/ {split($1, a, "-"); lo = length(a[1]) <= 8} /^Rss:/ && lo {s += $2} END {print s + 0}' /proc/"$1"/smaps
+  else
+    awk '/VmRSS/ {print $2}' /proc/"$1"/status
+  fi
+}
 
 say "install"
 "$bin" install --user "$user" --json | tee /tmp/ngn-install.json
 grep -q '"action":"install"' /tmp/ngn-install.json || fail "no install report"
+for k in '"init":"systemd"' '"kernel":"' '"libc":"' "\"arch\":\"$(uname -m)\""; do
+  grep -q "$k" /tmp/ngn-install.json || fail "install report lacks $k"
+done
 systemctl is-active --quiet nightgrid-node || fail "service not active"
 test -x /usr/local/bin/nightgrid-node || fail "binary missing"
 id nightgrid-node >/dev/null || fail "service account missing"
@@ -30,9 +55,13 @@ grep -q "nightgrid-node $(/usr/local/bin/nightgrid-node --version | cut -d' ' -f
 as_user "/usr/local/bin/nightgrid-node events --count 3" | grep -q . || fail "events"
 as_user "/usr/local/bin/nightgrid-node events | head -1" >/dev/null 2>/tmp/ngn-pipe.err; [ ! -s /tmp/ngn-pipe.err ] || { cat /tmp/ngn-pipe.err; fail "events into a closed pipe"; }
 as_user "echo '{\"id\":1,\"method\":\"hello\",\"params\":{\"protoMin\":1,\"protoMax\":1}}' | /usr/local/bin/nightgrid-node bridge" | grep -q '"proto":1' || fail "bridge"
+as_user "/usr/local/bin/nightgrid-node doctor --json" >/tmp/ngn-doctor0.json || { cat /tmp/ngn-doctor0.json; fail "doctor after install"; }
+grep -q '"init":"systemd"' /tmp/ngn-doctor0.json && grep -q '"check":"host"' /tmp/ngn-doctor0.json || fail "doctor lacks the host"
+if run_as nobody "/usr/local/bin/nightgrid-node bridge </dev/null" >/tmp/ngn-bridge.json 2>/dev/null; then fail "bridge as nobody"; fi
+grep -q '"code":"no_access"' /tmp/ngn-bridge.json || { cat /tmp/ngn-bridge.json; fail "bridge error code"; }
 
 say "other users cannot"
-if su -s /bin/sh nobody -c "/usr/local/bin/nightgrid-node status" >/dev/null 2>&1; then fail "nobody could connect"; fi
+if run_as nobody "/usr/local/bin/nightgrid-node status" >/dev/null 2>&1; then fail "nobody could connect"; fi
 
 say "no network sockets"
 if command -v ss >/dev/null; then
@@ -43,7 +72,8 @@ fi
 say "footprint"
 pid=$(systemctl show -p MainPID --value nightgrid-node)
 grep -E 'VmRSS|Threads' /proc/"$pid"/status
-rss=$(awk '/VmRSS/ {print $2}' /proc/"$pid"/status)
+rss=$(rss_of "$pid")
+! emulated "$pid" || echo "under qemu: ${rss} kB of guest pages"
 [ "$rss" -lt 20480 ] || fail "RSS ${rss} kB is over 20 MB"
 systemd-analyze security nightgrid-node --no-pager 2>/dev/null | tail -n 1 || true
 
@@ -62,7 +92,7 @@ as_user "/usr/local/bin/nightgrid-node query alerts.active" >/dev/null || fail "
 as_user "/usr/local/bin/nightgrid-node query alerts.rules.get" | grep -q '"diskPercent":90' || fail "default rules"
 
 say "live metrics are pushed (protocol 2)"
-timeout 20 su -s /bin/sh "$user" -c "/usr/local/bin/nightgrid-node watch metrics --count 2" | tee /tmp/ngn-watch.txt
+as_user "timeout 20 /usr/local/bin/nightgrid-node watch metrics --count 2" | tee /tmp/ngn-watch.txt
 [ "$(grep -c '"stream":"metrics"' /tmp/ngn-watch.txt)" = 2 ] || fail "no metrics frames"
 
 if [ "${WAIT_FOR_MINUTE:-0}" = 1 ] && command -v docker >/dev/null && docker info >/dev/null 2>&1; then
@@ -731,7 +761,12 @@ UNIT
   say "footprint after every feature ran: peak memory stays in budget"
   pid=$(systemctl show -p MainPID --value nightgrid-node)
   grep -E 'VmHWM|VmRSS|Threads' /proc/"$pid"/status
-  hwm=$(awk '/VmHWM/ {print $2}' /proc/"$pid"/status)
+  if emulated "$pid"; then
+    # The peak would include qemu's own; check the guest's pages now instead.
+    hwm=$(rss_of "$pid")
+  else
+    hwm=$(awk '/VmHWM/ {print $2}' /proc/"$pid"/status)
+  fi
   [ "$hwm" -lt 20480 ] || fail "peak RSS ${hwm} kB is over 20 MB"
 fi
 

@@ -115,6 +115,16 @@ fn serves_info_latest_and_history() {
 }
 
 #[test]
+fn bridge_says_why_it_cannot_connect() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = Command::new(BIN).arg("bridge").arg("--socket").arg(dir.path().join("none.sock")).output().unwrap();
+    assert!(!out.status.success());
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["error"]["code"], "not_running", "{v}");
+    assert!(v["error"]["message"].as_str().unwrap().contains("none.sock"), "{v}");
+}
+
+#[test]
 fn bridge_relays_the_protocol() {
     let svc = start();
     let mut bridge = Command::new(BIN)

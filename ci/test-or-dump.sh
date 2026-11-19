@@ -4,7 +4,9 @@
 # letting the job time out with nothing to go on.
 set -u
 limit=${TEST_LIMIT_SECS:-300}
-cargo test --locked "$@" &
+# TEST_CMD="cargo-zigbuild test" for other targets.
+# shellcheck disable=SC2086
+${TEST_CMD:-cargo test} --locked "$@" &
 pid=$!
 i=0
 while kill -0 "$pid" 2>/dev/null; do

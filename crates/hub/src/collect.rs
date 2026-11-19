@@ -109,11 +109,18 @@ impl Sink for SocketSink {
 pub struct Me {
     pub fingerprint: String,
     pub listening: Option<String>,
+    /// Every address it answers on, `listening` first.
+    pub listen_all: Vec<String>,
 }
 
 async fn hand_over(sink: &Arc<dyn Sink>, me: &Me, answers: Vec<Ingest>) {
     let sink = sink.clone();
-    let batch = IngestBatch { fingerprint: me.fingerprint.clone(), listening: me.listening.clone(), answers };
+    let batch = IngestBatch {
+        fingerprint: me.fingerprint.clone(),
+        listening: me.listening.clone(),
+        listen_all: me.listen_all.clone(),
+        answers,
+    };
     match tokio::task::spawn_blocking(move || sink.send(batch)).await {
         Ok(Err(e)) => nightgrid_node::warn!("can't hand answers to the hub: {e}"),
         Err(e) => nightgrid_node::warn!("can't hand answers to the hub: {e}"),
@@ -290,22 +297,37 @@ pub fn run(config_path: &Path) -> Result<(), String> {
     let interval = Duration::from_secs(cfg.collect.interval_secs.into());
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| e.to_string())?;
     rt.block_on(async {
-        let mut me = Me { fingerprint: id.fingerprint.clone(), listening: None };
+        let mut me = Me { fingerprint: id.fingerprint.clone(), ..Default::default() };
+        // One accept task per address; `tailnet` and `lan` entries are looked
+        // up again each round, so a new DHCP lease moves the listener.
+        let mut bound: Vec<(std::net::SocketAddr, tokio::task::JoinHandle<()>)> = Vec::new();
         let mut n: u64 = 0;
         loop {
             let started = Instant::now();
-            if me.listening.is_none() {
-                if let Some(addr) = cfg.listen_addr() {
-                    match tokio::net::TcpListener::bind(addr).await {
-                        Ok(l) => {
-                            nightgrid_node::info!("answering members' pings on {addr}");
-                            me.listening = Some(addr.to_string());
-                            tokio::spawn(answer_pings(l, acceptor.clone(), pong.clone()));
-                        }
-                        Err(e) => nightgrid_node::warn!("can't listen on {addr}: {e}"),
+            let want = cfg.listen_addrs();
+            bound.retain(|(a, t)| {
+                let keep = want.contains(a);
+                if !keep {
+                    nightgrid_node::info!("no longer answering pings on {a}");
+                    t.abort();
+                }
+                keep
+            });
+            for addr in &want {
+                if bound.iter().any(|(a, _)| a == addr) {
+                    continue;
+                }
+                match tokio::net::TcpListener::bind(*addr).await {
+                    Ok(l) => {
+                        nightgrid_node::info!("answering members' pings on {addr}");
+                        bound.push((*addr, tokio::spawn(answer_pings(l, acceptor.clone(), pong.clone()))));
                     }
+                    Err(e) => nightgrid_node::warn!("can't listen on {addr}: {e}"),
                 }
             }
+            // In the configured order, so `listening` is the first entry's.
+            me.listen_all = want.iter().filter(|a| bound.iter().any(|(b, _)| b == *a)).map(|a| a.to_string()).collect();
+            me.listening = me.listen_all.first().cloned();
             let s = socket.clone();
             match tokio::task::spawn_blocking(move || fetch_plan(&s)).await.map_err(|e| e.to_string()).and_then(|r| r) {
                 Ok(plan) => {
@@ -322,8 +344,8 @@ pub fn run(config_path: &Path) -> Result<(), String> {
                 Err(e) => nightgrid_node::warn!("can't read the hub's plan: {e}"),
             }
             let wait = interval.saturating_sub(started.elapsed()).max(Duration::from_secs(5));
-            // Until bound, look for the tailnet address again sooner.
-            let wait = if me.listening.is_none() && cfg.listen_addr().is_none() && !cfg.collect.listen.is_empty() {
+            // Addresses that follow the host are looked for again sooner.
+            let wait = if cfg.collect.listen.follows() || me.listen_all.len() < cfg.collect.listen.entries().len() {
                 wait.min(Duration::from_secs(30))
             } else {
                 wait

@@ -435,7 +435,18 @@ mod tests {
     fn sampler_writes_minutes_and_latest() {
         let shared = Shared::new(Config::default(), Store::open_in_memory().unwrap());
         let s = Sampler::start(shared.clone(), Reader::system(), Duration::from_millis(80)).unwrap();
-        std::thread::sleep(Duration::from_millis(400));
+        // Wait for a few samples rather than a fixed time: under qemu on a
+        // busy runner one read can take longer than 400 ms.
+        let mut seen = Vec::new();
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        while seen.len() < 3 && std::time::Instant::now() < deadline {
+            if let Some(ts) = shared.latest.lock().unwrap().as_ref().map(|l| l.ts) {
+                if seen.last() != Some(&ts) {
+                    seen.push(ts);
+                }
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
         s.stop();
         let latest = shared.latest.lock().unwrap().clone().expect("a sample");
         assert!(latest.mem_total > 0);

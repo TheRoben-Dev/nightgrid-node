@@ -37,10 +37,15 @@ pub struct Finding {
 pub struct Report {
     pub version: &'static str,
     pub findings: Vec<Finding>,
+    /// What kind of host this is (`arch`, `assetArch`, `libc`, `init`,
+    /// `initVersion`, `kernel`, `busybox`, `limits`), so the app can say why
+    /// something is limited.
+    #[serde(flatten)]
+    pub host: Option<crate::host::HostFacts>,
 }
 
 impl Report {
-    fn add(&mut self, check: impl Into<String>, level: Level, detail: impl Into<String>) {
+    pub fn add(&mut self, check: impl Into<String>, level: Level, detail: impl Into<String>) {
         self.findings.push(Finding { check: check.into(), level, detail: detail.into() });
     }
     /// The worst level found.
@@ -55,6 +60,10 @@ pub trait Probe {
     fn unit_state(&mut self, unit: &str) -> Option<String>;
     /// The running node's `node.info`, or why it could not be asked.
     fn node_info(&mut self, socket: &Path) -> Result<serde_json::Value, String>;
+    /// Without systemd: whether the service script says it runs.
+    fn script_running(&mut self, _script: &Path) -> Option<bool> {
+        None
+    }
 }
 
 pub struct RealProbe;
@@ -69,11 +78,68 @@ impl Probe for RealProbe {
         let mut c = crate::client::Client::connect(socket, "nightgrid-node doctor").map_err(|e| e.to_string())?;
         c.call("node.info", serde_json::Value::Null).map_err(|e| e.to_string())
     }
+    fn script_running(&mut self, _script: &Path) -> Option<bool> {
+        // The pid file the OpenRC or sysvinit script keeps, read the way any
+        // user can (the script's own `status` may need root).
+        Some(["/run/nightgrid-node.pid", "/var/run/nightgrid-node.pid"].iter().any(|f| {
+            std::fs::read_to_string(f)
+                .ok()
+                .and_then(|p| std::fs::read(format!("/proc/{}/cmdline", p.trim())).ok())
+                .is_some_and(|c| String::from_utf8_lossy(&c).contains("nightgrid-node"))
+        }))
+    }
 }
 
 /// Runs every check.
 pub fn run(layout: &Layout, config_path: &Path, socket: Option<&Path>, probe: &mut dyn Probe) -> Report {
     let mut r = Report { version: env!("CARGO_PKG_VERSION"), ..Default::default() };
+    let facts = layout.facts();
+    let init = layout.init();
+    r.add(
+        "host",
+        Level::Info,
+        format!(
+            "{} ({}), {} userland{}, {}{}, kernel {}",
+            facts.arch,
+            facts.asset_arch.map_or("no release build".to_owned(), |a| format!("{a} build")),
+            facts.libc,
+            if facts.busybox { " (BusyBox)" } else { "" },
+            facts.init,
+            facts.init_version.map(|v| format!(" {v}")).unwrap_or_default(),
+            facts.kernel
+        ),
+    );
+    if init == crate::host::Init::Systemd {
+        let dropped = crate::units::adapt(crate::install::UNIT, facts.init_version).dropped;
+        if dropped.is_empty() {
+            r.add("sandbox", Level::Ok, "systemd applies every sandbox setting of the unit");
+        } else {
+            r.add(
+                "sandbox",
+                Level::Info,
+                format!(
+                    "systemd {} lacks {} of the unit's settings, left out: {}",
+                    facts.init_version.unwrap_or(0),
+                    dropped.len(),
+                    dropped.join(", ")
+                ),
+            );
+        }
+    } else {
+        r.add(
+            "sandbox",
+            Level::Info,
+            format!(
+                "no systemd ({}): the service runs without systemd's sandbox and memory cap; the extra access \
+                 and the hub need systemd",
+                init.name()
+            ),
+        );
+    }
+    for l in facts.limits.iter().filter(|l| !l.starts_with("no systemd") && !l.starts_with("no service manager")) {
+        r.add("limits", Level::Info, l.clone());
+    }
+    r.host = Some(facts);
 
     // The installed binary and its unit.
     let installed = layout.bin().exists();
@@ -102,13 +168,28 @@ pub fn run(layout: &Layout, config_path: &Path, socket: Option<&Path>, probe: &m
     };
 
     // The service.
-    match probe.unit_state(crate::install::SERVICE) {
-        None => r.add("service", Level::Info, "systemd not reachable; skipped unit checks"),
-        Some(s) if s == "active" => r.add("service", Level::Ok, "nightgrid-node is active"),
-        Some(s) if installed => {
-            r.add("service", Level::Fail, format!("nightgrid-node is {s} (journalctl -u nightgrid-node)"))
+    if init == crate::host::Init::Systemd {
+        match probe.unit_state(crate::install::SERVICE) {
+            None => r.add("service", Level::Info, "systemd not reachable; skipped unit checks"),
+            Some(s) if s == "active" => r.add("service", Level::Ok, "nightgrid-node is active"),
+            Some(s) if installed => {
+                r.add("service", Level::Fail, format!("nightgrid-node is {s} (journalctl -u nightgrid-node)"))
+            }
+            Some(s) => r.add("service", Level::Info, format!("nightgrid-node is {s}")),
         }
-        Some(s) => r.add("service", Level::Info, format!("nightgrid-node is {s}")),
+    } else {
+        let script = layout.init_script();
+        match (script.exists(), probe.script_running(&script)) {
+            (false, _) if installed => r.add("service", Level::Fail, format!("{} is missing", script.display())),
+            (false, _) => r.add("service", Level::Info, format!("not installed ({})", init.name())),
+            (true, Some(true)) => r.add("service", Level::Ok, format!("nightgrid-node is running ({})", init.name())),
+            (true, Some(false)) => r.add(
+                "service",
+                Level::Fail,
+                format!("nightgrid-node is not running (start it: {} start)", script.display()),
+            ),
+            (true, None) => r.add("service", Level::Info, format!("can't ask {}", script.display())),
+        }
     }
 
     // The socket and what the running node says.
@@ -220,6 +301,35 @@ mod tests {
 
     fn level(r: &Report, check: &str) -> Level {
         r.findings.iter().find(|f| f.check == check).unwrap_or_else(|| panic!("{check}: {r:?}")).level
+    }
+
+    #[test]
+    fn reports_the_host_and_an_openrc_service() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = Layout { root: dir.path().into() };
+        std::fs::create_dir_all(dir.path().join("run/openrc")).unwrap();
+        std::fs::create_dir_all(layout.init_script().parent().unwrap()).unwrap();
+        std::fs::write(layout.init_script(), crate::install::OPENRC_SCRIPT).unwrap();
+        struct Rc(bool);
+        impl Probe for Rc {
+            fn unit_state(&mut self, _: &str) -> Option<String> {
+                None
+            }
+            fn node_info(&mut self, _: &Path) -> Result<serde_json::Value, String> {
+                Err("No such file or directory".into())
+            }
+            fn script_running(&mut self, _: &Path) -> Option<bool> {
+                Some(self.0)
+            }
+        }
+        let r = run(&layout, &layout.config(), None, &mut Rc(true));
+        assert_eq!(level(&r, "service"), Level::Ok, "{}", render(&r));
+        assert!(render(&r).contains("no systemd (openrc)"), "{}", render(&r));
+        let j = serde_json::to_value(&r).unwrap();
+        assert_eq!((j["init"].as_str(), j["arch"].as_str()), (Some("openrc"), Some("x86_64")), "{j}");
+        assert!(j["kernel"].is_string() && j["libc"].is_string() && j["findings"].is_array());
+        let r = run(&layout, &layout.config(), None, &mut Rc(false));
+        assert_eq!(level(&r, "service"), Level::Fail);
     }
 
     #[test]

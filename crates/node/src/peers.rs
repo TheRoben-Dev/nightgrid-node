@@ -530,10 +530,52 @@ pub fn tailnet_address() -> Option<IpAddr> {
 
 /// Where to listen, per `[peers] listen`.
 pub fn listen_addr(cfg: &Config) -> Option<SocketAddr> {
-    match cfg.peers.listen.as_str() {
+    resolve_listen(&cfg.peers.listen, cfg.peers.port, &cfg.peers.networks)
+}
+
+/// One listen entry: `tailnet`, `lan` (with `port`), an `ip:port`, or empty.
+pub fn resolve_listen(entry: &str, port: u16, networks: &[String]) -> Option<SocketAddr> {
+    match entry {
         "" => None,
-        "tailnet" => tailnet_address().map(|ip| SocketAddr::new(ip, cfg.peers.port)),
+        "tailnet" => tailnet_address().map(|ip| SocketAddr::new(ip, port)),
+        "lan" => lan_address(networks).map(|ip| SocketAddr::new(ip, port)),
         a => a.parse().ok(),
+    }
+}
+
+/// The address the host would send from to `target`, from the kernel's
+/// routing (a UDP socket's connect sends nothing). Works without `ip`.
+pub fn source_address(target: IpAddr) -> Option<IpAddr> {
+    let bind: SocketAddr = if target.is_ipv4() { "0.0.0.0:0" } else { "[::]:0" }.parse().ok()?;
+    let s = std::net::UdpSocket::bind(bind).ok()?;
+    s.connect(SocketAddr::new(target, 9)).ok()?;
+    let ip = s.local_addr().ok()?.ip();
+    (!ip.is_unspecified() && !ip.is_loopback()).then_some(ip)
+}
+
+/// `listen = "lan"`: the source address of the route to the first
+/// `networks` entry that isn't tailnet or loopback, else of the default
+/// route (asked with a TEST-NET address, which nothing answers).
+pub fn lan_address(networks: &[String]) -> Option<IpAddr> {
+    let tailnet: Vec<_> =
+        crate::config::DEFAULT_PEER_NETWORKS.iter().filter_map(|n| crate::firewall::parse_cidr(n)).collect();
+    let target = networks
+        .iter()
+        .filter_map(|n| crate::firewall::parse_cidr(n))
+        .find(|(ip, _)| !ip.is_loopback() && !tailnet.iter().any(|t| crate::firewall::in_cidr(*ip, *t)))
+        .map(|(ip, bits)| first_host(ip, bits));
+    target.and_then(source_address).or_else(|| source_address(IpAddr::V4(std::net::Ipv4Addr::new(192, 0, 2, 1))))
+}
+
+/// A host address inside the range (its network address + 1 for v4
+/// networks wider than /31; the address itself otherwise).
+fn first_host(ip: IpAddr, bits: u8) -> IpAddr {
+    match ip {
+        IpAddr::V4(v) if bits < 31 => {
+            let m = if bits == 0 { 0 } else { u32::MAX << (32 - bits) };
+            IpAddr::V4(std::net::Ipv4Addr::from((u32::from(v) & m) + 1))
+        }
+        other => other,
     }
 }
 
@@ -542,6 +584,9 @@ fn state_dir() -> PathBuf {
         .map(|s| PathBuf::from(s.to_string_lossy().split(':').next().unwrap_or_default().to_owned()))
         .unwrap_or_else(|| PathBuf::from("/var/lib/nightgrid-node-peer"))
 }
+
+/// How often a `tailnet` or `lan` listen address is looked up again.
+const LISTEN_LOOK: Duration = Duration::from_secs(30);
 
 /// `nightgrid-node peer`: the link unit's loop.
 pub fn link(config_path: &Path) -> Result<(), String> {
@@ -557,7 +602,10 @@ pub fn link(config_path: &Path) -> Result<(), String> {
     });
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| e.to_string())?;
     let mut listening: Option<SocketAddr> = None;
-    let mut listener = false;
+    let mut accept: Option<tokio::task::JoinHandle<()>> = None;
+    // Addresses that follow the host (tailnet, lan) are looked up again.
+    let follows = matches!(cfg.peers.listen.as_str(), "tailnet" | "lan");
+    let mut next_look = Instant::now();
     let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server_config(&id, allowed.clone())?));
     let interval = Duration::from_secs(cfg.peers.interval_secs.into());
     let socket = cfg.server.socket.clone();
@@ -568,35 +616,48 @@ pub fn link(config_path: &Path) -> Result<(), String> {
         let mut known: Option<PeersList> = None;
         let mut leader = Leader::default();
         loop {
-            if !listener {
-                if let Some(addr) = listen_addr(&cfg) {
-                    match tokio::net::TcpListener::bind(addr).await {
-                        Ok(l) => {
-                            crate::info!("listening for peers on {addr}");
-                            listening = Some(addr);
-                            // Its own task, so peers are answered while this
-                            // node is busy pinging them (or itself).
-                            let (a, c, sl) = (acceptor.clone(), ctx.clone(), slots.clone());
-                            tokio::spawn(async move {
-                                loop {
-                                    let Ok((tcp, _)) = l.accept().await else { continue };
-                                    // A few at a time: anything on the tailnet can
-                                    // connect, though only paired nodes get past
-                                    // the handshake.
-                                    if let Ok(permit) = sl.clone().try_acquire_owned() {
-                                        let (a, c) = (a.clone(), c.clone());
-                                        tokio::spawn(async move {
-                                            serve_one(tcp, a, c).await;
-                                            drop(permit);
-                                        });
+            if Instant::now() >= next_look {
+                next_look = Instant::now() + LISTEN_LOOK;
+                let want = listen_addr(&cfg);
+                if want != listening || (want.is_some() && accept.is_none()) {
+                    if let Some(t) = accept.take() {
+                        t.abort();
+                        crate::info!(
+                            "the address changed ({} -> {}): listening again",
+                            listening.map_or("none".into(), |a| a.to_string()),
+                            want.map_or("none".into(), |a| a.to_string())
+                        );
+                        listening = None;
+                        next_round = Instant::now();
+                    }
+                    if let Some(addr) = want {
+                        match tokio::net::TcpListener::bind(addr).await {
+                            Ok(l) => {
+                                crate::info!("listening for peers on {addr}");
+                                listening = Some(addr);
+                                // Its own task, so peers are answered while this
+                                // node is busy pinging them (or itself).
+                                let (a, c, sl) = (acceptor.clone(), ctx.clone(), slots.clone());
+                                accept = Some(tokio::spawn(async move {
+                                    loop {
+                                        let Ok((tcp, _)) = l.accept().await else { continue };
+                                        // A few at a time: anything on the tailnet can
+                                        // connect, though only paired nodes get past
+                                        // the handshake.
+                                        if let Ok(permit) = sl.clone().try_acquire_owned() {
+                                            let (a, c) = (a.clone(), c.clone());
+                                            tokio::spawn(async move {
+                                                serve_one(tcp, a, c).await;
+                                                drop(permit);
+                                            });
+                                        }
                                     }
-                                }
-                            });
-                            listener = true;
-                            // Report the address now.
-                            next_round = Instant::now();
+                                }));
+                                // Report the address now.
+                                next_round = Instant::now();
+                            }
+                            Err(e) => crate::warn!("can't listen on {addr}: {e}"),
                         }
-                        Err(e) => crate::warn!("can't listen on {addr}: {e}"),
                     }
                 }
             }
@@ -640,9 +701,10 @@ pub fn link(config_path: &Path) -> Result<(), String> {
                     }
                 }
             }
-            let wait = next_round.min(next_check).saturating_duration_since(Instant::now());
-            // Until bound, look for the address again every 30 s.
-            let wait = if listener { wait } else { wait.min(Duration::from_secs(30)) };
+            // Until bound, and for addresses that follow the host, look for
+            // the address again every LISTEN_LOOK.
+            let look = if follows || accept.is_none() { next_look } else { next_round };
+            let wait = next_round.min(next_check).min(look).saturating_duration_since(Instant::now());
             tokio::time::sleep(wait).await;
         }
     })
@@ -796,6 +858,22 @@ async fn round(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn lan_listen_resolves_one_own_address() {
+        use std::net::Ipv4Addr;
+        assert_eq!(first_host("192.168.1.0".parse().unwrap(), 24), IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)));
+        assert_eq!(first_host("192.168.1.7".parse().unwrap(), 32), IpAddr::V4(Ipv4Addr::new(192, 168, 1, 7)));
+        // Never loopback or every interface.
+        assert_eq!(source_address("127.0.0.1".parse().unwrap()), None);
+        let cfg: Config =
+            crate::config::Config::parse("[peers]\nlisten = \"lan\"\nnetworks = [\"10.0.0.0/8\"]\n").unwrap();
+        if let Some(a) = listen_addr(&cfg) {
+            assert!(!a.ip().is_unspecified() && !a.ip().is_loopback() && a.port() == 7419, "{a}");
+        }
+        assert_eq!(resolve_listen("192.0.2.5:17", 1, &[]), Some("192.0.2.5:17".parse().unwrap()));
+        assert_eq!(resolve_listen("", 1, &[]), None);
+    }
+
     use super::*;
 
     fn peer(id: char, fp: &str, addr: &str) -> Peer {

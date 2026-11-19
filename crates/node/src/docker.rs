@@ -64,8 +64,9 @@ fn request(socket: &Path, method: &str, path: &str, max: u64) -> Result<Vec<u8>,
     s.set_read_timeout(Some(timeout)).ok();
     s.set_write_timeout(Some(TIMEOUT)).ok();
     let len = if method == "GET" { "" } else { "Content-Length: 0\r\n" };
-    write!(s, "{method} {path} HTTP/1.0\r\nHost: docker\r\nUser-Agent: nightgrid-node\r\n{len}\r\n")
-        .map_err(|e| DockerError::error(format!("write: {e}")))?;
+    // One write, so the engine (and a slow emulated host) sees the whole head at once.
+    let head = format!("{method} {path} HTTP/1.0\r\nHost: docker\r\nUser-Agent: nightgrid-node\r\n{len}\r\n");
+    s.write_all(head.as_bytes()).map_err(|e| DockerError::error(format!("write: {e}")))?;
     let mut buf = Vec::new();
     s.take(max).read_to_end(&mut buf).map_err(|e| DockerError::error(format!("read: {e}")))?;
     parse_response(&buf)

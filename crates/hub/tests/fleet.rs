@@ -129,7 +129,7 @@ fn pulls_25_members_within_budget_and_serves_their_cursors() {
     members[23].fingerprint = "ab".repeat(32);
     hub.store().set_members(&members, NOW - 10).unwrap();
     let sink: Arc<dyn Sink> = Arc::new(HubSink(hub.clone()));
-    let me = Me { fingerprint: hub_id.fingerprint.clone(), listening: None };
+    let me = Me { fingerprint: hub_id.fingerprint.clone(), ..Default::default() };
     let started = std::time::Instant::now();
     rt.block_on(async {
         let plan: Plan = fleet::plan(&hub).unwrap();

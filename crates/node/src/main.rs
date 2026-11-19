@@ -25,7 +25,8 @@ FIX THINGS:
 
 COMMANDS:
     run                     Run the service (systemd starts this)
-    install                 Install or upgrade as a systemd service (root)
+    install                 Install or upgrade as a service (root): systemd, or
+                            OpenRC/sysvinit without systemd's sandbox
         --user NAME         Let this login user talk to the node (repeatable;
                             default: the user who ran sudo)
         --no-start          Enable at boot but don't start now
@@ -82,7 +83,8 @@ COMMANDS:
                             Print live frames (events, metrics, containers, usage)
                             as JSON lines; stop after N if given
     bridge                  Connect stdin/stdout to the node's socket
-                            (what the app runs over SSH)
+                            (what the app runs over SSH). If it can't, prints
+                            one JSON error line (code no_access or not_running)
     version                 Print the version
 
 OPTIONS:
@@ -224,7 +226,19 @@ fn fix_ctx(a: &Args) -> nightgrid_node::menu::Ctx {
     nightgrid_node::menu::Ctx { config_path: a.config.clone(), socket: socket(a), yes: a.yes, json: a.json }
 }
 
+/// Runs the command. With `--json`, a failed install, uninstall, allow,
+/// deny or serve also prints `{"error":{"code":...,"message":...}}` on
+/// stdout (codes `no_systemd`, `not_root`, `failed`), for the app.
 fn dispatch(a: Args) -> Result<(), String> {
+    let json_errors = a.json && matches!(a.cmd.as_str(), "install" | "uninstall" | "allow" | "deny" | "serve");
+    let r = run_command(a);
+    if let (true, Err(e)) = (json_errors, &r) {
+        println!("{}", install::error_json(e));
+    }
+    r
+}
+
+fn run_command(a: Args) -> Result<(), String> {
     match a.cmd.as_str() {
         "fix" => nightgrid_node::menu::fix(&fix_ctx(&a), &a.rest),
         "fix-apply" => match a.rest.as_slice() {
@@ -312,7 +326,11 @@ fn dispatch(a: Args) -> Result<(), String> {
             let sock = socket(&a);
             let mut probe = nightgrid_node::upgrade::SocketProbe { socket: sock.clone() };
             let layout = install::Layout::system();
-            install::preflight(&layout)?;
+            install::preflight(&layout).inspect_err(|e| {
+                if a.json {
+                    println!("{}", install::error_json(e));
+                }
+            })?;
             let r = nightgrid_node::upgrade::upgrade(
                 &layout,
                 &mut install::RealSys,

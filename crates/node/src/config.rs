@@ -67,8 +67,10 @@ pub fn statuspage_ip_ok(ip: std::net::IpAddr) -> bool {
 #[serde(default, deny_unknown_fields)]
 pub struct PeersConfig {
     /// Where the link listens: `tailnet` (this host's first 100.64.0.0/10
-    /// address), a specific `ip:port`, or empty (connect out only). Never
-    /// every interface.
+    /// address), `lan` (the source address of the route to the first
+    /// non-tailnet `networks` entry, else of the default route; followed
+    /// when DHCP changes it), a specific `ip:port`, or empty (connect out
+    /// only). Never every interface.
     pub listen: String,
     /// Port for `listen = "tailnet"`.
     pub port: u16,
@@ -540,13 +542,13 @@ impl Config {
             return Err("peers.port must be 1-65535".into());
         }
         match self.peers.listen.as_str() {
-            "" | "tailnet" => {}
+            "" | "tailnet" | "lan" => {}
             l => match l.parse::<std::net::SocketAddr>() {
                 Ok(a) if a.ip().is_unspecified() => {
                     return Err("peers.listen must be one address, not every interface".into())
                 }
                 Ok(_) => {}
-                Err(_) => return Err("peers.listen must be \"tailnet\", \"ip:port\" or empty".into()),
+                Err(_) => return Err("peers.listen must be \"tailnet\", \"lan\", \"ip:port\" or empty".into()),
             },
         }
         if self.peers.networks.is_empty()
@@ -884,10 +886,13 @@ dry_run = false
 # only if the app gave this node its certificate fingerprint. It may talk
 # only to `networks` (run `allow peers` again after changing them).
 #
-# Where it listens: "tailnet" (this host's tailnet address), "ip:port", or
-# "" to only connect out. Never every interface.
+# Where it listens: "tailnet" (this host's tailnet address), "lan" (this
+# host's LAN address: the one it uses to reach the first non-tailnet entry
+# of networks, else its default route; followed when DHCP changes it; add
+# the LAN to networks too), "ip:port", or "" to only connect out. Never
+# every interface.
 listen = "tailnet"
-# Port for "tailnet".
+# Port for "tailnet" and "lan".
 port = 7419
 networks = ["100.64.0.0/10", "fd7a:115c:a1e0::/48"]
 # What paired peers may ask this node:

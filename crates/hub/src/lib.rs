@@ -10,6 +10,7 @@
 
 pub mod collect;
 pub mod config;
+pub mod doctor;
 pub mod fleet;
 pub mod install;
 pub mod server;

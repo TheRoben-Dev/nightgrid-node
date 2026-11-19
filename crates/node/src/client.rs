@@ -107,6 +107,22 @@ impl Client {
     }
 }
 
+/// The line `bridge` prints when it can't connect: `no_access` when the
+/// socket is there but this user may not use it, `not_running` otherwise.
+pub fn bridge_error(path: &Path, e: &std::io::Error) -> String {
+    let code = match e.kind() {
+        std::io::ErrorKind::PermissionDenied => "no_access",
+        _ => "not_running",
+    };
+    let message = match code {
+        "no_access" => {
+            format!("{}: {e} (the login user is not in the socket's group yet, or needs a new login)", path.display())
+        }
+        _ => format!("{}: {e} (the service is not running)", path.display()),
+    };
+    serde_json::json!({ "error": { "code": code, "message": message } }).to_string()
+}
+
 fn placeholder() -> Welcome {
     Welcome {
         proto: 0,
@@ -123,8 +139,18 @@ fn placeholder() -> Welcome {
 /// Copies stdin to the socket and the socket to stdout until either side
 /// closes. This is what the app runs over an SSH exec channel
 /// (`nightgrid-node bridge`) when streamlocal forwarding isn't available.
+///
+/// When the socket can't be reached it prints one JSON line on stdout before
+/// failing, `{"error":{"code":"no_access"|"not_running","message":...}}`, so
+/// the app can try the bridge first and probe only when it fails.
 pub fn bridge(path: &Path) -> std::io::Result<()> {
-    let sock = UnixStream::connect(path)?;
+    let sock = match UnixStream::connect(path) {
+        Ok(s) => s,
+        Err(e) => {
+            println!("{}", bridge_error(path, &e));
+            return Err(e);
+        }
+    };
     let mut to_sock = sock.try_clone()?;
     let mut from_sock = sock;
     let up = std::thread::spawn(move || {

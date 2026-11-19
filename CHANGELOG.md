@@ -1,6 +1,24 @@
 # Changelog
 
-## 0.27.0 · N11: fix menu and opt-in automation (unreleased)
+## 0.28.0 · Old and 32-bit hosts, LAN links, hub doctor (2026-11-18)
+
+Additive only: no frozen method, field, frame or link request changed (the frozen protocol test passes as it was). App specs [0022](docs/app-integration/0022-legacy-hardware-and-releases.md) and [0023](docs/app-integration/0023-lan-links-and-hub-doctor.md).
+
+- **New release arches** for the node and the hub: `armv7` (armv7l, armv8l), `armv6` (Raspberry Pi 1 and Zero) and `i686`, all static musl, in `SHA256SUMS`. CI runs the unit and e2e tests on i686 and on armv7 under qemu, and runs install, doctor and a hub pairing in a Debian 12 armhf systemd container under qemu.
+- **`manifest.json`** in every release: version, protocol range, and per program and arch the file, size and SHA-256, plus the `uname -m` map. Listed in `SHA256SUMS`, with build provenance; not signed (checksums and provenance, as decided).
+- **Old systemd** (215 and later, such as ReadyNAS OS 6): units are fitted to the running version. Unknown settings are commented out with the version they need, older spellings are used where they exist (`MemoryLimit=`, `ProtectSystem=full`), and state directories are made by `install` below 235. `install --json` lists what was left out (`unsupported`), and `doctor` shows it (`sandbox`).
+- **Hosts without systemd**: `install` and `uninstall` work on OpenRC and on sysvinit with `start-stop-daemon` (BusyBox too), with the same account, socket, modes and history. The account is made with `useradd` or BusyBox `adduser`. `allow`, `deny`, `serve`, `upgrade` and the hub refuse with `{"error":{"code":"no_systemd",…}}` under `--json`. `dist/uninstall.sh` handles these hosts too.
+- **Host facts**: `install --json` and `doctor --json` carry `arch`, `assetArch`, `libc`, `init`, `initVersion`, `kernel`, `busybox` and `limits` (no cgroup v2, no RAPL, no systemd). `doctor` adds the `host`, `sandbox` and `limits` findings, and checks the service through its init script on non-systemd hosts.
+- **JSON errors**: with `--json`, failed `install`, `uninstall`, `allow`, `deny`, `serve` and `upgrade` (node and hub) print `{"error":{"code":"no_systemd"|"not_root"|"failed","message"}}` on stdout.
+- **`bridge`** (node and hub) prints `{"error":{"code":"no_access"|"not_running","message"}}` when it can't reach the socket, so the app can run the bridge first and probe only on failure.
+- **32-bit audit**: statvfs sizes are computed in `u64` (disks over 4 GiB were already right on 64-bit, now on 32-bit too), local times after 2038 fall back to UTC on 32-bit musl instead of truncating, and new tests cover counters across 2^32, disks over 4 GiB and dates past 2038. The Docker client sends a request in one write (a partial read showed up under qemu).
+- **`[peers] listen = "lan"`**: the link listens on this host's LAN address (the route to the first non-tailnet `[peers] networks` entry, or the default route), never on every interface. It is looked up every 30 s and follows a new DHCP lease. `peers.latest.listening` shows it. No `ip` command needed.
+- **Hub: `[collect] listen` takes a list** (up to 8 entries: `tailnet`, `lan`, `ip:port`). `fleet.overview` and `allow collect --json` add `listenAll`; `listening` stays the first.
+- **`nightgrid-hub doctor [--config PATH] [--json]`**: host, install, node, init, config, both units, socket, collector (on every `listen` entry), members and store, in the node doctor's shape.
+- **`events.sync` takes `kinds`** (node and the hub's `fleet.sync`); `next` moves past skipped events. PROTOCOL.md now also states how `subscribe`/`unsubscribe` combine, that an empty page has `next == after`, and that alert kinds stay camelCase.
+- Releases are tagged and published by CI from `main` when `Cargo.toml` has a new version (`auto-release.yml`).
+
+## 0.27.0 · N11: fix menu and opt-in automation (2026-11-18)
 
 - `nightgrid-node fix`: a ujust-style menu that lists what looks wrong on the host (failed units, unhealthy or stopped containers, disks at 90% or more, a journal over 2 GB, a pending reboot, loose `~/.ssh` permissions), every fix grouped by kind with whether root allows it, and automation. Each fix explains what it runs and asks first; a reboot needs the word typed.
   - Short commands: `fix list [--json]`, `fix restart|reset|start|journal|logs|packages|prune|ssh|reboot|run [TARGET] [-y]`, `fix auto [NAME on|preview|off]`.

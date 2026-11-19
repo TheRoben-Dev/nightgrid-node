@@ -319,12 +319,17 @@ fn statvfs(path: &Path) -> Option<(u64, u64, u64)> {
     if unsafe { libc::statvfs(c.as_ptr(), &mut st) } != 0 {
         return None;
     }
+    #[allow(clippy::unnecessary_cast)] // c_ulong is 32-bit on 32-bit targets.
     let frsize = if st.f_frsize > 0 { st.f_frsize as u64 } else { st.f_bsize as u64 };
-    let kib = |blocks: u64| blocks.saturating_mul(frsize) / 1024;
-    let total = kib(st.f_blocks as u64);
-    let used = kib((st.f_blocks as u64).saturating_sub(st.f_bfree as u64));
-    let avail = kib(st.f_bavail as u64);
-    Some((total, used, avail))
+    #[allow(clippy::unnecessary_cast)]
+    Some(usage_kib(st.f_blocks as u64, st.f_bfree as u64, st.f_bavail as u64, frsize))
+}
+
+/// (total, used, avail) in KiB from statvfs block counts, all in u64 so a
+/// disk over 4 GiB (or 2^32 blocks) adds up on 32-bit hosts too.
+pub fn usage_kib(blocks: u64, bfree: u64, bavail: u64, frsize: u64) -> (u64, u64, u64) {
+    let kib = |b: u64| b.saturating_mul(frsize) / 1024;
+    (kib(blocks), kib(blocks.saturating_sub(bfree)), kib(bavail))
 }
 
 fn list_dir(p: &Path) -> Vec<String> {

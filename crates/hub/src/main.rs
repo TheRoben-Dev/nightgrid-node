@@ -31,6 +31,10 @@ COMMANDS:
     deny collect            Stop the collector (root)
     allow | deny            Menu: the hub's access and whether it's on
     status                  The members and their state
+    doctor                  Check this host's hub: config, units, socket,
+                            collector and store (read-only; exits 1 on a
+                            failure). With --config PATH, checks that file
+        --json              Print a machine-readable report
     query METHOD [JSON]     Send one request to the hub and print the answer
     bridge                  Connect stdin/stdout to the hub's socket
                             (what the app runs over SSH)
@@ -116,7 +120,9 @@ fn print_report(r: &install::Report, json: bool) {
     if let Some(fp) = &r.fingerprint {
         println!("fingerprint: {fp}");
     }
-    if let Some(l) = &r.listening {
+    if r.listen_all.len() > 1 {
+        println!("listening: {}", r.listen_all.join(", "));
+    } else if let Some(l) = &r.listening {
         println!("listening: {l}");
     }
 }
@@ -202,7 +208,8 @@ fn status(a: &Args) -> Result<(), String> {
     let o: nightgrid_node_proto::hub::Overview = serde_json::from_value(v).map_err(|e| e.to_string())?;
     println!("hub {} ({}), collector {}", c.welcome.node.hostname, o.hub_id, o.collector);
     if let Some(fp) = &o.fingerprint {
-        println!("fingerprint {fp}{}", o.listening.as_ref().map(|l| format!(", listening on {l}")).unwrap_or_default());
+        let on = if o.listen_all.len() > 1 { Some(o.listen_all.join(", ")) } else { o.listening.clone() };
+        println!("fingerprint {fp}{}", on.map(|l| format!(", listening on {l}")).unwrap_or_default());
     }
     println!("store {}", nightgrid_node::cli::bytes(o.store_bytes));
     if o.members.is_empty() {
@@ -313,8 +320,19 @@ fn real_main() -> Result<(), String> {
     dispatch(a)
 }
 
+/// Runs the command. With `--json`, a failed install, uninstall, allow or
+/// deny also prints `{"error":{"code":...,"message":...}}` on stdout.
 fn dispatch(a: Args) -> Result<(), String> {
-    if matches!(a.cmd.as_str(), "status" | "query" | "version" | "help" | "") {
+    let json_errors = a.json && matches!(a.cmd.as_str(), "install" | "uninstall" | "allow" | "deny");
+    let r = run_command(a);
+    if let (true, Err(e)) = (json_errors, &r) {
+        println!("{}", nightgrid_node::install::error_json(e));
+    }
+    r
+}
+
+fn run_command(a: Args) -> Result<(), String> {
+    if matches!(a.cmd.as_str(), "status" | "doctor" | "query" | "version" | "help" | "") {
         // SAFETY: setting a signal's disposition to its default has no preconditions.
         unsafe { libc::signal(libc::SIGPIPE, libc::SIG_DFL) };
     }
@@ -355,6 +373,23 @@ fn dispatch(a: Args) -> Result<(), String> {
             Ok(())
         }
         "status" => status(&a),
+        "doctor" => {
+            let r = nightgrid_hub::doctor::run(
+                &install::Layout::system(),
+                &a.config,
+                a.socket.as_deref(),
+                &mut nightgrid_hub::doctor::RealProbe,
+            );
+            if a.json {
+                println!("{}", serde_json::to_string(&r).unwrap_or_default());
+            } else {
+                print!("{}", nightgrid_hub::doctor::render(&r));
+            }
+            if r.worst() == nightgrid_node::doctor::Level::Fail {
+                return Err("doctor found a failure".into());
+            }
+            Ok(())
+        }
         "query" => {
             let m = a.rest.first().ok_or("query METHOD [JSON]")?;
             let p = match a.rest.get(1) {
