@@ -138,6 +138,10 @@ jobs:
             target: x86_64-unknown-linux-musl
           - runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-musl
+          # Ubuntu 22.04 (systemd 249) on a real host: in a container its apt
+          # downloads from the Ubuntu archive stalled for minutes (2026-11-19).
+          - runner: ubuntu-22.04
+            target: x86_64-unknown-linux-musl
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     steps:
@@ -151,6 +155,8 @@ jobs:
       # Real smartctl for the health helper (SMART through its sandbox), nft for blocks.
       - run: sudo apt-get update -q && sudo apt-get install -y --no-install-recommends smartmontools nftables
       - name: systemd sandbox scores stay where they are
+        # --offline needs systemd 250; one runner checking is enough.
+        if: matrix.runner != 'ubuntu-22.04'
         run: sh ci/sandbox-scores.sh
       - run: sudo WAIT_FOR_MINUTE=1 UNINSTALL_SH="$PWD/dist/uninstall.sh" sh ci/install-test.sh "$PWD/dist-bin/nightgrid-node" tester
       - name: Hub e2e (node and hub on one host, link on loopback)
@@ -218,7 +224,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        image: ["debian:12", "ubuntu:22.04", "fedora:41"]
+        image: ["debian:12", "fedora:41"]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
