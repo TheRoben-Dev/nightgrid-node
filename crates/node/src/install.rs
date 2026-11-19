@@ -478,6 +478,14 @@ fn note_unsupported(rep: &mut Report, unit: &str, version: Option<u32>, dropped:
 pub trait Sys {
     /// Runs a program; `Err` with its stderr when it fails.
     fn run(&mut self, prog: &str, args: &[&str]) -> Result<String, String>;
+
+    /// Runs an init script that starts a daemon. Like `run`, but the output
+    /// must not go through pipes this process waits on: the daemon (and
+    /// OpenRC's `output_logger`) inherit them and would hold them open for
+    /// as long as the service runs.
+    fn run_starter(&mut self, prog: &str, args: &[&str]) -> Result<String, String> {
+        self.run(prog, args)
+    }
 }
 
 /// Runs real commands.
@@ -490,6 +498,36 @@ impl Sys for RealSys {
             Ok(String::from_utf8_lossy(&out.stdout).into_owned())
         } else {
             Err(format!("{prog} {}: {}", args.join(" "), String::from_utf8_lossy(&out.stderr).trim()))
+        }
+    }
+
+    fn run_starter(&mut self, prog: &str, args: &[&str]) -> Result<String, String> {
+        // Output goes to an unlinked temp file, read back after the script exits.
+        use std::os::unix::fs::OpenOptionsExt;
+        let path = std::env::temp_dir().join(format!("nightgrid-node-start.{}", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let mut f = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path)
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        let _ = std::fs::remove_file(&path);
+        let status = Command::new(prog)
+            .args(args)
+            .stdin(std::process::Stdio::null())
+            .stdout(f.try_clone().map_err(|e| format!("temp file: {e}"))?)
+            .stderr(f.try_clone().map_err(|e| format!("temp file: {e}"))?)
+            .status()
+            .map_err(|e| format!("{prog}: {e}"))?;
+        use std::io::{Read, Seek};
+        let mut out = String::new();
+        let _ = f.seek(std::io::SeekFrom::Start(0)).and_then(|_| f.read_to_string(&mut out));
+        if status.success() {
+            Ok(out)
+        } else {
+            Err(format!("{prog} {}: {}", args.join(" "), out.trim()))
         }
     }
 }
@@ -764,9 +802,9 @@ fn install_rc(
         // trip over its own state ("already starting"); start it plainly
         // unless it runs.
         let running = sys.run("rc-service", &[SERVICE, "status"]).is_ok();
-        sys.run("rc-service", &[SERVICE, if running { "restart" } else { "start" }])
+        sys.run_starter("rc-service", &[SERVICE, if running { "restart" } else { "start" }])
     } else {
-        sys.run(&script, &["restart"])
+        sys.run_starter(&script, &["restart"])
     };
     match started {
         Ok(_) => {}
@@ -1414,6 +1452,17 @@ mod tests {
                 _ => Ok(String::new()),
             }
         }
+    }
+
+    #[test]
+    fn a_starter_that_leaves_a_daemon_behind_returns() {
+        // The child keeps stdout open, as a daemon or OpenRC's logger does.
+        let t = std::time::Instant::now();
+        let out = RealSys.run_starter("sh", &["-c", "sleep 20 & echo started"]).unwrap();
+        assert!(t.elapsed() < std::time::Duration::from_secs(10), "waited for the daemon");
+        assert_eq!(out.trim(), "started");
+        let err = RealSys.run_starter("sh", &["-c", "echo already starting >&2; exit 1"]).unwrap_err();
+        assert!(err.contains("already starting"), "{err}");
     }
 
     fn setup() -> (tempfile::TempDir, Layout, PathBuf) {
