@@ -25,7 +25,9 @@ esac
 args=""
 [ -z "$platform" ] || args="--platform $platform"
 # shellcheck disable=SC2086
-docker run -d --name "$name" $args "$image" sleep 7200 >/dev/null
+# --init reaps the stopped daemon (sleep as PID 1 would leave a zombie that
+# start-stop-daemon counts as still running), as init does on a real host.
+docker run -d --init --name "$name" $args "$image" sleep 7200 >/dev/null
 trap 'docker rm -f "$name" >/dev/null 2>&1 || true' EXIT
 docker exec "$name" sh -c "$setup"
 docker cp "$bin" "$name":/root/nightgrid-node
