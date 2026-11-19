@@ -11,6 +11,10 @@ here=$(cd "$(dirname "$0")" && pwd)
 name=ngn-test-$$
 case "$image" in
   fedora*) setup="dnf -y -q install systemd util-linux shadow-utils procps-ng iproute >/dev/null" ;;
+  # Ubuntu: the stock archive stalled apt-get update for minutes on the runners
+  # (2026-11-19), so use the Azure mirror the runners themselves use, and main
+  # only, which has everything installed here and is a fraction of the index.
+  ubuntu*) setup="sed -i -E 's#http://(archive|security)[.]ubuntu[.]com/ubuntu/?#http://azure.archive.ubuntu.com/ubuntu/#; s/ (restricted|universe|multiverse)//g; /^deb(-src)? [^ ]+ [^ ]+$/d' /etc/apt/sources.list && apt-get -qq -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update && DEBIAN_FRONTEND=noninteractive apt-get -qq install -y systemd systemd-sysv passwd procps iproute2 >/dev/null" ;;
   *) setup="apt-get -qq update && DEBIAN_FRONTEND=noninteractive apt-get -qq install -y systemd systemd-sysv passwd procps iproute2 >/dev/null" ;;
 esac
 # hub-test.sh reads JSON with python3.
