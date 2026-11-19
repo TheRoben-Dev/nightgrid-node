@@ -11,8 +11,10 @@ here=$(cd "$(dirname "$0")" && pwd)
 name=ngn-test-$$
 case "$image" in
   fedora*) setup="dnf -y -q install systemd util-linux shadow-utils procps-ng iproute >/dev/null" ;;
-  *) setup="apt-get -qq update && DEBIAN_FRONTEND=noninteractive apt-get -qq install -y systemd systemd-sysv passwd procps iproute2 python3 >/dev/null" ;;
+  *) setup="apt-get -qq update && DEBIAN_FRONTEND=noninteractive apt-get -qq install -y systemd systemd-sysv passwd procps iproute2 >/dev/null" ;;
 esac
+# hub-test.sh reads JSON with python3.
+[ -z "$hub" ] || setup="$setup && DEBIAN_FRONTEND=noninteractive apt-get -qq install -y python3 >/dev/null"
 docker run -d --name "$name" ${CONTAINER_ARGS:-} --privileged --cgroupns=host -v /sys/fs/cgroup:/sys/fs/cgroup:rw \
   --tmpfs /run --tmpfs /run/lock "$image" sh -c "$setup && exec /sbin/init" >/dev/null
 trap 'docker rm -f "$name" >/dev/null 2>&1 || true' EXIT
@@ -20,7 +22,7 @@ i=0
 until docker exec "$name" sh -c 'systemctl is-system-running 2>/dev/null | grep -qE "running|degraded"'; do
   i=$((i + 1))
   [ "$(docker inspect -f '{{.State.Running}}' "$name")" = true ] || { docker logs "$name" | tail -n 30; echo "container exited"; exit 1; }
-  [ "$i" -lt "${BOOT_SECS:-180}" ] || { docker logs "$name" | tail -n 30; echo "systemd did not boot"; exit 1; }
+  [ "$i" -lt "${BOOT_SECS:-300}" ] || { docker logs "$name" | tail -n 30; echo "systemd did not boot"; exit 1; }
   sleep 1
 done
 docker cp "$bin" "$name":/root/nightgrid-node
