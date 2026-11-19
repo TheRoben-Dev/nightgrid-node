@@ -22,7 +22,11 @@ i=0
 until docker exec "$name" sh -c 'systemctl is-system-running 2>/dev/null | grep -qE "running|degraded"'; do
   i=$((i + 1))
   [ "$(docker inspect -f '{{.State.Running}}' "$name")" = true ] || { docker logs "$name" | tail -n 30; echo "container exited"; exit 1; }
-  [ "$i" -lt "${BOOT_SECS:-300}" ] || { docker logs "$name" | tail -n 30; echo "systemd did not boot"; exit 1; }
+  [ "$i" -lt "${BOOT_SECS:-180}" ] || {
+    docker logs "$name" | tail -n 30
+    # Say where it stuck: still in setup (apt), or systemd up with a job hanging.
+    docker exec "$name" sh -c 'ps -eo pid,etime,args | head -n 30; systemctl is-system-running; systemctl list-jobs --no-pager | head -n 20; systemctl --failed --no-pager' 2>&1 || true
+    echo "systemd did not boot"; exit 1; }
   sleep 1
 done
 docker cp "$bin" "$name":/root/nightgrid-node
