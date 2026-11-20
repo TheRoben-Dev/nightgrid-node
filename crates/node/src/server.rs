@@ -419,6 +419,9 @@ fn params<T: DeserializeOwned>(v: &Value) -> Result<T, Response> {
 
 /// Handles one request line.
 pub fn handle_line(shared: &Shared, session: &mut Session, line: &[u8]) -> Response {
+    // Windows PowerShell's stdin writer puts a UTF-8 byte order mark in
+    // front of the first line it sends through `bridge`.
+    let line = line.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(line);
     let req: Request = match serde_json::from_slice(line) {
         Ok(r) => r,
         Err(e) => return Response::err(0, ErrorCode::BadRequest, format!("not a request: {e}")),
@@ -1298,6 +1301,19 @@ mod tests {
         // Windows has no container watcher yet (W3), so it reads as off.
         let access = if cfg!(windows) { "off" } else { "absent" };
         assert_eq!((r["access"].as_str(), r["containers"].as_array().map(Vec::len)), (Some(access), Some(0)));
+    }
+
+    #[test]
+    fn a_byte_order_mark_before_hello_is_ignored() {
+        let s = shared();
+        let mut ses = Session::default();
+        let r = handle_line(
+            &s,
+            &mut ses,
+            b"\xEF\xBB\xBF{\"id\":7,\"method\":\"hello\",\"params\":{\"protoMin\":1,\"protoMax\":2,\"client\":\"ps\"}}",
+        );
+        assert!(r.error.is_none(), "{r:?}");
+        assert_eq!(r.id, 7);
     }
 
     #[test]
