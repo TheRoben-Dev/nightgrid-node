@@ -232,7 +232,13 @@ if ($LASTEXITCODE -ne 0) { Fail 'uninstall' }
 if (Get-Service nightgrid-node -ErrorAction SilentlyContinue) { Fail 'service still there' }
 if (-not (Test-Path (Join-Path $etc 'data\node.db'))) { Fail 'history removed by a plain uninstall' }
 $re = (& $Exe install --json) -join ''
-if ($LASTEXITCODE -ne 0 -or $re -notmatch 'blocked all network traffic') { Fail "install after uninstall: $re" }
+if ($LASTEXITCODE -ne 0 -or $re -notmatch 'blocked all network traffic') {
+    Get-ChildItem 'HKLM:\SYSTEM\CurrentControlSet\Services\SharedAccess\Parameters\FirewallPolicy\RestrictedServices' -Recurse -ErrorAction SilentlyContinue |
+        ForEach-Object { $_.Name; $_.GetValueNames() | Where-Object { $_ -match 'nightgrid' -or "$($_)" -eq '' } }
+    Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\SharedAccess\Parameters\FirewallPolicy\RestrictedServices\*\*' -ErrorAction SilentlyContinue |
+        Out-String -Stream | Select-String -Pattern 'nightgrid'
+    Fail "install after uninstall: $re"
+}
 $pu = (& $Exe uninstall --purge --json) -join ''
 Write-Host $pu
 if ($LASTEXITCODE -ne 0) { Fail 'uninstall --purge' }

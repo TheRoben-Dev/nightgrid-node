@@ -254,11 +254,13 @@ pub fn uninstall(purge: bool) -> Result<Report, String> {
             }
         }
     }
-    if scm::delete(SERVICE)? {
-        step(&mut rep, "removed the service");
-    }
+    // While the service still exists: Windows resolves its SID to drop the
+    // hardening rule.
     if let Err(e) = firewall(false, &super::installed_binary()) {
         rep.warnings.push(format!("firewall rules: {e}"));
+    }
+    if scm::delete(SERVICE)? {
+        step(&mut rep, "removed the service");
     }
     if remove_from_path(&super::bin_dir())? {
         step(&mut rep, format!("removed {} from the machine PATH", super::bin_dir().display()));
@@ -611,8 +613,14 @@ pub fn firewall(on: bool, bin: &Path) -> Result<(), String> {
         format!(
             "$ErrorActionPreference='Stop'\n\
              $fw = New-Object -ComObject HNetCfg.FwPolicy2\n\
-             $fw.ServiceRestriction.RestrictService('{SERVICE}', '{exe}', $true, $false)\n\
-             if (-not $fw.ServiceRestriction.ServiceRestricted('{SERVICE}', '{exe}')) {{ throw 'not restricted' }}\n\
+             $sr = $fw.ServiceRestriction\n\
+             $sr.RestrictService('{SERVICE}', '{exe}', $true, $false)\n\
+             if (-not $sr.ServiceRestricted('{SERVICE}', '{exe}')) {{\n\
+               # A stale rule from an earlier install: drop it and add it again.\n\
+               $sr.RestrictService('{SERVICE}', '{exe}', $false, $false)\n\
+               $sr.RestrictService('{SERVICE}', '{exe}', $true, $false)\n\
+             }}\n\
+             if (-not $sr.ServiceRestricted('{SERVICE}', '{exe}')) {{ throw 'not restricted' }}\n\
              Get-NetFirewallRule -Group '{FIREWALL_GROUP}' -ErrorAction SilentlyContinue | Remove-NetFirewallRule\n\
              foreach ($d in 'Inbound','Outbound') {{\n\
                New-NetFirewallRule -DisplayName \"{FIREWALL_GROUP}: no network ($d)\" -Group '{FIREWALL_GROUP}' -Direction $d -Service '{SERVICE}' -Action Block -Profile Any | Out-Null\n\
