@@ -89,7 +89,11 @@ pub fn sid_of(name: &str) -> Option<String> {
 }
 
 fn create(name: &str, first: bool) -> io::Result<NamedPipeServer> {
-    let mut sd = sddl()?;
+    create_with(name, sddl()?, first)
+}
+
+/// A pipe instance with the given DACL (remote clients rejected).
+pub fn create_with(name: &str, mut sd: Sddl, first: bool) -> io::Result<NamedPipeServer> {
     let mut o = options();
     o.first_pipe_instance(first);
     // SAFETY: `sd.attrs` is a valid SECURITY_ATTRIBUTES for this call.
@@ -159,7 +163,7 @@ pub async fn serve(first: NamedPipeServer, name: &str, shared: Arc<Shared>, shut
 /// Reads the client's first bytes (Windows lets a pipe server look at the
 /// caller's token only after it has written something), identifies it, and
 /// hands back a stream that replays those bytes.
-async fn identify(pipe: NamedPipeServer) -> io::Result<(Prefixed<NamedPipeServer>, Caller)> {
+pub(super) async fn identify(pipe: NamedPipeServer) -> io::Result<(Prefixed<NamedPipeServer>, Caller)> {
     let mut first = vec![0u8; 4096];
     let n = loop {
         pipe.readable().await?;
@@ -306,20 +310,32 @@ fn owner_of(h: HANDLE) -> Option<String> {
     unsafe { acl::sid_string(owner) }
 }
 
-fn check_owner(h: HANDLE, name: &str) -> io::Result<()> {
+fn check_owner(h: HANDLE, name: &str, trusted: fn(&str) -> bool, strict: bool) -> io::Result<()> {
     match owner_of(h) {
-        Some(o) if trusted_owner(&o) => Ok(()),
+        Some(o) if trusted(&o) => Ok(()),
         Some(o) => Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             format!("{name} belongs to {o}, not to the Nightgrid Node service; not talking to it"),
         )),
-        // No READ_CONTROL on the pipe: trust the DACL that let us in.
+        // No READ_CONTROL on the pipe: trust the DACL that let us in,
+        // unless only SYSTEM's pipe will do.
+        None if strict => Err(io::Error::new(io::ErrorKind::PermissionDenied, format!("{name}: owner unknown"))),
         None => Ok(()),
     }
 }
 
 /// Opens the pipe for blocking, one-request-at-a-time use (the CLI client).
 pub fn open_sync(name: &str) -> io::Result<std::fs::File> {
+    open_sync_owned(name, trusted_owner, false)
+}
+
+/// Opens a pipe only SYSTEM or Administrators can have created: the
+/// helper's, which runs as LocalSystem.
+pub fn open_system(name: &str) -> io::Result<std::fs::File> {
+    open_sync_owned(name, |o| o == acl::SYSTEM || o == acl::ADMINISTRATORS, true)
+}
+
+fn open_sync_owned(name: &str, trusted: fn(&str) -> bool, strict: bool) -> io::Result<std::fs::File> {
     use std::os::windows::fs::OpenOptionsExt;
     for _ in 0..50 {
         match std::fs::OpenOptions::new()
@@ -329,7 +345,7 @@ pub fn open_sync(name: &str) -> io::Result<std::fs::File> {
             .open(name)
         {
             Ok(f) => {
-                check_owner(f.as_raw_handle() as HANDLE, name)?;
+                check_owner(f.as_raw_handle() as HANDLE, name, trusted, strict)?;
                 return Ok(f);
             }
             Err(e) if e.raw_os_error() == Some(ERROR_PIPE_BUSY as i32) => {
@@ -348,7 +364,7 @@ pub async fn open_async(name: &str) -> io::Result<NamedPipeClient> {
     for _ in 0..50 {
         match ClientOptions::new().security_qos_flags(SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION).open(name) {
             Ok(c) => {
-                check_owner(c.as_raw_handle() as HANDLE, name)?;
+                check_owner(c.as_raw_handle() as HANDLE, name, trusted_owner, false)?;
                 return Ok(c);
             }
             Err(e) if e.raw_os_error() == Some(ERROR_PIPE_BUSY as i32) => {

@@ -28,7 +28,11 @@ use crate::config::Config;
 use crate::fixes::LocalFixes;
 
 /// Where the helper's socket unit listens.
+#[cfg(unix)]
 pub const SOCKET: &str = "/run/nightgrid-node-helper.sock";
+/// The Windows helper service's pipe (`crate::win::helper`).
+#[cfg(windows)]
+pub const SOCKET: &str = crate::win::helper::PIPE;
 const MAX_REQUEST: u64 = 64 * 1024;
 /// Where file snapshots for rollbacks live (the helper unit's StateDirectory).
 pub const ROLLBACK_DIR: &str = "/var/lib/nightgrid-node-rollback";
@@ -73,6 +77,11 @@ pub trait Runner {
     fn output(&mut self, prog: &str, args: &[&str]) -> Result<String, String> {
         self.run(prog, args).map(|()| String::new())
     }
+    /// `restart`, `start` or `stop` a unit: systemd on Linux, the Service
+    /// Control Manager on Windows.
+    fn unit(&mut self, verb: &str, unit: &str) -> Result<(), String> {
+        self.run("systemctl", &[verb, "--", unit])
+    }
 }
 
 pub struct RealRunner;
@@ -104,11 +113,36 @@ impl Runner for RealRunner {
             Err(if msg.is_empty() { format!("{prog} failed ({})", out.status) } else { msg })
         }
     }
+
+    #[cfg(windows)]
+    fn unit(&mut self, verb: &str, unit: &str) -> Result<(), String> {
+        crate::win::scm::control(verb, unit)
+    }
+}
+
+/// Whether this platform's helper can carry the action out. Windows has
+/// unit (service) and power actions so far; blocks, rollbacks and the
+/// local fixes come later (docs/WINDOWS.md, W2b).
+pub fn supported(a: &str) -> bool {
+    !cfg!(windows)
+        || !crate::fixes::needs_helper(a)
+        || action::takes_unit(a)
+        || matches!(a, action::POWER_REBOOT | action::POWER_POWEROFF)
+}
+
+/// `shutdown.exe` by its full path (the helper never searches `PATH`).
+#[cfg(windows)]
+fn shutdown_exe() -> String {
+    let root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
+    format!(r"{root}\System32\shutdown.exe")
 }
 
 /// Checks a request against root's config and carries it out.
 pub fn handle(config: &Config, local: &LocalFixes, req: &HelperRequest, store: &Path, run: &mut dyn Runner) -> Reply {
     let a = req.action.as_str();
+    if !supported(a) || (cfg!(windows) && a.starts_with("files.")) {
+        return Reply::no(format!("{a} is not available on Windows yet"));
+    }
     if let Some(op) = a.strip_prefix("files.").filter(|op| matches!(*op, "snapshot" | "restore" | "discard")) {
         if !config.actions.allow.iter().any(|x| x == action::FILES_ROLLBACK) {
             return Reply::no(format!("{} is not in [actions] allow", action::FILES_ROLLBACK));
@@ -146,14 +180,31 @@ pub fn handle(config: &Config, local: &LocalFixes, req: &HelperRequest, store: &
             action::UNIT_START => ("start", "started"),
             _ => ("stop", "stopped"),
         };
-        return match run.run("systemctl", &[verb, "--", unit]) {
+        return match run.unit(verb, unit) {
             Ok(()) => Reply { ok: true, detail: format!("{done} {unit}") },
             Err(e) => Reply::no(e),
         };
     }
+    power(a, run)
+}
+
+#[cfg(unix)]
+fn power(a: &str, run: &mut dyn Runner) -> Reply {
     let (flag, what) = if a == action::POWER_REBOOT { ("-r", "reboot") } else { ("-P", "power-off") };
     match run.run("shutdown", &[flag, "+1", "requested from Nightgrid Node"]) {
         Ok(()) => Reply { ok: true, detail: format!("{what} in 1 minute (cancel on the host with: shutdown -c)") },
+        Err(e) => Reply::no(e),
+    }
+}
+
+/// `shutdown.exe /r` or `/s` a minute ahead, with a planned reason code,
+/// so it shows in the System log; an administrator cancels with `/a`.
+#[cfg(windows)]
+fn power(a: &str, run: &mut dyn Runner) -> Reply {
+    let (flag, what) = if a == action::POWER_REBOOT { ("/r", "reboot") } else { ("/s", "power-off") };
+    let exe = shutdown_exe();
+    match run.run(&exe, &[flag, "/t", "60", "/d", "p:0:0", "/c", "Requested from Nightgrid Node"]) {
+        Ok(()) => Reply { ok: true, detail: format!("{what} in 1 minute (cancel on the host with: shutdown /a)") },
         Err(e) => Reply::no(e),
     }
 }
@@ -185,11 +236,10 @@ pub fn peer_uid(fd: i32) -> Option<u32> {
     (r == 0).then_some(cred.uid)
 }
 
-/// `nightgrid-node helper` on Windows: the helper service arrives in a
-/// later release (docs/WINDOWS.md, W2).
+/// `nightgrid-node helper` on Windows: the helper service's command line.
 #[cfg(windows)]
-pub fn serve(_config_path: &Path) -> Result<(), String> {
-    Err("the root helper is not available on Windows yet".into())
+pub fn serve(config_path: &Path) -> Result<(), String> {
+    crate::win::helper::serve(config_path)
 }
 
 /// `nightgrid-node helper`: serves the one connection on stdin/stdout.
@@ -236,13 +286,11 @@ pub fn serve(config_path: &Path) -> Result<(), String> {
     (&stream).write_all(&out).map_err(|e| e.to_string())
 }
 
-/// Whether the helper's socket is there (`allow helper`).
+/// Whether the helper is installed (`allow helper`). A pipe exists only
+/// while its server runs, so the helper's service is asked for instead.
 #[cfg(windows)]
 pub fn installed(socket: &Path) -> bool {
-    // A pipe "exists" only while its server runs; the helper service
-    // (W2) will be checked through the Service Control Manager.
-    let _ = socket;
-    false
+    socket == Path::new(SOCKET) && crate::win::helper::installed()
 }
 
 /// Whether the helper's socket is there (`allow helper`).
@@ -254,17 +302,33 @@ pub fn installed(socket: &Path) -> bool {
 
 /// Asks the helper (from the service). `Err` is a transport problem.
 pub fn call(socket: &Path, req: &HelperRequest) -> Result<Reply, String> {
-    let mut s = UnixStream::connect(socket).map_err(|e| format!("root helper ({}): {e}", socket.display()))?;
+    #[cfg(windows)]
+    let s = if socket == Path::new(SOCKET) {
+        crate::win::helper::connect()?
+    } else {
+        UnixStream::connect(socket).map_err(|e| format!("admin helper ({}): {e}", socket.display()))?
+    };
+    #[cfg(unix)]
+    let s = UnixStream::connect(socket).map_err(|e| format!("root helper ({}): {e}", socket.display()))?;
     // Fixes run up to fixes::MAX_SECS in their own unit; the rest are quick.
-    let wait = if crate::fixes::is_local(&req.action) { u64::from(crate::fixes::MAX_SECS) + 60 } else { 90 };
+    let wait = if crate::fixes::is_local(&req.action) { u64::from(crate::fixes::MAX_SECS) + 60 } else { 150 };
     s.set_read_timeout(Some(Duration::from_secs(wait))).map_err(|e| e.to_string())?;
+    exchange(s, req)
+}
+
+/// Sends one request on an open connection and reads the reply.
+pub fn exchange(mut s: UnixStream, req: &HelperRequest) -> Result<Reply, String> {
     let mut line = serde_json::to_vec(req).map_err(|e| e.to_string())?;
     line.push(b'\n');
     s.write_all(&line).map_err(|e| format!("root helper: {e}"))?;
     let mut answer = String::new();
     BufReader::new(s.take(MAX_REQUEST)).read_line(&mut answer).map_err(|e| format!("root helper: {e}"))?;
-    serde_json::from_str(&answer)
-        .map_err(|_| "root helper: no answer (see journalctl -u 'nightgrid-node-helper@*')".into())
+    let hint = if cfg!(windows) {
+        r"see C:\ProgramData\Nightgrid Node\data\log\helper.log"
+    } else {
+        "see journalctl -u 'nightgrid-node-helper@*'"
+    };
+    serde_json::from_str(&answer).map_err(|_| format!("root helper: no answer ({hint})"))
 }
 
 #[cfg(test)]
@@ -350,7 +414,16 @@ mod tests {
         );
         let r = handle(&c, &LocalFixes::default(), &req("power.reboot", None), Path::new("/nonexistent"), &mut f);
         assert!(r.ok && r.detail.contains("shutdown -c"), "{r:?}");
+        #[cfg(unix)]
         assert_eq!(f.log, ["systemctl restart -- nginx.service", "shutdown -r +1 requested from Nightgrid Node"]);
+        #[cfg(windows)]
+        assert_eq!(
+            f.log,
+            [
+                "systemctl restart -- nginx.service".to_owned(),
+                format!("{} /r /t 60 /d p:0:0 /c Requested from Nightgrid Node", shutdown_exe())
+            ]
+        );
         f.fail = true;
         let r = handle(
             &c,
@@ -372,6 +445,16 @@ mod tests {
         {
             assert!(!action::valid_unit(bad), "{bad}");
         }
+        for ok in ["W32Time", "sshd", "MSSQL$SQLEXPRESS", "wuauserv", "Tomcat9.0"] {
+            assert!(action::valid_service(ok), "{ok}");
+        }
+        for bad in ["", "-x", "a b", "Nightgrid-Node", "nightgrid-node-helper", "..\\x", "a/b", "x;y"] {
+            assert!(!action::valid_service(bad), "{bad}");
+        }
+        // Windows refuses what it can't do yet before asking anyone.
+        assert!(supported("unit.restart") && supported("power.reboot") && supported("container.restart"));
+        assert_eq!(supported("firewall.block"), !cfg!(windows));
+        assert_eq!(supported("files.rollback"), !cfg!(windows));
     }
 
     #[cfg(unix)]

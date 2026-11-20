@@ -74,14 +74,15 @@ Supported: Windows Server 2016, 2019, 2022 and 2025 (and Windows 10/11, which us
 | `usage` power draw | Later | PDH `Power Meter` counters where the platform has them (no RAPL from user mode); `absent` for now | — |
 | `net` (LAN devices, IP conflicts) | Direct | `GetIpNetTable2` (the neighbour table; no raw sockets needed), gateway from `GetIpForwardTable2`, interfaces by alias | W1 (0.30.0) |
 | `net.dhcp` (rogue DHCP) | None | Needs packet capture (Npcap); no built-in way to listen on UDP 67/68 next to the DHCP client | — |
-| `actions`, `heal`, fix menu (`fix`, `fix auto`) | Direct | Windows services instead of units: `restart`, `start`, `stop`; `reboot`, `poweroff`; containers as on Linux | W2, after `allow helper` |
-| `fix journal` / `fix logs` / `fix packages` / `fix ssh` | Substitute | Event logs over their size, large log files, the Windows Update download cache, and the OpenSSH `authorized_keys` and `administrators_authorized_keys` ACLs (the usual Windows key-login failure) | W2 |
-| `changes` (snapshot and rollback with dead-man timer) | Direct | Same paths model; the helper copies files and restores ACLs | W2 |
-| `block` (block addresses, auto-block after failed logins) | Direct | Windows Firewall rules in the node's own group, each with an expiry the helper enforces | W2 |
-| `health`: disks | Substitute | `MSFT_PhysicalDisk` health and `MSFT_StorageReliabilityCounter` (temperature, wear, errors) instead of SMART attributes | W2, after `allow health` |
-| `health`: pools | Substitute | Storage Spaces pools and virtual disks instead of ZFS/mdraid/btrfs | W2 |
-| `health`: updates | Substitute | Windows Update search (COM), pending reboot from the usual registry keys | W2 |
-| `health`: UPS, `ups` shutdown guard | Substitute | A USB HID UPS shows up as a battery (`Win32_Battery`): charge, on battery, runtime. A NUT server on the LAN is read like on Linux (`upsc` protocol over the check runner) | W2 |
+| `actions` | Direct | Windows services instead of units: `restart`, `start`, `stop` of services listed in `[actions] units` (`W32Time`, not `w32time.service`); `reboot`, `poweroff` with `shutdown.exe` a minute ahead | **W2a (0.31.0)**, after `allow helper` |
+| `heal`, fix menu (`fix`, `fix auto`) | Direct | As on Linux, with the substitutes below | W2b |
+| `fix journal` / `fix logs` / `fix packages` / `fix ssh` | Substitute | Event logs over their size, large log files, the Windows Update download cache, and the OpenSSH `authorized_keys` and `administrators_authorized_keys` ACLs (the usual Windows key-login failure) | W2b |
+| `changes` (snapshot and rollback with dead-man timer) | Direct | Same paths model; the helper copies files and restores ACLs | W2b |
+| `block` (block addresses, auto-block after failed logins) | Direct | Windows Firewall rules in the node's own group, each with an expiry the helper enforces | W2b |
+| `health`: disks | Substitute | `MSFT_PhysicalDisk` health and `MSFT_StorageReliabilityCounter` (temperature, wear, errors) instead of SMART attributes | W2b, after `allow health` |
+| `health`: pools | Substitute | Storage Spaces pools and virtual disks instead of ZFS/mdraid/btrfs | W2b |
+| `health`: updates | Substitute | Windows Update search (COM), pending reboot from the usual registry keys | W2b |
+| `health`: UPS, `ups` shutdown guard | Substitute | A USB HID UPS shows up as a battery (`Win32_Battery`): charge, on battery, runtime. A NUT server on the LAN is read like on Linux (`upsc` protocol over the check runner) | W2b |
 | `containers` | Direct | Docker Engine on `\\.\pipe\docker_engine`, after `allow docker` (adds the service to `docker-users`, root-equivalent like on Linux) | W3 |
 | `checks` (service checks from the LAN) | Direct | Separate service `nightgrid-node-checker`, outbound only to `[checks] networks` by a service hardening rule | W3 |
 | `peers`, `serve`, `hub.member` (node-to-node link) | Direct | Separate service `nightgrid-node-peer`, inbound only on the tailnet or LAN address and port | W3 |
@@ -89,7 +90,7 @@ Supported: Windows Server 2016, 2019, 2022 and 2025 (and Windows 10/11, which us
 | `jobs` (scheduled jobs) | Substitute | Task Scheduler tasks under `\Nightgrid\` (what the app creates on Windows) instead of systemd timers | W3 |
 | `jobs` backups | Substitute | Path jobs as on Linux; Windows Server Backup results from its event log instead of restic/borg units | W3 |
 | `summary.daily` | Direct | Built from the same events | W0 (whatever is collected) |
-| `upgrade FILE --sha256` | Direct | The running exe is renamed aside, the new one put in place and the service restarted; reverts by itself | W2 |
+| `upgrade FILE --sha256` | Direct | The running exe is renamed aside, the new one put in place and the service restarted; reverts by itself | W2b |
 | `allow power` | None | Not needed: the power counters (where they exist) need no grant | — |
 | OpenRC/sysvinit, legacy 32-bit | None | Not applicable | — |
 | `nightgrid-hub` on Windows | Later | The hub reuses the node's pieces; possible once W3 is in | after W3 |
@@ -98,7 +99,8 @@ Supported: Windows Server 2016, 2019, 2022 and 2025 (and Windows 10/11, which us
 
 - **W0 (0.29.0):** the crate builds for `x86_64-pc-windows-msvc`. Named-pipe transport, the Windows service and its hardening, the native collector, history, uptime, disk usage and alerts, `install`/`uninstall`/`doctor`/`status`/`bridge` and the rest of the read-only CLI. CI builds and tests on a real Windows Server runner, installs the service, talks to it through `bridge` and uninstalls it. Release assets `nightgrid-node-vX.Y.Z-x86_64-windows.exe` in `SHA256SUMS` and `manifest.json`. App spec [0024](app-integration/0024-windows-node.md).
 - **W1 (0.30.0):** the Event Log reader and `allow eventlog`: SSH and RDP logins and failures, log errors from System and Application; watched files; ports with processes; usage per service and process; LAN devices. App spec [0025](app-integration/0025-windows-node-w1.md).
-- **W2:** the helper service and `allow helper`/`allow health`: actions, self-healing, the fix menu, rollbacks, blocking, disks, pools, updates, UPS and the shutdown guard, `upgrade`.
+- **W2a (0.31.0):** the admin helper service and `allow helper`/`deny helper`; service and power actions. App spec [0026](app-integration/0026-windows-node-w2a.md).
+- **W2b:** `allow health`, self-healing, the fix menu, rollbacks, blocking, disks, pools, updates, UPS and the shutdown guard, `upgrade`.
 - **W3:** containers, the check runner, the link, the status page, jobs and backups.
 
 ## 5. Same commands

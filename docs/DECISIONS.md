@@ -180,6 +180,17 @@ The service account can't open other accounts' processes, and it shouldn't need 
 ### N-079 · The Windows file baseline watches places that run code at start-up or let someone in
 These are the Windows counterparts of `/etc/ssh`, `/etc/profile.d`, cron and `authorized_keys`: the OpenSSH config and keys, the hosts file, the all-users StartUp folder, Group Policy scripts, the machine PowerShell profiles and the Tasks folder. Owner and DACL changes aren't compared yet. Reading them needs `READ_CONTROL`, which the service lacks on most of these paths, and asking the helper (W2) for them fits better than widening the service.
 
+## Windows Server · W2a (2026-11-20)
+
+### N-080 · The Windows admin helper is a demand-start LocalSystem service the node may only start
+Linux starts one root process per request from a socket unit. Windows has no socket activation, so the helper is a service, `nightgrid-node-helper`, that the node starts through the SCM when it has a request and that stops itself after three idle minutes. Its service DACL gives the node's service SID "query status" and "start" and nothing else: the node can't stop, reconfigure or delete it. It keeps only `SeShutdownPrivilege` and `SeChangeNotifyPrivilege`, and a Service Hardening rule blocks all its network traffic.
+
+### N-081 · The helper's pipe is checked from both ends
+The pipe's DACL lets SYSTEM, Administrators and the node's service SID in; `Nightgrid Node Users` can't open it. The helper still checks every caller's token (the node's service SID, SYSTEM or an elevated administrator) and loads the Administrators-only `config.toml` for every request, exactly like the Linux helper. The node opens the pipe only when SYSTEM or Administrators own it, so a process that squatted the name before the helper started gets nothing.
+
+### N-082 · On Windows a "unit" is a service name
+`[actions] units` takes service key names such as `W32Time` or `MSSQL$SQLEXPRESS` on Windows (letters, digits, `_ . - $`), never the node's own services. The protocol is unchanged: the app sends the same `unit.restart` with the name as `target`. Restart is stop, then start, each waiting up to a minute. Blocks, rollbacks and the local fixes aren't offered on Windows until W2b: `actions.policy` leaves them out and the node refuses them before asking the helper.
+
 ## N11 · Fix menu (2026-11-18)
 
 ### N-060 · Fixes are node-local actions on the existing action path, outside the frozen protocol

@@ -330,3 +330,37 @@ pub fn delete(name: &str) -> Result<bool, String> {
     }
     Ok(true)
 }
+
+/// What the helper does for `unit.restart`, `unit.start` and `unit.stop`:
+/// the SCM's form of `systemctl restart|start|stop -- name`. Waits up to
+/// a minute for each step, like systemd's default job timeout would.
+pub fn control(verb: &str, name: &str) -> Result<(), String> {
+    let wait = Duration::from_secs(60);
+    if status(name)?.is_none() {
+        return Err(format!("no service named {name}"));
+    }
+    match verb {
+        "start" => start(name, wait),
+        "stop" => stop(name, wait),
+        "restart" => {
+            stop(name, wait)?;
+            start(name, wait)
+        }
+        _ => Err(format!("unknown verb {verb:?}")),
+    }
+}
+
+/// Replaces a service's DACL (who may query, start or stop it).
+pub fn set_dacl(name: &str, sddl: &str) -> Result<(), String> {
+    use windows_sys::Win32::Security::DACL_SECURITY_INFORMATION;
+    use windows_sys::Win32::System::Services::SetServiceObjectSecurity;
+    let m = manager(true)?;
+    // WRITE_DAC
+    let s = open(&m, name, 0x0004_0000)?.ok_or_else(|| format!("{name} is not installed"))?;
+    let sd = super::acl::Sddl::new(sddl).map_err(|e| format!("{sddl}: {e}"))?;
+    // SAFETY: valid handle with WRITE_DAC and a valid descriptor.
+    if unsafe { SetServiceObjectSecurity(s.0, DACL_SECURITY_INFORMATION, sd.descriptor()) } == 0 {
+        return Err(err(&format!("set the access list of {name}")));
+    }
+    Ok(())
+}

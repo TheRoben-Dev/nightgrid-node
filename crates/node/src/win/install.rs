@@ -63,7 +63,7 @@ socket = '\\.\pipe\nightgrid-node'
 max_connections = 8
 "#;
 
-fn report(action: &'static str) -> Report {
+pub(crate) fn report(action: &'static str) -> Report {
     Report { action, version: env!("CARGO_PKG_VERSION"), host: Some(facts()), ..Default::default() }
 }
 
@@ -140,6 +140,10 @@ pub fn install(self_exe: &Path, opts: &InstallOptions) -> Result<Report, String>
     if !same && was_running {
         scm::stop(SERVICE, Duration::from_secs(30))?;
         step(&mut rep, "stopped the running service for the upgrade");
+    }
+    if !same {
+        // The helper runs the same exe; it starts again when next needed.
+        scm::stop(super::helper::SERVICE, Duration::from_secs(30))?;
     }
     if same {
         step(&mut rep, format!("{} already in place", bin.display()));
@@ -246,6 +250,7 @@ pub fn install(self_exe: &Path, opts: &InstallOptions) -> Result<Report, String>
 pub fn uninstall(purge: bool) -> Result<Report, String> {
     preflight()?;
     let mut rep = report("uninstall");
+    super::helper::remove(&mut rep);
     scm::stop(SERVICE, Duration::from_secs(30))?;
     for sid in [PERF_USERS, super::EVENT_LOG_READERS] {
         if let Some(g) = builtin_group(sid) {

@@ -280,6 +280,14 @@ pub mod action {
             && SUFFIXES.iter().any(|s| name.ends_with(s) && name.len() > s.len())
             && !name.starts_with("nightgrid-node")
     }
+    /// A Windows service name such as `W32Time` or `sshd` (the key name,
+    /// not the display name), and not one of the node's own services.
+    pub fn valid_service(name: &str) -> bool {
+        name.chars().next().is_some_and(|f| f.is_ascii_alphanumeric())
+            && name.len() <= 256
+            && name.chars().all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '.' | '-' | '$'))
+            && !name.to_ascii_lowercase().starts_with("nightgrid-node")
+    }
 }
 
 /// Capability name → version.
