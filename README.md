@@ -1,6 +1,6 @@
 # Nightgrid Node
 
-An optional, lightweight agent for Linux servers that extends [Nightgrid](https://github.com/TheRoben-Dev/nightgrid), the homelab desktop app.
+An optional, lightweight agent for Linux servers (and, from 0.29, Windows Server) that extends [Nightgrid](https://github.com/TheRoben-Dev/nightgrid), the homelab desktop app.
 
 Nightgrid is agentless: it does everything over SSH, but only while the app is open. Close the laptop and nobody is watching. Nightgrid Node runs on the server and keeps watching. When the app reconnects, it hands over everything that happened, so graphs, uptime bars, the timeline and alerts have no gaps.
 
@@ -38,6 +38,7 @@ While the app is closed, the node:
 | 📱 | **Shows a status page** (opt-in, off by default): a read-only page for your phone on the tailnet, with the host's state, alerts, UPS and linked hosts, at a secret link. No scripts, nothing it can change. | 0.22 |
 | 📝 | **Prepares a daily summary** for the app's DRIFT helper: what broke, what changed and what is filling up while the app was closed, as short facts a small local model can use. Made on request; nothing leaves the host. | 0.23 |
 | ⚡ | **Pushes live**: while the app is connected, new events, alerts, container changes and metrics every 2 s are pushed as they happen, instead of the app polling over SSH. | 0.4 |
+| 🪟 | **Runs on Windows Server** (tested on 2022 and 2025): metric history, uptime, disk forecasts, alerts and the timeline, as a hardened Windows service the app reaches through Windows OpenSSH, with the same commands. More of the list above follows milestone by milestone; see [docs/WINDOWS.md](docs/WINDOWS.md). | 0.29 |
 
 When the app reconnects, it asks for everything after its last cursor and merges it in. The node keeps no per-app state, so several computers running Nightgrid can sync from the same node.
 

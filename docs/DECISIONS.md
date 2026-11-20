@@ -144,6 +144,25 @@ Listening sockets come from `/proc/net/{tcp,tcp6,udp,udp6}`, which every user ca
 ### N-038 · Auto-block uses a node-owned nftables table with kernel timeouts
 Blocks are elements with a timeout in two sets (`v4`, `v6`) of a table only the node uses, matched by drop rules in its own `input` and `forward` chains (priority -5, so before firewalld, ufw or Docker's chains, and forwarded traffic to published container ports is covered). The kernel expires each block by itself, so a block can't outlive its duration if the node crashes, and removing the table undoes everything. That avoids editing iptables/ufw/firewalld rules the person manages, and works the same on Debian, Fedora, Bazzite and Proxmox (all nftables-based now). The root helper runs `nft` with a fixed command built from a parsed IP address and root's duration, after checking root's `[actions] allow`, the protected ranges and `[block] never` itself. Auto-block is a second opt-in (`[block] auto`) on top of allowing the action. It never touches addresses that logged in successfully in the last day, and it is capped at `[block] max_active` blocks. Blocks don't use `max_per_hour`, because a distributed attack could otherwise exhaust the budget other actions rely on.
 
+## Windows Server · W0 (2026-11-20)
+
+Roben asked for a Windows Server build with feature parity and, where possible, the same commands as on Linux (2026-11-20). Plan and parity table: [WINDOWS.md](WINDOWS.md).
+
+### N-070 · One codebase and one binary name, with Windows pieces behind `cfg(windows)`
+The Linux node is the reference, and most of it (the engine, the store, alerts, uptime, sync, the protocol) is platform-neutral. So Windows is the same crate with a `win` module for the service, pipe, collector, install and doctor, and a small `compat` module that stands in for the unix-only std pieces (modes, owners, the socket stream) so shared code keeps compiling unchanged. Features that aren't ported yet are switched off with `cfg!(unix)` at the watcher, never removed, and `hello` advertises only what runs on Windows (`WINDOWS_CAPS`), so the app's capability checks do the rest. The exe is `nightgrid-node.exe` with the same subcommands and flags; what isn't on Windows yet exits with a message (and `{"error":{"code":"not_on_windows"}}` under `--json`) instead of being an unknown command.
+
+### N-071 · A named pipe reached through `bridge`, never a TCP port
+Windows has AF_UNIX sockets, but Windows OpenSSH can forward neither them nor pipes, and the app already runs `bridge` on Linux, so the pipe is the natural local endpoint. `\\.\pipe\nightgrid-node` is created with `FILE_FLAG_FIRST_PIPE_INSTANCE` (so nobody can create it first and squat on it), rejects remote clients, and has a DACL of SYSTEM, Administrators, the service SID and the local group `Nightgrid Node Users`, the counterpart of the Linux group. The caller is identified by impersonating it after the first bytes arrive: its SID is the session's uid, and an elevated administrator or SYSTEM counts as root. Clients connect with identification-level QoS (the server can't act as them) and refuse a pipe whose owner isn't the service, SYSTEM, Administrators or themselves.
+
+### N-072 · The service runs as a virtual account with a write-restricted token and its network blocked
+The Linux unit's sandbox maps onto Windows service hardening: the virtual account `NT SERVICE\nightgrid-node` (no password, not an administrator), required privileges cut to `SeChangeNotifyPrivilege`, SID type *restricted* so it can only write where its own SID is granted (its data folder), a Windows Service Hardening rule that blocks every inbound and outbound packet for the service even with the firewall profile off, and a job object with the same 64 MB memory cap. Config and binary are writable only by Administrators and SYSTEM; the data folder only by the service, Administrators and SYSTEM. Logs go to a 1 MB rotated file in the data folder, since there is no journal.
+
+### N-073 · The collector reproduces the app's Windows sampler from raw counters
+The app already samples Windows hosts over SSH with PowerShell (`core/src/win/metrics.rs`) and prints the Linux-style sections its parser reads. The node does the same from PDH raw counters, `GlobalMemoryStatusEx`, page files and volumes, in-process and without PowerShell, so a sample from a Windows node and one the app takes itself have the same names and units (`diskN`, drive letters, jiffies). WMI isn't used: a COM client in a 64 MB service is heavy, and every figure the sampler needs is a counter or an API call.
+
+### N-074 · Windows releases sit apart in the manifest
+`manifest.json` gets a top-level `windows` map (and `windowsArch` for `PROCESSOR_ARCHITECTURE`) next to `programs`, not inside it, so an app that only knows `programs` can never pick a Windows file for a Linux host. The exe is static (`crt-static`), built on a Windows runner, and listed in `SHA256SUMS` with build provenance like the Linux files.
+
 ## N11 · Fix menu (2026-11-18)
 
 ### N-060 · Fixes are node-local actions on the existing action path, outside the frozen protocol

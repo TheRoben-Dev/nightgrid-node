@@ -163,6 +163,7 @@ impl UsageReader {
 
     pub fn at(root: impl Into<PathBuf>) -> Self {
         // SAFETY: sysconf only reads system constants.
+        #[cfg(unix)]
         let (ticks, page, cores) = unsafe {
             (
                 libc::sysconf(libc::_SC_CLK_TCK),
@@ -170,6 +171,9 @@ impl UsageReader {
                 libc::sysconf(libc::_SC_NPROCESSORS_ONLN),
             )
         };
+        #[cfg(windows)]
+        let (ticks, page, cores): (i64, i64, i64) =
+            (100, 4096, std::thread::available_parallelism().map(|n| n.get() as i64).unwrap_or(1));
         Self {
             root: root.into(),
             ticks: if ticks > 0 { ticks as f64 } else { 100.0 },
@@ -559,6 +563,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(windows, ignore = "cgroups and /proc")]
     fn rates_from_two_reads() {
         let d = tempfile::tempdir().unwrap();
         tree(d.path(), 1_000_000, 0, 0, 0, 1_000_000);
@@ -592,6 +597,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(windows, ignore = "cgroups and /proc")]
     fn reads_this_machine() {
         let mut r = UsageReader::system();
         r.read(&HashMap::new());

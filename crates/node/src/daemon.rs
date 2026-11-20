@@ -82,14 +82,14 @@ impl Shared {
         let identity = NodeIdentity {
             node_id: store.node_id(),
             version: env!("CARGO_PKG_VERSION").to_owned(),
-            hostname: std::fs::read_to_string("/proc/sys/kernel/hostname").unwrap_or_default().trim().to_owned(),
+            hostname: crate::compat::hostname(),
             arch: std::env::consts::ARCH.to_owned(),
         };
         let rules = crate::engine::load_rules(&store);
         let dhcp = crate::dhcp::Dhcp::load(&store, &config.network.dhcp_servers);
         let heal = crate::heal::Heal::load(&store);
         let logs = crate::logs::LogsState::load(&store);
-        let docker_access = if config.docker.enabled {
+        let docker_access = if cfg!(unix) && config.docker.enabled {
             nightgrid_node_proto::ContainerAccess::Absent
         } else {
             nightgrid_node_proto::ContainerAccess::Off
@@ -243,7 +243,14 @@ fn store_minute(shared: &Shared, p: &nightgrid_node_proto::Point) {
     }
 }
 
+/// Resident set size of this process, bytes (Windows: the working set).
+#[cfg(windows)]
+pub fn rss_bytes() -> u64 {
+    crate::win::sys::rss_bytes()
+}
+
 /// Resident set size of this process, bytes.
+#[cfg(unix)]
 pub fn rss_bytes() -> u64 {
     let statm = std::fs::read_to_string("/proc/self/statm").unwrap_or_default();
     let pages: u64 = statm.split_whitespace().nth(1).and_then(|v| v.parse().ok()).unwrap_or(0);
@@ -252,7 +259,15 @@ pub fn rss_bytes() -> u64 {
     pages * u64::try_from(page).unwrap_or(4096)
 }
 
+/// Tells the service manager something: systemd on Linux; on Windows the
+/// service status is reported by [`crate::win::service`] instead.
+#[cfg(windows)]
+pub fn sd_notify(state: &str) {
+    crate::win::service::notify(state);
+}
+
 /// Tells systemd (`Type=notify`) something, if it's listening.
+#[cfg(unix)]
 pub fn sd_notify(state: &str) {
     let Some(path) = std::env::var_os("NOTIFY_SOCKET") else { return };
     let path = path.to_string_lossy().into_owned();
@@ -298,7 +313,7 @@ pub fn run(config: Config, paths: Paths) -> Result<(), String> {
     let sampler =
         Sampler::start(shared.clone(), Reader::system(), Duration::from_secs(config.metrics.interval_secs.into()))
             .map_err(|e| format!("sampler: {e}"))?;
-    let files = if config.files.enabled && !config.files.watch.is_empty() {
+    let files = if cfg!(unix) && config.files.enabled && !config.files.watch.is_empty() {
         Some(crate::files::FileWatcher::start(shared.clone()).map_err(|e| format!("file watcher: {e}"))?)
     } else {
         None
@@ -312,7 +327,7 @@ pub fn run(config: Config, paths: Paths) -> Result<(), String> {
         let peers = crate::peers::load(&shared.store.lock().unwrap_or_else(|e| e.into_inner()));
         shared.peers.lock().unwrap_or_else(|e| e.into_inner()).list = peers;
     }
-    let autoblock = if crate::firewall::auto_enabled(&shared) && config.logins.enabled {
+    let autoblock = if cfg!(unix) && crate::firewall::auto_enabled(&shared) && config.logins.enabled {
         let (b, tx) = crate::firewall::AutoBlocker::start(shared.clone()).map_err(|e| format!("auto-block: {e}"))?;
         *shared.autoblock.lock().unwrap_or_else(|e| e.into_inner()) = Some(tx);
         crate::info!(
@@ -324,12 +339,12 @@ pub fn run(config: Config, paths: Paths) -> Result<(), String> {
     } else {
         None
     };
-    let logins = if config.logins.enabled {
+    let logins = if cfg!(unix) && config.logins.enabled {
         Some(crate::logins::LoginWatcher::start(shared.clone()).map_err(|e| format!("login watcher: {e}"))?)
     } else {
         None
     };
-    let network = if config.network.enabled {
+    let network = if cfg!(unix) && config.network.enabled {
         Some(
             crate::netwatch::NetWatcher::start(shared.clone(), crate::netwatch::Sources::default())
                 .map_err(|e| format!("network watcher: {e}"))?,
@@ -338,7 +353,7 @@ pub fn run(config: Config, paths: Paths) -> Result<(), String> {
         None
     };
     let healer = crate::heal::Healer::start(shared.clone()).map_err(|e| format!("self-healing: {e}"))?;
-    let usage = if config.usage.enabled {
+    let usage = if cfg!(unix) && config.usage.enabled {
         Some(
             crate::usage::UsageWatcher::start(shared.clone(), crate::usage::UsageReader::system())
                 .map_err(|e| format!("usage watcher: {e}"))?,
@@ -346,17 +361,17 @@ pub fn run(config: Config, paths: Paths) -> Result<(), String> {
     } else {
         None
     };
-    let logs = if config.logs.enabled {
+    let logs = if cfg!(unix) && config.logs.enabled {
         Some(crate::logs::LogWatcher::start(shared.clone()).map_err(|e| format!("log watcher: {e}"))?)
     } else {
         None
     };
-    let health = if config.health.enabled {
+    let health = if cfg!(unix) && config.health.enabled {
         Some(crate::health::watch::HealthWatcher::start(shared.clone()).map_err(|e| format!("health watcher: {e}"))?)
     } else {
         None
     };
-    let ports = if config.ports.enabled {
+    let ports = if cfg!(unix) && config.ports.enabled {
         Some(
             crate::ports::PortWatcher::start(shared.clone(), PathBuf::from("/"))
                 .map_err(|e| format!("port watcher: {e}"))?,
@@ -364,18 +379,27 @@ pub fn run(config: Config, paths: Paths) -> Result<(), String> {
     } else {
         None
     };
-    let jobs = if config.jobs.enabled {
+    let jobs = if cfg!(unix) && config.jobs.enabled {
         Some(crate::jobs::JobsWatcher::start(shared.clone()).map_err(|e| format!("jobs watcher: {e}"))?)
     } else {
         None
     };
-    let watcher = if config.docker.enabled {
+    let watcher = if cfg!(unix) && config.docker.enabled {
         Some(crate::containers::Watcher::start(shared.clone()).map_err(|e| format!("container watcher: {e}"))?)
     } else {
         None
     };
 
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| e.to_string())?;
+    #[cfg(windows)]
+    let result = rt.block_on(async {
+        let pipe = config.server.socket.to_string_lossy().into_owned();
+        let first = crate::win::pipe::first_instance(&pipe)?;
+        sd_notify("READY=1");
+        crate::win::pipe::serve(first, &pipe, shared.clone(), crate::win::service::stopping()).await;
+        Ok::<(), String>(())
+    });
+    #[cfg(unix)]
     let result = rt.block_on(async {
         let listener = crate::server::bind(&config.server.socket)?;
         sd_notify("READY=1");
@@ -461,14 +485,14 @@ mod tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod slow_sensor {
     use super::*;
     use crate::store::Store;
 
     #[test]
     fn sampler_stops_with_a_hung_sensor() {
-        use std::os::unix::ffi::OsStrExt;
+        use crate::compat::ffi::OsStrExt;
         let d = tempfile::tempdir().unwrap();
         let w = |rel: &str, body: &str| {
             let p = d.path().join(rel);

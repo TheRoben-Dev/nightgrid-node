@@ -1,6 +1,6 @@
 [package]
 name = "nightgrid-node"
-description = "Optional, lightweight Nightgrid agent for Linux servers"
+description = "Optional, lightweight Nightgrid agent for Linux and Windows servers"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -12,7 +12,6 @@ name = "nightgrid-node"
 path = "src/main.rs"
 
 [dependencies]
-libc = "0.2.191"
 nightgrid-node-proto = { path = "../proto" }
 regex-lite = "0.1"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
@@ -27,6 +26,36 @@ tokio-rustls = { version = "0.26", default-features = false, features = ["ring",
 toml = "1.0.7"
 x509-parser = "0.18"
 rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.191"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Console",
+    "Win32_System_IO",
+    "Win32_System_JobObjects",
+    "Win32_System_Performance",
+    "Win32_System_Pipes",
+    "Win32_System_ProcessStatus",
+    "Win32_System_Registry",
+    "Win32_System_Services",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+    "Win32_System_Time",
+    "Wdk_System_SystemInformation",
+    "Wdk_System_SystemServices",
+    "Win32_System_WindowsProgramming",
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_NetworkManagement_NetManagement",
+    "Win32_NetworkManagement_Ndis",
+    "Win32_Networking_WinSock",
+    "Win32_System_Diagnostics_ToolHelp",
+] }
 
 [dev-dependencies]
 libc = "0.2.191"

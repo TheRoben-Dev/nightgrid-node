@@ -64,8 +64,34 @@ jobs:
           name: bin-${{ matrix.arch }}
           path: out/*
 
+  build-windows:
+    # The Windows Server node (docs/WINDOWS.md): one static exe (the C
+    # runtime linked in), built on GitHub's Windows Server image.
+    runs-on: windows-2022
+    env:
+      RUSTFLAGS: -C target-feature=+crt-static
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Check the tag matches the crate version
+        shell: bash
+        run: |
+          v=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          test "v$v" = "${TAG}" || { echo "tag ${TAG} but Cargo.toml says $v"; exit 1; }
+      - run: cargo build --release --locked -p nightgrid-node
+      - shell: bash
+        run: |
+          mkdir out
+          cp target/release/nightgrid-node.exe "out/nightgrid-node-${TAG}-x86_64-windows.exe"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bin-windows-x86_64
+          path: out/*
+
   publish:
-    needs: build
+    needs: [build, build-windows]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -115,9 +141,10 @@ jobs:
             awk -v v="$v" '$0 ~ "^## "v" " {p=1; next} /^## / && p {exit} p' CHANGELOG.md \
               | sed "s#](docs/#](https://github.com/$GITHUB_REPOSITORY/blob/$TAG/docs/#g"
             printf '\n## Install\n\n'
-            printf 'Two static binaries per architecture (x86_64, aarch64, armv7, armv6, i686), each with its systemd units built in (the node also installs on OpenRC and sysvinit). `manifest.json` lists every file with its size and SHA-256, and maps `uname -m` to the arch.\n\n'
+            printf 'Two static binaries per Linux architecture (x86_64, aarch64, armv7, armv6, i686), each with its systemd units built in (the node also installs on OpenRC and sysvinit), and the node for Windows Server (x86_64). `manifest.json` lists every file with its size and SHA-256, and maps `uname -m` to the arch.\n\n'
             printf -- '- `nightgrid-node`: the Lite agent, for every server.\n'
-            printf -- '- `nightgrid-hub`: optional, for one always-on host per network, next to `nightgrid-node`.\n\n'
+            printf -- '- `nightgrid-node-...-x86_64-windows.exe`: the same agent for Windows Server 2016 and later, installed with `nightgrid-node install` from an elevated session ([docs/WINDOWS.md](https://github.com/%s/blob/%s/docs/WINDOWS.md)).\n' "$GITHUB_REPOSITORY" "$TAG"
+            printf -- '- `nightgrid-hub`: optional, for one always-on host per network, next to `nightgrid-node` (Linux).\n\n'
             printf 'Check them with `sha256sum -c --ignore-missing SHA256SUMS` and, optionally, `gh attestation verify <file> --repo %s`. ' "$GITHUB_REPOSITORY"
             printf 'Steps: [README](https://github.com/%s/blob/%s/README.md#install-by-hand).\n' "$GITHUB_REPOSITORY" "$TAG"
           } > "$RUNNER_TEMP/notes.md"

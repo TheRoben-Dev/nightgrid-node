@@ -71,7 +71,7 @@ COMMANDS:
     audit [--count N]       The last N entries of the action log (default 30)
     audit verify            Check the action log's whole SHA-256 chain; exits 1
                             if any entry was edited or removed
-    completions bash|zsh|fish
+    completions bash|zsh|fish|powershell
                             Print a shell completion script
     man                     Print the manual page (nightgrid-node man | man -l -)
     doctor                  Check this host's install: config, service, socket,
@@ -156,7 +156,7 @@ fn socket(a: &Args) -> PathBuf {
     a.socket.clone().unwrap_or_else(|| {
         Config::load(&a.config)
             .map(|c| c.server.socket)
-            .unwrap_or_else(|_| PathBuf::from(nightgrid_node_proto::DEFAULT_SOCKET))
+            .unwrap_or_else(|_| PathBuf::from(nightgrid_node::config::DEFAULT_SOCKET))
     })
 }
 
@@ -199,7 +199,10 @@ fn real_main() -> Result<(), String> {
         // Rust ignores SIGPIPE; let `nightgrid-node events | head` end quietly
         // instead of panicking on the closed pipe.
         // SAFETY: setting a signal's disposition to its default has no preconditions.
-        unsafe { libc::signal(libc::SIGPIPE, libc::SIG_DFL) };
+        #[cfg(unix)]
+        unsafe {
+            libc::signal(libc::SIGPIPE, libc::SIG_DFL)
+        };
     }
     if a.cmd.is_empty() && nightgrid_node::tui::interactive() {
         // `nightgrid-node` alone on a terminal: the home menu.
@@ -228,7 +231,7 @@ fn fix_ctx(a: &Args) -> nightgrid_node::menu::Ctx {
 
 /// Runs the command. With `--json`, a failed install, uninstall, allow,
 /// deny or serve also prints `{"error":{"code":...,"message":...}}` on
-/// stdout (codes `no_systemd`, `not_root`, `failed`), for the app.
+/// stdout (codes `no_systemd`, `not_on_windows`, `not_root`, `failed`), for the app.
 fn dispatch(a: Args) -> Result<(), String> {
     let json_errors = a.json && matches!(a.cmd.as_str(), "install" | "uninstall" | "allow" | "deny" | "serve");
     let r = run_command(a);
@@ -238,7 +241,64 @@ fn dispatch(a: Args) -> Result<(), String> {
     r
 }
 
+#[cfg(windows)]
+use install::not_on_windows;
+
+/// The commands whose Windows form differs: the service, install and
+/// uninstall, doctor and the accesses that come in later milestones.
+#[cfg(windows)]
+fn windows_command(a: &Args) -> Option<Result<(), String>> {
+    use nightgrid_node::win;
+    Some(match a.cmd.as_str() {
+        "run" => (|| {
+            let mut config = Config::load(&a.config)?;
+            if let Some(s) = &a.socket {
+                config.server.socket = s.clone();
+            }
+            let mut paths = daemon::Paths::from_env();
+            paths.fixes = nightgrid_node::fixes::path_for(&a.config);
+            if let Some(d) = &a.data_dir {
+                paths.data_dir = d.clone();
+            }
+            win::service::run(config, paths)
+        })(),
+        "install" => (|| {
+            let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+            let opts = install::InstallOptions { allow_users: a.users.clone(), no_start: a.no_start };
+            let r = win::install::install(&exe, &opts)?;
+            print_report(&r, a.json);
+            Ok(())
+        })(),
+        "uninstall" => win::install::uninstall(a.purge).map(|r| print_report(&r, a.json)),
+        "doctor" => {
+            let r = win::doctor::run(&a.config, a.socket.as_deref());
+            if a.json {
+                println!("{}", serde_json::to_string(&r).unwrap_or_default());
+            } else {
+                print!("{}", nightgrid_node::doctor::render(&r));
+            }
+            if r.worst() == nightgrid_node::doctor::Level::Fail {
+                Err("doctor found a failure".into())
+            } else {
+                Ok(())
+            }
+        }
+        "allow" | "deny" | "serve" => {
+            Err(not_on_windows(format!("nightgrid-node {} {}", a.cmd, a.rest.join(" ")).trim_end()))
+        }
+        "fix" | "fix-apply" => Err(not_on_windows("the fix menu")),
+        "upgrade" => Err(not_on_windows("upgrade (run install with the new binary for now)")),
+        "helper" | "health-helper" => Err(not_on_windows("the helper service")),
+        "checker" | "peer" | "status-page" | "netwatch" => Err(not_on_windows(&a.cmd)),
+        _ => return None,
+    })
+}
+
 fn run_command(a: Args) -> Result<(), String> {
+    #[cfg(windows)]
+    if let Some(r) = windows_command(&a) {
+        return r;
+    }
     match a.cmd.as_str() {
         "fix" => nightgrid_node::menu::fix(&fix_ctx(&a), &a.rest),
         "fix-apply" => match a.rest.as_slice() {
@@ -315,7 +375,13 @@ fn run_command(a: Args) -> Result<(), String> {
             if let Some(s) = &a.socket {
                 config.server.socket = s.clone();
             }
-            nightgrid_node::sniff::run(&config)
+            #[cfg(unix)]
+            return nightgrid_node::sniff::run(&config);
+            #[cfg(windows)]
+            {
+                let _ = config;
+                Err(not_on_windows("the network watch helper"))
+            }
         }
         "upgrade" => {
             let file = a.rest.first().ok_or("upgrade needs the new binary: upgrade FILE --sha256 HEX")?;
@@ -451,11 +517,16 @@ fn run_command(a: Args) -> Result<(), String> {
         }
         "completions" => {
             let sh = a.rest.first().map(String::as_str).unwrap_or("");
-            print!("{}", cli::completions(sh).ok_or("completions for which shell? (bash, zsh or fish)")?);
+            print!("{}", cli::completions(sh).ok_or("completions for which shell? (bash, zsh, fish or powershell)")?);
             Ok(())
         }
         "man" => {
-            print!("{}", cli::man(HELP, env!("CARGO_PKG_VERSION")));
+            // Windows has no man(1): the help text is the manual there.
+            if cfg!(windows) {
+                print!("{HELP}");
+            } else {
+                print!("{}", cli::man(HELP, env!("CARGO_PKG_VERSION")));
+            }
             Ok(())
         }
         "doctor" => {

@@ -338,8 +338,8 @@ impl LocalFixes {
 
     /// Writes it (root), mode 0644, replacing the old file in one step.
     pub fn save(&self, path: &Path) -> Result<(), String> {
+        use crate::compat::fs::OpenOptionsExt;
         use std::io::Write;
-        use std::os::unix::fs::OpenOptionsExt;
         self.validate()?;
         let tmp = path.with_extension("toml.new");
         let mut f = std::fs::OpenOptions::new()
@@ -486,7 +486,14 @@ pub fn logrotate_bin() -> Option<&'static str> {
     first_existing(&["/usr/sbin/logrotate", "/sbin/logrotate", "/usr/bin/logrotate"])
 }
 
+/// No password database on Windows (W2 reads profiles instead).
+#[cfg(windows)]
+pub fn passwd(_user: &str) -> Option<(u32, u32, PathBuf)> {
+    None
+}
+
 /// A login user's name, uid, gid and home, from the password database.
+#[cfg(unix)]
 pub fn passwd(user: &str) -> Option<(u32, u32, PathBuf)> {
     if !crate::install::valid_user(user) {
         return None;
@@ -600,10 +607,12 @@ pub fn helper_run(config: &Config, local: &LocalFixes, a: &str, target: Option<&
 // through file descriptors opened without following links, so a user
 // can't point it at anything outside their own .ssh.
 
+#[cfg(unix)]
 fn cstr(s: &str) -> std::ffi::CString {
     std::ffi::CString::new(s).unwrap_or_default()
 }
 
+#[cfg(unix)]
 fn open_at(dir: i32, name: &str, flags: i32) -> std::io::Result<std::os::fd::OwnedFd> {
     use std::os::fd::FromRawFd;
     let c = cstr(name);
@@ -617,6 +626,7 @@ fn open_at(dir: i32, name: &str, flags: i32) -> std::io::Result<std::os::fd::Own
     }
 }
 
+#[cfg(unix)]
 fn fstat(fd: i32) -> std::io::Result<libc::stat> {
     // SAFETY: an all-zero stat is a valid out-buffer.
     let mut st: libc::stat = unsafe { std::mem::zeroed() };
@@ -628,6 +638,7 @@ fn fstat(fd: i32) -> std::io::Result<libc::stat> {
     }
 }
 
+#[cfg(unix)]
 fn tighten(
     fd: i32,
     what: &str,
@@ -656,7 +667,14 @@ fn tighten(
     Ok(())
 }
 
+/// The fix itself on Windows: comes with the helper service (W2).
+#[cfg(windows)]
+pub fn apply_ssh_permissions(_user: &str) -> Result<String, String> {
+    Err("not available on Windows yet".into())
+}
+
 /// The fix itself; returns what it changed.
+#[cfg(unix)]
 pub fn apply_ssh_permissions(user: &str) -> Result<String, String> {
     use std::os::fd::AsRawFd;
     let (uid, gid, home) = passwd(user).ok_or_else(|| format!("no login user {user:?}"))?;
@@ -698,7 +716,7 @@ pub fn apply_ssh_permissions(user: &str) -> Result<String, String> {
 
 /// Read-only: what `apply_ssh_permissions` would change, for detection.
 pub fn ssh_permission_problems(home: &Path, uid: u32) -> Vec<String> {
-    use std::os::unix::fs::MetadataExt;
+    use crate::compat::fs::MetadataExt;
     let mut out = Vec::new();
     if let Ok(m) = std::fs::metadata(home) {
         if m.mode() & 0o022 != 0 {
@@ -839,9 +857,10 @@ action = "fix.journal-vacuum"
         assert_eq!(f.log.len(), 3, "refusals ran nothing");
     }
 
+    #[cfg(unix)]
     #[test]
     fn ssh_detection_reads_modes() {
-        use std::os::unix::fs::PermissionsExt;
+        use crate::compat::fs::PermissionsExt;
         let d = tempfile::tempdir().unwrap();
         let home = d.path();
         std::fs::set_permissions(home, std::fs::Permissions::from_mode(0o755)).unwrap();

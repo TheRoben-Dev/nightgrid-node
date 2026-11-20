@@ -6,8 +6,18 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+#[cfg(unix)]
 pub const DEFAULT_CONFIG: &str = "/etc/nightgrid-node/config.toml";
+#[cfg(unix)]
 pub const DEFAULT_DATA_DIR: &str = "/var/lib/nightgrid-node";
+/// `%ProgramData%\Nightgrid Node\config.toml` (see `crate::win::etc_dir`).
+#[cfg(windows)]
+pub const DEFAULT_CONFIG: &str = r"C:\ProgramData\Nightgrid Node\config.toml";
+#[cfg(windows)]
+pub const DEFAULT_DATA_DIR: &str = r"C:\ProgramData\Nightgrid Node\data";
+/// The service's socket (Windows: its named pipe).
+pub const DEFAULT_SOCKET: &str =
+    if cfg!(windows) { nightgrid_node_proto::DEFAULT_PIPE } else { nightgrid_node_proto::DEFAULT_SOCKET };
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -429,7 +439,8 @@ impl Default for FilesConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            watch: DEFAULT_WATCH.iter().map(PathBuf::from).collect(),
+            // Windows defaults arrive with the Windows file watcher (W1).
+            watch: if cfg!(windows) { Vec::new() } else { DEFAULT_WATCH.iter().map(PathBuf::from).collect() },
             baseline: true,
             interval_secs: 10,
         }
@@ -450,7 +461,8 @@ pub struct DockerConfig {
 
 impl Default for DockerConfig {
     fn default() -> Self {
-        Self { enabled: true, socket: PathBuf::from("/var/run/docker.sock"), interval_secs: 15 }
+        let socket = if cfg!(windows) { r"\\.\pipe\docker_engine" } else { "/var/run/docker.sock" };
+        Self { enabled: true, socket: PathBuf::from(socket), interval_secs: 15 }
     }
 }
 
@@ -480,7 +492,7 @@ impl Default for MetricsConfig {
 
 impl Default for ServerConfig {
     fn default() -> Self {
-        Self { socket: PathBuf::from(nightgrid_node_proto::DEFAULT_SOCKET), max_connections: 8 }
+        Self { socket: PathBuf::from(DEFAULT_SOCKET), max_connections: 8 }
     }
 }
 
@@ -925,7 +937,12 @@ mod tests {
 
     #[test]
     fn template_is_the_default() {
-        assert_eq!(Config::parse(TEMPLATE).unwrap(), Config::default());
+        #[cfg(unix)]
+        let template = TEMPLATE;
+        // Windows writes its own template (pipe name, no Linux paths).
+        #[cfg(windows)]
+        let template = crate::win::install::TEMPLATE;
+        assert_eq!(Config::parse(template).unwrap(), Config::default());
         assert_eq!(Config::parse("").unwrap(), Config::default());
     }
 

@@ -402,7 +402,7 @@ fn newest(dir: &Path, depth: u32, seen: &mut usize) -> Option<f64> {
 
 /// Bytes on disk (like `du`), `false` when the walk hit its limit.
 fn size_of(dir: &Path, seen: &mut usize, total: &mut u64) -> bool {
-    use std::os::unix::fs::MetadataExt;
+    use crate::compat::fs::MetadataExt;
     let Ok(rd) = std::fs::read_dir(dir) else { return true };
     for e in rd.flatten() {
         *seen += 1;

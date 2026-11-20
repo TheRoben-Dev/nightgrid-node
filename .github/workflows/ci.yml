@@ -31,6 +31,43 @@ jobs:
       - run: cargo clippy --all-targets --locked -- -D warnings
       - run: sh ci/test-or-dump.sh
 
+  windows:
+    name: Windows Server (${{ matrix.runner }})
+    # Lint, unit tests and a real install as a service on GitHub's Windows
+    # Server images (docs/WINDOWS.md). The hub is Linux-only for now.
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [windows-2022, windows-2025]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    env:
+      RUSTFLAGS: -C target-feature=+crt-static
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy -p nightgrid-node -p nightgrid-node-proto --all-targets --locked -- -D warnings
+      - run: cargo test -p nightgrid-node -p nightgrid-node-proto --locked
+      - run: cargo build --release -p nightgrid-node --locked
+      - name: Size and imports of the release binary
+        shell: pwsh
+        run: |
+          $f = Get-Item target\release\nightgrid-node.exe
+          "{0:N1} MB" -f ($f.Length / 1MB)
+          if ($f.Length -gt 12MB) { throw "binary is $($f.Length) bytes" }
+      - name: Install e2e (service, pipe, sandbox, uninstall)
+        shell: powershell
+        run: .\ci\windows-e2e.ps1 -Exe target\release\nightgrid-node.exe
+      - uses: actions/upload-artifact@v4
+        if: matrix.runner == 'windows-2022'
+        with:
+          name: nightgrid-node-x86_64-pc-windows-msvc
+          path: target/release/nightgrid-node.exe
+          retention-days: 7
+
   hygiene:
     name: Scripts, dependencies and MSRV
     runs-on: ubuntu-latest

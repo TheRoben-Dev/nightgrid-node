@@ -3,8 +3,10 @@
 //! ([`HealthWatcher`], which asks on a schedule and keeps the results).
 
 use std::io::{BufRead, BufReader, Read, Write};
+#[cfg(unix)]
 use std::os::fd::{AsRawFd, FromRawFd};
-use std::os::unix::net::UnixStream;
+
+use crate::compat::LocalStream as UnixStream;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::mpsc::{self, RecvTimeoutError};
@@ -112,7 +114,15 @@ pub fn handle(config: &Config, req: &ReadRequest) -> ReadReply {
     }
 }
 
+/// `nightgrid-node health-helper` on Windows: the helper service arrives in
+/// a later release (docs/WINDOWS.md, W2).
+#[cfg(windows)]
+pub fn serve(_config_path: &Path) -> Result<(), String> {
+    Err("the health helper is not available on Windows yet".into())
+}
+
 /// `nightgrid-node health-helper`: serves the one connection on stdin/stdout.
+#[cfg(unix)]
 pub fn serve(config_path: &Path) -> Result<(), String> {
     // SAFETY: systemd hands the accepted connection over as fd 0.
     let stream = unsafe { UnixStream::from_raw_fd(0) };
@@ -507,6 +517,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(windows, ignore = "a unix socket")]
     fn reads_are_checked_on_the_root_side() {
         let mut c = Config::default();
         let r = handle(&c, &ReadRequest { read: "ups".into(), target: Some("ups@localhost".into()) });
@@ -520,6 +531,7 @@ mod tests {
         assert_eq!(run_capped("/bin/sh", &["-c", "echo hi"], Duration::from_secs(5)).unwrap(), "hi\n");
     }
 
+    #[cfg(unix)]
     #[test]
     fn tick_reads_through_the_socket_and_raises_alerts() {
         use std::io::{BufRead, BufReader, Write};

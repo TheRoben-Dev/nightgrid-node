@@ -7,6 +7,12 @@ use serde::Serialize;
 
 /// `2026-11-17 21:04` in the host's time zone. Times a 32-bit `time_t`
 /// can't hold (after 2038-01-19 on the 32-bit musl builds) are shown in UTC.
+#[cfg(windows)]
+pub fn local_time(t: i64) -> String {
+    crate::win::sys::local_time(t).unwrap_or_else(|| format!("{} UTC", utc_time(t)))
+}
+
+#[cfg(unix)]
 pub fn local_time(t: i64) -> String {
     // libc's musl time_t is 32-bit on 32-bit targets for now, i64 elsewhere.
     #[allow(deprecated, irrefutable_let_patterns, clippy::useless_conversion)]
@@ -278,7 +284,7 @@ _nightgrid_node() {{
         fix) [[ $COMP_CWORD -eq 2 ]] && COMPREPLY=($(compgen -W "{fix}" -- "$cur")); [[ $COMP_CWORD -eq 3 && ${{COMP_WORDS[2]}} == auto ]] && COMPREPLY=($(compgen -W "{auto}" -- "$cur")); [[ $COMP_CWORD -eq 4 && ${{COMP_WORDS[2]}} == auto ]] && COMPREPLY=($(compgen -W "on preview off" -- "$cur")) ;;
         audit) [[ $COMP_CWORD -eq 2 ]] && COMPREPLY=($(compgen -W "verify" -- "$cur")) ;;
         serve) [[ $COMP_CWORD -eq 2 ]] && COMPREPLY=($(compgen -W "add remove" -- "$cur")); [[ $COMP_CWORD -eq 3 ]] && COMPREPLY=($(compgen -W "ping ups sync" -- "$cur")) ;;
-        completions) [[ $COMP_CWORD -eq 2 ]] && COMPREPLY=($(compgen -W "bash zsh fish" -- "$cur")) ;;
+        completions) [[ $COMP_CWORD -eq 2 ]] && COMPREPLY=($(compgen -W "bash zsh fish powershell" -- "$cur")) ;;
         upgrade) COMPREPLY=($(compgen -f -- "$cur")) ;;
     esac
 }}
@@ -298,7 +304,7 @@ _nightgrid-node() {{
         fix) (( CURRENT == 3 )) && compadd -- {fix}; (( CURRENT == 4 )) && [[ $words[3] == auto ]] && compadd -- {auto}; (( CURRENT == 5 )) && [[ $words[3] == auto ]] && compadd -- on preview off ;;
         audit) (( CURRENT == 3 )) && compadd -- verify ;;
         serve) (( CURRENT == 3 )) && compadd -- add remove; (( CURRENT == 4 )) && compadd -- ping ups sync ;;
-        completions) (( CURRENT == 3 )) && compadd -- bash zsh fish ;;
+        completions) (( CURRENT == 3 )) && compadd -- bash zsh fish powershell ;;
         upgrade) _files ;;
     esac
 }}
@@ -318,12 +324,47 @@ _nightgrid-node "$@"
                 "complete -c nightgrid-node -n '__fish_seen_subcommand_from auto' -a '{auto} on preview off'\n"
             );
             o += "complete -c nightgrid-node -n '__fish_seen_subcommand_from serve' -a 'add remove ping ups sync'\n";
-            o += "complete -c nightgrid-node -n '__fish_seen_subcommand_from completions' -a 'bash zsh fish'\n";
+            o += "complete -c nightgrid-node -n '__fish_seen_subcommand_from completions' -a 'bash zsh fish powershell'\n";
             o += "complete -c nightgrid-node -n '__fish_seen_subcommand_from upgrade' -F\n";
             for opt in OPTIONS {
                 o += &format!("complete -c nightgrid-node -l {}\n", opt.trim_start_matches("--"));
             }
             Some(o)
+        }
+        "powershell" | "pwsh" => {
+            let q = |l: &str| l.split(' ').map(|w| format!("'{w}'")).collect::<Vec<_>>().join(",");
+            Some(format!(
+                r#"# PowerShell completion for nightgrid-node
+# Install: nightgrid-node completions powershell | Out-File -Append $PROFILE
+Register-ArgumentCompleter -Native -CommandName nightgrid-node,nightgrid-node.exe -ScriptBlock {{
+    param($word, $ast, $cursor)
+    $w = @($ast.CommandElements | ForEach-Object {{ $_.ToString() }})
+    $n = $w.Count; if ($word -eq '') {{ $n++ }}
+    $c = @()
+    if ($word -like '-*') {{ $c = @({opts}) }}
+    elseif ($n -le 2) {{ $c = @({cmds}) }}
+    else {{
+        switch ($w[1]) {{
+            {{ $_ -in 'allow','deny' }} {{ if ($n -eq 3) {{ $c = @({grants}) }} }}
+            'watch' {{ $c = @({streams}) }}
+            'fix' {{ if ($n -eq 3) {{ $c = @({fix}) }} elseif ($w[2] -eq 'auto') {{ $c = @({auto},'on','preview','off') }} }}
+            'audit' {{ if ($n -eq 3) {{ $c = @('verify') }} }}
+            'serve' {{ $c = @('add','remove','ping','ups','sync') }}
+            'completions' {{ if ($n -eq 3) {{ $c = @('bash','zsh','fish','powershell') }} }}
+        }}
+    }}
+    $c | Where-Object {{ $_ -like "$word*" }} | ForEach-Object {{
+        [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_)
+    }}
+}}
+"#,
+                opts = q(&opts),
+                cmds = q(&cmds),
+                grants = q(&grants),
+                streams = q(&streams),
+                fix = q(fix),
+                auto = q(&auto),
+            ))
         }
         _ => None,
     }
@@ -426,7 +467,7 @@ mod tests {
 
     #[test]
     fn completions_cover_every_command_and_grant() {
-        for sh in ["bash", "zsh", "fish"] {
+        for sh in ["bash", "zsh", "fish", "powershell"] {
             let c = completions(sh).unwrap();
             for w in COMMANDS.iter().chain(GRANTS) {
                 assert!(c.contains(w), "{sh} misses {w}");
