@@ -202,6 +202,11 @@ if ($sd -notmatch [regex]::Escape("(A;;LCRP;;;$nodeSid)")) { Fail "helper servic
 $doc = (& $bin doctor --json) -join ''
 if ($doc -notmatch '"check":"helper","level":"ok"') { Fail "doctor after allow helper: $doc" }
 $t0 = Get-Date
+# Proof of a restart: a new process when W32Time has its own svchost, else
+# the SCM's 7036 "stopped" event (Server 2025 no longer logs those for
+# every service, but it splits svchost there).
+$w32pid = (Get-CimInstance Win32_Service -Filter "Name='W32Time'").ProcessId
+$w32shared = @(Get-CimInstance Win32_Service -Filter "ProcessId=$w32pid").Count -gt 1
 $deadline = (Get-Date).AddSeconds(30)
 do {
     Start-Sleep -Seconds 2
@@ -219,7 +224,11 @@ $a = ($r[1] | ConvertFrom-Json).result
 if ($a.outcome -ne 'ok' -or $a.detail -notmatch 'restarted W32Time') { Fail "unit.restart W32Time: $($r[1])" }
 $stopped = @(Get-WinEvent -FilterHashtable @{ LogName = 'System'; ProviderName = 'Service Control Manager'; Id = 7036; StartTime = $t0 } -ErrorAction SilentlyContinue |
     Where-Object { $_.Message -match 'Windows Time.*stopped' })
-if ((Get-Service W32Time).Status -ne 'Running' -or $stopped.Count -lt 1) { Fail "W32Time was not restarted (stops seen: $($stopped.Count))" }
+$w32now = (Get-CimInstance Win32_Service -Filter "Name='W32Time'").ProcessId
+$restarted = if ($w32shared) { $stopped.Count -ge 1 } else { $w32now -ne $w32pid }
+if ((Get-Service W32Time).Status -ne 'Running' -or -not $restarted) {
+    Fail "W32Time was not restarted (pid $w32pid -> $w32now, shared $w32shared, stops seen $($stopped.Count))"
+}
 if (($r[2] | ConvertFrom-Json).result.outcome -ne 'refused') { Fail "an unlisted service was not refused: $($r[2])" }
 if (($r[3] | ConvertFrom-Json).result.outcome -ne 'dryRun') { Fail "power.reboot dry run: $($r[3])" }
 if ((Get-Service nightgrid-node-helper).Status -ne 'Running') { Fail 'the node did not start the helper' }
@@ -271,6 +280,23 @@ if ($LASTEXITCODE -ne 0 -or $re -match 'firewall') { Fail "reinstall: $re" }
 if ($LASTEXITCODE -ne 0) { Fail 'reinstall' }
 $r = @(Bridge @('{"id":1,"method":"hello","params":{"protoMin":1,"protoMax":2,"client":"ci"}}'))
 if (($r[0] | ConvertFrom-Json).result.node.nodeId -ne $id1) { Fail 'node id changed on reinstall' }
+
+Step 'upgrade refuses a wrong checksum and installs a verified exe in place'
+$ErrorActionPreference = 'Continue'
+$o = (& $bin upgrade $Exe --sha256 ('0' * 64) --json 2>&1 | Out-String)
+$code = $LASTEXITCODE
+$ErrorActionPreference = 'Stop'
+if ($code -eq 0 -or $o -notmatch 'checksum mismatch') { Fail "a wrong checksum was not refused: $o" }
+if (Test-Path (Join-Path (Split-Path $bin) '.nightgrid-node.new.exe')) { Fail 'the staged exe was left behind' }
+$sha = (Get-FileHash $Exe -Algorithm SHA256).Hash.ToLower()
+$up = (& $bin upgrade $Exe --sha256 $sha --json) -join ''
+Write-Host $up
+if ($LASTEXITCODE -ne 0) { Fail "upgrade: $up" }
+$u = $up | ConvertFrom-Json
+if (-not $u.ok -or $u.reverted) { Fail "upgrade report: $up" }
+if (-not (Test-Path (Join-Path (Split-Path $bin) 'nightgrid-node.prev.exe'))) { Fail 'no previous exe kept' }
+$r = @(Bridge @($hello))
+if (($r[0] | ConvertFrom-Json).result.node.nodeId -ne $id1) { Fail 'node id changed on upgrade' }
 
 Step 'the service comes back after a crash'
 $pid1 = (Get-CimInstance Win32_Service -Filter "Name='nightgrid-node'").ProcessId

@@ -10,6 +10,7 @@ pub mod net;
 pub mod pipe;
 pub mod scm;
 pub mod service;
+pub mod upgrade;
 pub mod usage;
 
 use std::ffi::OsStr;

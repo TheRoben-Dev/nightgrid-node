@@ -37,7 +37,7 @@ pub struct UpgradeReport {
 }
 
 impl UpgradeReport {
-    fn step(&mut self, s: impl Into<String>) {
+    pub(crate) fn step(&mut self, s: impl Into<String>) {
         let s = s.into();
         crate::info!("{s}");
         self.steps.push(s);
@@ -211,7 +211,7 @@ fn n_restarts(sys: &mut dyn Sys) -> Option<(String, u64)> {
     Some((get("ActiveState"), get("NRestarts").parse().unwrap_or(0)))
 }
 
-fn answers(socket: &Path, version: &str, within: Duration) -> Result<(), String> {
+pub(crate) fn answers(socket: &Path, version: &str, within: Duration) -> Result<(), String> {
     let start = Instant::now();
     let mut last = String::from("no answer");
     while start.elapsed() < within {

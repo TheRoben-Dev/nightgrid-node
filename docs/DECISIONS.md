@@ -191,6 +191,11 @@ The pipe's DACL lets SYSTEM, Administrators and the node's service SID in; `Nigh
 ### N-082 · On Windows a "unit" is a service name
 `[actions] units` takes service key names such as `W32Time` or `MSSQL$SQLEXPRESS` on Windows (letters, digits, `_ . - $`), never the node's own services. The protocol is unchanged: the app sends the same `unit.restart` with the name as `target`. Restart is stop, then start, each waiting up to a minute. Blocks, rollbacks and the local fixes aren't offered on Windows until W2b: `actions.policy` leaves them out and the node refuses them before asking the helper.
 
+## Windows Server · W2b (2026-11-20)
+
+### N-083 · `upgrade` on Windows checks a PE copy and watches the service's pid
+The same flow as N-042: the new exe is copied next to the installed one, the copy is hashed against the app's `--sha256` and must start with `MZ`, run, and say it is `nightgrid-node`. The installed exe is kept as `nightgrid-node.prev.exe`, and the new one installs itself (the running exe is renamed aside, since Windows can't overwrite it). Healthy means the pipe answers with the new version and the service keeps the same process id for the settle time: the SCM restarts a crashed service under a new pid, which is what `NRestarts` shows on Linux. Otherwise the previous exe installs itself again. `upgrade` needs an elevated prompt, like `sudo` on Linux; it doesn't go through the helper, because the app runs it over SSH as an administrator anyway.
+
 ## N11 · Fix menu (2026-11-18)
 
 ### N-060 · Fixes are node-local actions on the existing action path, outside the frozen protocol
