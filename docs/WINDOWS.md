@@ -108,5 +108,5 @@ The binary, subcommands and flags are the same. Differences:
 - "(root)" means an elevated Administrator session.
 - `--config` defaults to `%ProgramData%\Nightgrid Node\config.toml`, `--socket` takes a pipe name (`\\.\pipe\nightgrid-node`).
 - `allow journal` is accepted as an alias of `allow eventlog`.
-- `nightgrid-node man` prints the manual as text (there is no `man` on Windows); `completions` adds `powershell`.
-- Commands whose capability is not on Windows (for example `allow netwatch`) say so and exit 2 instead of being unknown.
+- `nightgrid-node man` prints the manual as text (there is no `man` on Windows); `completions powershell` prints a completer for `$PROFILE` (on every platform).
+- Commands that aren't on Windows yet (for example `allow netwatch` or `fix`) say so and exit 1 instead of being unknown; with `--json` they print `{"error":{"code":"not_on_windows","message":…}}`.

@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.29.0 · W0: Windows Server node (2026-11-20)
+
+Additive only: no frozen method, field, frame or link request changed (the frozen protocol test passes as it was). Plan and parity table: [docs/WINDOWS.md](docs/WINDOWS.md). App spec [0024](docs/app-integration/0024-windows-node.md). Decisions N-070 to N-074.
+
+- **`nightgrid-node-vX.Y.Z-x86_64-windows.exe`**: a static 64-bit build for Windows Server, tested in CI on 2022 and 2025 (2019 and Windows 10/11 use the same APIs), in `SHA256SUMS` and in `manifest.json` under the new top-level `windows` and `windowsArch` keys.
+- **Windows service** `nightgrid-node` as the virtual account `NT SERVICE\nightgrid-node`: write-restricted token, only `SeChangeNotifyPrivilege`, all network traffic blocked by a Windows Service Hardening rule, a 64 MB job-object memory cap, restart on failure, logs in a rotated file in the data folder.
+- **Named pipe** `\\.\pipe\nightgrid-node` instead of the socket: first instance only, remote clients rejected, readable by Administrators and the local group `Nightgrid Node Users`. Callers are identified by their token; clients check the pipe's owner. `bridge` works over Windows OpenSSH exactly as on Linux, including the `no_access` and `not_running` errors.
+- **Native collector**: CPU, cores, memory, page files, volumes, physical disks, network interfaces, thermal zones and NVIDIA GPUs from PDH raw counters and Win32 calls, in the same shape as the app's own Windows sampler. History, uptime with outages, disk usage and forecasts, alerts, events and `summary.daily` work as on Linux.
+- **Same commands**: `install [--user NAME] [--no-start] [--json]` (to `%ProgramFiles%\Nightgrid Node`, on the machine `PATH`, config and data under `%ProgramData%\Nightgrid Node`), `uninstall [--purge]`, `doctor`, `status`, `events`, `audit`, `query`, `watch`, `bridge`, `version`, `man` (plain text on Windows) and `completions`. Commands that come in later Windows milestones exit with a message, and `{"error":{"code":"not_on_windows"}}` under `--json`.
+- **`completions powershell`** on every platform.
+- CI builds, lints and tests on real Windows Server 2022 and 2025 runners and runs an end-to-end install, bridge, sandbox, outsider-refused, crash-restart, upgrade-in-place and uninstall test (`ci/windows-e2e.ps1`). The release workflow builds the exe on Windows.
+
 ## 0.28.0 · Old and 32-bit hosts, LAN links, hub doctor (2026-11-18)
 
 Additive only: no frozen method, field, frame or link request changed (the frozen protocol test passes as it was). App specs [0022](docs/app-integration/0022-legacy-hardware-and-releases.md) and [0023](docs/app-integration/0023-lan-links-and-hub-doctor.md).

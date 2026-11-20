@@ -353,10 +353,20 @@ pub fn no_systemd(what: &str, init: Init) -> String {
     )
 }
 
-/// The `code` for a failed command's JSON error: `no_systemd`, `not_root` or `failed`.
+/// What a command that isn't on Windows yet says (docs/WINDOWS.md). JSON
+/// errors carry it as `not_on_windows`.
+pub fn not_on_windows(what: &str) -> String {
+    format!("{what} is not available on Windows yet (see docs/WINDOWS.md for what comes when)")
+}
+
+/// The `code` for a failed command's JSON error: `no_systemd`,
+/// `not_on_windows` (a command that comes in a later Windows milestone),
+/// `not_root` or `failed`.
 pub fn error_code(message: &str) -> &'static str {
     if message.contains(" needs systemd, and this host") {
         "no_systemd"
+    } else if message.contains(" is not available on Windows yet") {
+        "not_on_windows"
     } else if message.starts_with("run this as root") {
         "not_root"
     } else {
@@ -1861,5 +1871,6 @@ mod tests {
         assert_eq!(error_code(&no_systemd("installing the service", Init::Other)), "no_systemd");
         assert_eq!(error_code("run this as root (sudo nightgrid-node ...)"), "not_root");
         assert_eq!(error_code("usermod: boom"), "failed");
+        assert_eq!(error_code(&not_on_windows("the fix menu")), "not_on_windows");
     }
 }

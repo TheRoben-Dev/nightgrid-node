@@ -71,7 +71,7 @@ COMMANDS:
     audit [--count N]       The last N entries of the action log (default 30)
     audit verify            Check the action log's whole SHA-256 chain; exits 1
                             if any entry was edited or removed
-    completions bash|zsh|fish
+    completions bash|zsh|fish|powershell
                             Print a shell completion script
     man                     Print the manual page (nightgrid-node man | man -l -)
     doctor                  Check this host's install: config, service, socket,
@@ -231,7 +231,7 @@ fn fix_ctx(a: &Args) -> nightgrid_node::menu::Ctx {
 
 /// Runs the command. With `--json`, a failed install, uninstall, allow,
 /// deny or serve also prints `{"error":{"code":...,"message":...}}` on
-/// stdout (codes `no_systemd`, `not_root`, `failed`), for the app.
+/// stdout (codes `no_systemd`, `not_on_windows`, `not_root`, `failed`), for the app.
 fn dispatch(a: Args) -> Result<(), String> {
     let json_errors = a.json && matches!(a.cmd.as_str(), "install" | "uninstall" | "allow" | "deny" | "serve");
     let r = run_command(a);
@@ -241,11 +241,8 @@ fn dispatch(a: Args) -> Result<(), String> {
     r
 }
 
-/// What a command that isn't on Windows yet says (docs/WINDOWS.md).
 #[cfg(windows)]
-fn not_on_windows(what: &str) -> String {
-    format!("{what} is not available on Windows yet (see docs/WINDOWS.md for what comes when)")
-}
+use install::not_on_windows;
 
 /// The commands whose Windows form differs: the service, install and
 /// uninstall, doctor and the accesses that come in later milestones.
@@ -520,11 +517,16 @@ fn run_command(a: Args) -> Result<(), String> {
         }
         "completions" => {
             let sh = a.rest.first().map(String::as_str).unwrap_or("");
-            print!("{}", cli::completions(sh).ok_or("completions for which shell? (bash, zsh or fish)")?);
+            print!("{}", cli::completions(sh).ok_or("completions for which shell? (bash, zsh, fish or powershell)")?);
             Ok(())
         }
         "man" => {
-            print!("{}", cli::man(HELP, env!("CARGO_PKG_VERSION")));
+            // Windows has no man(1): the help text is the manual there.
+            if cfg!(windows) {
+                print!("{HELP}");
+            } else {
+                print!("{}", cli::man(HELP, env!("CARGO_PKG_VERSION")));
+            }
             Ok(())
         }
         "doctor" => {
