@@ -143,6 +143,39 @@ pub fn parse_journal_json(out: &str) -> Vec<JournalLine> {
         .collect()
 }
 
+/// Windows: the System and Application logs stand in for the journal, the
+/// provider for the identifier, the level for the priority.
+#[cfg(windows)]
+fn journal(since: i64, max_priority: u8, lines: u32) -> Result<Vec<JournalLine>, String> {
+    let filter = event_log_filter(since, crate::daemon::now_secs(), max_priority);
+    let mut out = Vec::new();
+    for channel in ["System", "Application"] {
+        let events = crate::win::eventlog::read(channel, &filter, 0, lines as usize, true)
+            .map_err(|e| format!("{channel}: {e}"))?;
+        out.extend(events.into_iter().map(|e| JournalLine {
+            ident: if e.record.provider.is_empty() { "unknown".into() } else { e.record.provider.clone() },
+            unit: String::new(),
+            priority: e.record.priority(),
+            message: e.message.unwrap_or_else(|| e.record.data_text()).chars().take(2000).collect(),
+        }));
+    }
+    Ok(out)
+}
+
+/// The Event Log XPath condition for records since `since` at or below
+/// journal priority `max_priority`.
+pub fn event_log_filter(since: i64, now: i64, max_priority: u8) -> String {
+    // Level 0 ("log always") is information from classic providers.
+    let levels: Vec<String> = [1u8, 2, 3, 4, 0, 5]
+        .into_iter()
+        .filter(|l| crate::evtx::Record { level: *l, ..Default::default() }.priority() <= max_priority)
+        .map(|l| format!("Level={l}"))
+        .collect();
+    let ms = (now - since).max(1) * 1000;
+    format!("({}) and TimeCreated[timediff(@SystemTime) <= {ms}]", levels.join(" or "))
+}
+
+#[cfg(unix)]
 fn journal(since: i64, max_priority: u8, lines: u32) -> Result<Vec<JournalLine>, String> {
     let out = crate::health::watch::run_capped(
         "journalctl",
@@ -433,6 +466,28 @@ impl LogWatcher {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn reads_errors_from_the_event_log() {
+        // CI runs as an administrator; a fresh runner has some warnings or
+        // errors in the last day, but none is needed for the read to work.
+        let now = crate::daemon::now_secs();
+        let lines = journal(now - 86_400, 4, 50).unwrap();
+        assert!(lines.iter().all(|l| l.priority <= 4 && !l.ident.is_empty()), "{lines:?}");
+    }
+
+    #[test]
+    fn event_log_filter_maps_priorities_to_levels() {
+        assert_eq!(
+            event_log_filter(100, 700, 3),
+            "(Level=1 or Level=2) and TimeCreated[timediff(@SystemTime) <= 600000]"
+        );
+        assert_eq!(
+            event_log_filter(5, 5, 7),
+            "(Level=1 or Level=2 or Level=3 or Level=4 or Level=0 or Level=5) and TimeCreated[timediff(@SystemTime) <= 1000]"
+        );
+    }
 
     fn q(id: &str, text: &str) -> LogSearch {
         LogSearch { id: id.into(), name: format!("search {id}"), text: text.into(), ..Default::default() }

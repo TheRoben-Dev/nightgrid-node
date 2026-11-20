@@ -116,6 +116,26 @@ if ($LASTEXITCODE -ne 0) { Fail 'doctor reported a failure' }
 & $bin events --count 5
 if ($LASTEXITCODE -ne 0) { Fail 'events' }
 
+Step 'allow eventlog: failed network logons become login events'
+$j = & $bin allow eventlog --json
+Write-Host $j
+if ($LASTEXITCODE -ne 0) { Fail 'allow eventlog' }
+$doc = (& $bin doctor --json) -join ''
+if ($doc -notmatch '"check":"eventlog","level":"ok"') { Fail "doctor after allow eventlog: $doc" }
+$ip = (Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*' } | Select-Object -First 1).IPAddress
+Write-Host "failing three network logons against $ip"
+foreach ($i in 1..3) { net use "\\$ip\IPC$" /user:ngnobody 'Wrong-pass-1' 2>&1 | Out-Null }
+$deadline = (Get-Date).AddSeconds(100)
+do {
+    Start-Sleep -Seconds 5
+    $ev = (& $bin events --count 20) -join "`n"
+} while ($ev -notmatch 'failed login' -and (Get-Date) -lt $deadline)
+if ($ev -notmatch 'failed login') {
+    Get-WinEvent -FilterHashtable @{ LogName = 'Security'; Id = 4625 } -MaxEvents 2 -ErrorAction SilentlyContinue | Format-List TimeCreated, Message
+    Fail "no failed-login event: $ev"
+}
+Write-Host ($ev -split "`n" | Select-String 'failed login' | Select-Object -First 1)
+
 Step 'an account outside the group is refused'
 $pw = 'Ng-' + [guid]::NewGuid().ToString('N').Substring(0, 16) + '!a1'
 $sec = ConvertTo-SecureString $pw -AsPlainText -Force
@@ -170,5 +190,7 @@ if ($LASTEXITCODE -ne 0) { Fail 'uninstall --purge' }
 if (Test-Path $etc) { Fail "$etc still there" }
 if (@(Get-NetFirewallRule -Group 'Nightgrid Node' -ErrorAction SilentlyContinue).Count -ne 0) { Fail 'firewall rules left' }
 if (Get-LocalGroup -Name 'Nightgrid Node Users' -ErrorAction SilentlyContinue) { Fail 'group left' }
+$readers = @(Get-LocalGroupMember -SID 'S-1-5-32-573' -ErrorAction SilentlyContinue | Where-Object { $_.Name -match 'nightgrid-node' })
+if ($readers.Count -ne 0) { Fail 'service left in Event Log Readers' }
 
 Write-Host 'Windows e2e passed'

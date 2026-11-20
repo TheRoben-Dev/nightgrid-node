@@ -1015,7 +1015,7 @@ impl Grant {
     pub fn parse(s: &str) -> Option<Self> {
         match s {
             "docker" => Some(Self::Docker),
-            "journal" => Some(Self::Journal),
+            "journal" | "eventlog" => Some(Self::Journal),
             "netwatch" => Some(Self::Netwatch),
             "helper" => Some(Self::Helper),
             "health" => Some(Self::Health),

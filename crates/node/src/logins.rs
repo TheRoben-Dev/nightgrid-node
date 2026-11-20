@@ -11,9 +11,11 @@
 #[cfg(unix)]
 use crate::compat::fs::MetadataExt;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+#[cfg(unix)]
 use std::io::{BufRead, BufReader};
 #[cfg(unix)]
 use std::path::Path;
+#[cfg(unix)]
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::Arc;
@@ -193,14 +195,44 @@ impl Failures {
 }
 
 pub fn accepted_event(at: i64, user: &str, from: &str, method: &str) -> NewEvent {
-    NewEvent::new(at, EventKind::Login, Level::Info, format!("{user} logged in from {from}"), format!("ssh, {method}"))
+    // Windows: Remote Desktop logins come from the Security log.
+    let via = if method == RDP { RDP.to_owned() } else { format!("ssh, {method}") };
+    NewEvent::new(at, EventKind::Login, Level::Info, format!("{user} logged in from {from}"), via)
 }
 
-/// The journal's group and whether this process is in it (Windows: the
-/// Event Log comes in W1, so "absent" until then).
+/// The `method` of a Remote Desktop login (Windows).
+pub const RDP: &str = "rdp";
+
+/// Windows: whether the service may read the Event Log ("Event Log
+/// Readers", given by `allow eventlog`), the journal's counterpart.
 #[cfg(windows)]
 pub fn journal_access() -> &'static str {
-    "absent"
+    if crate::compat::am_root() || crate::win::sys::in_group(crate::win::EVENT_LOG_READERS) {
+        "ok"
+    } else {
+        "denied"
+    }
+}
+
+/// A Security log logon event (4624 success, 4625 failure) as a login
+/// line: Remote Desktop logons, and failed network logons from another
+/// address (password guessing over RDP or SMB). Local, service and SSH
+/// logons are left out (sshd's own lines already cover SSH).
+pub fn security_line(r: &crate::evtx::Record) -> Option<Line> {
+    let logon_type = r.get("LogonType").unwrap_or("");
+    let from = r.get("IpAddress").unwrap_or("").trim();
+    if from.is_empty() || from == "-" || from == "::1" || from.starts_with("127.") {
+        return None;
+    }
+    if r.get("ProcessName").is_some_and(|p| p.to_ascii_lowercase().contains("sshd")) {
+        return None;
+    }
+    let user = r.get("TargetUserName").filter(|u| !u.is_empty() && *u != "-").unwrap_or("?").to_owned();
+    match (r.event_id, logon_type) {
+        (4624, "10") => Some(Line::Accepted { user, from: from.into(), method: RDP.into() }),
+        (4625, "3" | "10") => Some(Line::Failed { user, from: from.into(), invalid: false }),
+        _ => None,
+    }
 }
 
 /// The journal's group and whether this process is in it.
@@ -245,12 +277,14 @@ impl LoginWatcher {
     }
 }
 
+#[cfg(unix)]
 enum Msg {
     Line { at: i64, cursor: String, line: Line },
     Cursor(String),
     Ended,
 }
 
+#[cfg(unix)]
 fn spawn(cursor: Option<&str>) -> std::io::Result<Child> {
     let mut c = Command::new("journalctl");
     c.args(["--follow", "--output=json", "--no-pager", "--identifier=sshd", "--identifier=sshd-session"]);
@@ -264,6 +298,7 @@ fn spawn(cursor: Option<&str>) -> std::io::Result<Child> {
     c.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn()
 }
 
+#[cfg(unix)]
 fn reader(stdout: std::process::ChildStdout, tx: mpsc::Sender<Msg>) {
     for line in BufReader::new(stdout).lines() {
         let Ok(line) = line else { break };
@@ -282,6 +317,7 @@ fn reader(stdout: std::process::ChildStdout, tx: mpsc::Sender<Msg>) {
     let _ = tx.send(Msg::Ended);
 }
 
+#[cfg(unix)]
 fn run(shared: &Shared, stop: &mpsc::Receiver<()>) {
     let access = journal_access();
     if access != "ok" {
@@ -325,32 +361,7 @@ fn run(shared: &Shared, stop: &mpsc::Receiver<()>) {
             match rx.recv_timeout(Duration::from_secs(1)) {
                 Ok(Msg::Line { at, cursor: c, line }) => {
                     cursor = Some(c);
-                    dirty = true;
-                    match line {
-                        Line::Accepted { user, from, method } => {
-                            shared.logins.lock().unwrap_or_else(|e| e.into_inner()).accepted(at, &from);
-                            flush(shared, &mut fails, None);
-                            record(shared, &accepted_event(at, &user, &from, &method), cursor.as_deref());
-                            dirty = false;
-                        }
-                        Line::Failed { user, from, .. } => {
-                            if fails.count > 0 && at - fails.start >= WINDOW {
-                                flush(shared, &mut fails, None);
-                            }
-                            fails.add(at, &user, &from);
-                            let n = {
-                                let mut r = shared.logins.lock().unwrap_or_else(|e| e.into_inner());
-                                r.add(at, &from);
-                                r.count_from(&from, crate::daemon::now_secs())
-                            };
-                            // Exactly at the threshold, so one burst asks once.
-                            if n == shared.config.block.threshold {
-                                if let Some(tx) = shared.autoblock.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
-                                    let _ = tx.send(from.clone());
-                                }
-                            }
-                        }
-                    }
+                    dirty = !on_line(shared, at, line, &mut fails, cursor.as_deref());
                 }
                 Ok(Msg::Cursor(c)) => {
                     cursor = Some(c);
@@ -389,6 +400,148 @@ fn run(shared: &Shared, stop: &mpsc::Receiver<()>) {
     }
 }
 
+/// One login line: an accepted login is recorded at once (with the
+/// cursor, so true comes back: saved); failures are summed.
+fn on_line(shared: &Shared, at: i64, line: Line, fails: &mut Failures, cursor: Option<&str>) -> bool {
+    match line {
+        Line::Accepted { user, from, method } => {
+            shared.logins.lock().unwrap_or_else(|e| e.into_inner()).accepted(at, &from);
+            flush(shared, fails, None);
+            record(shared, &accepted_event(at, &user, &from, &method), cursor);
+            true
+        }
+        Line::Failed { user, from, .. } => {
+            if fails.count > 0 && at - fails.start >= WINDOW {
+                flush(shared, fails, None);
+            }
+            fails.add(at, &user, &from);
+            let n = {
+                let mut r = shared.logins.lock().unwrap_or_else(|e| e.into_inner());
+                r.add(at, &from);
+                r.count_from(&from, crate::daemon::now_secs())
+            };
+            // Exactly at the threshold, so one burst asks once.
+            if n == shared.config.block.threshold {
+                if let Some(tx) = shared.autoblock.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+                    let _ = tx.send(from.clone());
+                }
+            }
+            false
+        }
+    }
+}
+
+/// Windows: the channels read, with their filter. sshd writes its usual
+/// lines to OpenSSH/Operational; Remote Desktop and network logons are in
+/// the Security log.
+#[cfg(windows)]
+const CHANNELS: [(&str, &str); 2] = [("OpenSSH/Operational", ""), ("Security", "EventID=4624 or EventID=4625")];
+
+/// `OpenSSH/Operational=12;Security=34`: the last record read per channel.
+pub fn parse_cursor(c: &str) -> BTreeMap<String, u64> {
+    c.split(';')
+        .filter_map(|kv| kv.split_once('='))
+        .filter_map(|(k, v)| Some((k.to_owned(), v.parse().ok()?)))
+        .collect()
+}
+
+pub fn format_cursor(m: &BTreeMap<String, u64>) -> String {
+    m.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join(";")
+}
+
+/// Windows: polls the channels every few seconds from the saved record ids.
+#[cfg(windows)]
+fn run(shared: &Shared, stop: &mpsc::Receiver<()>) {
+    use crate::win::eventlog;
+    if journal_access() != "ok" {
+        crate::info!(
+            "no access to the Event Log, logins are not recorded (an administrator can run: nightgrid-node allow eventlog)"
+        );
+        let _ = stop.recv();
+        return;
+    }
+    let saved = {
+        let st = shared.store.lock().unwrap_or_else(|e| e.into_inner());
+        st.meta(META_CURSOR).ok().flatten()
+    };
+    // A cursor from the journal (a moved database) means nothing here.
+    let mut at: BTreeMap<String, u64> = saved.as_deref().map(parse_cursor).unwrap_or_default();
+    let mut fails = Failures::default();
+    let mut missing: BTreeMap<&str, Instant> = BTreeMap::new();
+    let mut warned = false;
+    let mut last_saved = saved.unwrap_or_default();
+    loop {
+        let mut lines: Vec<(i64, u64, &str, Line)> = Vec::new();
+        for (channel, filter) in CHANNELS {
+            if missing.get(channel).is_some_and(|t| t.elapsed() < Duration::from_secs(300)) {
+                continue;
+            }
+            let after = match at.get(channel) {
+                Some(n) => *n,
+                None => match eventlog::last_id(channel) {
+                    Ok(n) => {
+                        at.insert(channel.to_owned(), n);
+                        continue;
+                    }
+                    Err(e) => {
+                        if e.raw_os_error() != Some(eventlog::ERROR_EVT_CHANNEL_NOT_FOUND) && !warned {
+                            crate::warn!("logins: could not read {channel}: {e}");
+                            warned = true;
+                        }
+                        missing.insert(channel, Instant::now());
+                        continue;
+                    }
+                },
+            };
+            match eventlog::read(channel, filter, after, 2000, false) {
+                Ok(events) => {
+                    missing.remove(channel);
+                    for e in events {
+                        at.insert(channel.to_owned(), e.record.id);
+                        let line = if channel == "Security" {
+                            security_line(&e.record)
+                        } else {
+                            e.record.get("payload").and_then(parse)
+                        };
+                        if let Some(l) = line {
+                            lines.push((e.record.at, e.record.id, channel, l));
+                        }
+                    }
+                }
+                Err(e) => {
+                    if !warned {
+                        crate::warn!("logins: could not read {channel}: {e}");
+                        warned = true;
+                    }
+                    missing.insert(channel, Instant::now());
+                }
+            }
+        }
+        lines.sort_by_key(|(t, id, ..)| (*t, *id));
+        let cursor = format_cursor(&at);
+        for (t, _, _, line) in lines {
+            if on_line(shared, t, line, &mut fails, Some(&cursor)) {
+                last_saved = cursor.clone();
+            }
+        }
+        if fails.count > 0 && crate::daemon::now_secs() - fails.start >= WINDOW {
+            flush(shared, &mut fails, Some(&cursor));
+            last_saved = cursor.clone();
+        } else if cursor != last_saved && fails.count == 0 {
+            // Not while failures are pending: a restart then reads them again.
+            save_cursor(shared, Some(&cursor));
+            last_saved = cursor.clone();
+        }
+        match stop.recv_timeout(Duration::from_secs(5)) {
+            Err(RecvTimeoutError::Timeout) => {}
+            _ => {
+                flush(shared, &mut fails, Some(&cursor));
+                return;
+            }
+        }
+    }
+}
+
 fn flush(shared: &Shared, fails: &mut Failures, cursor: Option<&str>) {
     if let Some(e) = fails.take() {
         record(shared, &e, cursor);
@@ -418,6 +571,45 @@ fn save_cursor(shared: &Shared, cursor: Option<&str>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn logon(id: u32, ty: &str, ip: &str, process: &str) -> crate::evtx::Record {
+        crate::evtx::Record {
+            event_id: id,
+            data: vec![
+                ("TargetUserName".into(), "admin".into()),
+                ("LogonType".into(), ty.into()),
+                ("IpAddress".into(), ip.into()),
+                ("ProcessName".into(), process.into()),
+            ],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn security_log_logons() {
+        assert_eq!(
+            security_line(&logon(4624, "10", "10.0.0.7", "C:\\Windows\\System32\\svchost.exe")),
+            Some(Line::Accepted { user: "admin".into(), from: "10.0.0.7".into(), method: RDP.into() })
+        );
+        assert_eq!(
+            security_line(&logon(4625, "3", "203.0.113.9", "-")),
+            Some(Line::Failed { user: "admin".into(), from: "203.0.113.9".into(), invalid: false })
+        );
+        // Network logons that worked (file shares), local ones and sshd's own are left out.
+        assert_eq!(security_line(&logon(4624, "3", "10.0.0.7", "-")), None);
+        assert_eq!(security_line(&logon(4625, "10", "-", "-")), None);
+        assert_eq!(security_line(&logon(4625, "10", "127.0.0.1", "-")), None);
+        assert_eq!(security_line(&logon(4625, "8", "10.0.0.7", "C:\\Windows\\System32\\OpenSSH\\sshd.exe")), None);
+        assert_eq!(accepted_event(1, "admin", "10.0.0.7", RDP).detail, "rdp");
+    }
+
+    #[test]
+    fn event_log_cursor_round_trips() {
+        let m = parse_cursor("OpenSSH/Operational=12;Security=3400;bad;x=y");
+        assert_eq!(m.len(), 2);
+        assert_eq!(format_cursor(&m), "OpenSSH/Operational=12;Security=3400");
+        assert!(parse_cursor("s=1234:abc").is_empty());
+    }
 
     #[test]
     fn burst_alert_counts_the_last_five_minutes() {

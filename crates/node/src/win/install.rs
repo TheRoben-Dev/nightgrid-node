@@ -90,7 +90,6 @@ pub fn facts() -> crate::host::HostFacts {
 /// What the Windows node doesn't do yet (docs/WINDOWS.md), one sentence each.
 pub fn limits() -> Vec<String> {
     [
-        "No Event Log reading yet: logins, log searches, boots and service failures come in a later release.",
         "No helper service yet: actions, fixes, disk health, updates and the UPS guard come in a later release.",
         "No containers, service checks, node-to-node link or status page yet.",
         "No rogue DHCP watch: Windows can't listen for DHCP without a packet capture driver.",
@@ -248,9 +247,11 @@ pub fn uninstall(purge: bool) -> Result<Report, String> {
     preflight()?;
     let mut rep = report("uninstall");
     scm::stop(SERVICE, Duration::from_secs(30))?;
-    if let Some(g) = builtin_group(PERF_USERS) {
-        if remove_from_group(&g, &format!("NT SERVICE\\{SERVICE}")) {
-            step(&mut rep, format!("removed the service from {g:?}"));
+    for sid in [PERF_USERS, super::EVENT_LOG_READERS] {
+        if let Some(g) = builtin_group(sid) {
+            if remove_from_group(&g, &format!("NT SERVICE\\{SERVICE}")) {
+                step(&mut rep, format!("removed the service from {g:?}"));
+            }
         }
     }
     if scm::delete(SERVICE)? {
@@ -278,6 +279,68 @@ pub fn uninstall(purge: bool) -> Result<Report, String> {
         step(&mut rep, format!("kept history and config in {}", super::etc_dir().display()));
     }
     Ok(rep)
+}
+
+/// `allow eventlog` / `deny eventlog` (alias `journal`): the service joins
+/// or leaves Event Log Readers, the counterpart of the journal's group, and
+/// is restarted so its token picks the change up.
+pub fn eventlog(on: bool, no_start: bool) -> Result<Report, String> {
+    preflight()?;
+    let mut rep = Report { host: None, ..report(if on { "allow" } else { "deny" }) };
+    let group = builtin_group(super::EVENT_LOG_READERS).ok_or("this Windows has no Event Log Readers group")?;
+    let account = format!("NT SERVICE\\{SERVICE}");
+    let changed = if on {
+        rep.warnings.push(format!(
+            "members of {group:?} can read the System, Security and Application logs, which may include secrets \
+             that programs logged. The node keeps only login lines and error patterns, through the same secret \
+             filter as the app."
+        ));
+        add_to_group(&group, &account)?
+    } else {
+        remove_from_group(&group, &account)
+    };
+    match (on, changed) {
+        (true, true) => step(&mut rep, format!("added the service to {group:?}")),
+        (true, false) => step(&mut rep, format!("the service was already in {group:?}")),
+        (false, true) => step(&mut rep, format!("removed the service from {group:?}")),
+        (false, false) => step(&mut rep, "eventlog was not allowed"),
+    }
+    let running = scm::status(SERVICE).ok().flatten().is_some_and(|s| s.running());
+    if changed && running && !no_start {
+        scm::stop(SERVICE, Duration::from_secs(30))?;
+        scm::start(SERVICE, Duration::from_secs(30))?;
+        wait_answering(Duration::from_secs(20))?;
+        step(&mut rep, "restarted the service");
+    }
+    Ok(rep)
+}
+
+/// Whether the service is in Event Log Readers (`allow eventlog`); `None`
+/// when the group or the service's account can't be read.
+pub fn eventlog_allowed() -> Option<bool> {
+    use windows_sys::Win32::NetworkManagement::NetManagement::{
+        NetApiBufferFree, NetLocalGroupGetMembers, LOCALGROUP_MEMBERS_INFO_0,
+    };
+    let group = builtin_group(super::EVENT_LOG_READERS)?;
+    let svc = pipe::sid_of(&format!("NT SERVICE\\{SERVICE}"))?;
+    let g = wide(&group);
+    let mut buf: *mut u8 = std::ptr::null_mut();
+    let (mut read, mut total, mut resume) = (0u32, 0u32, 0usize);
+    // SAFETY: Windows allocates the buffer; freed below.
+    let r = unsafe {
+        NetLocalGroupGetMembers(std::ptr::null(), g.as_ptr(), 0, &mut buf, u32::MAX, &mut read, &mut total, &mut resume)
+    };
+    if r != 0 || buf.is_null() {
+        return None;
+    }
+    let items = buf as *const LOCALGROUP_MEMBERS_INFO_0;
+    let found = (0..read as usize).any(|i| {
+        // SAFETY: `read` entries, each holding a valid SID.
+        unsafe { acl::sid_string((*items.add(i)).lgrmi0_sid) }.as_deref() == Some(svc.as_str())
+    });
+    // SAFETY: the buffer NetLocalGroupGetMembers allocated.
+    unsafe { NetApiBufferFree(buf.cast()) };
+    Some(found)
 }
 
 fn same_file(a: &Path, b: &Path) -> bool {

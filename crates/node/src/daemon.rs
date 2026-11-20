@@ -339,7 +339,7 @@ pub fn run(config: Config, paths: Paths) -> Result<(), String> {
     } else {
         None
     };
-    let logins = if cfg!(unix) && config.logins.enabled {
+    let logins = if config.logins.enabled {
         Some(crate::logins::LoginWatcher::start(shared.clone()).map_err(|e| format!("login watcher: {e}"))?)
     } else {
         None
@@ -361,7 +361,7 @@ pub fn run(config: Config, paths: Paths) -> Result<(), String> {
     } else {
         None
     };
-    let logs = if cfg!(unix) && config.logs.enabled {
+    let logs = if config.logs.enabled {
         Some(crate::logs::LogWatcher::start(shared.clone()).map_err(|e| format!("log watcher: {e}"))?)
     } else {
         None

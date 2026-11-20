@@ -3,6 +3,7 @@
 
 pub mod acl;
 pub mod doctor;
+pub mod eventlog;
 pub mod install;
 pub mod net;
 pub mod pipe;
@@ -19,6 +20,10 @@ use windows_sys::Win32::Foundation::{CloseHandle, LocalFree, HANDLE};
 pub const SERVICE: &str = "nightgrid-node";
 /// The service's display name.
 pub const DISPLAY: &str = "Nightgrid Node";
+/// Builtin "Event Log Readers": may read the System, Security and
+/// Application logs (`allow eventlog`, like the journal's group on Linux).
+pub const EVENT_LOG_READERS: &str = "S-1-5-32-573";
+
 /// Local group whose members may use the pipe (like the Linux group).
 pub const GROUP: &str = "Nightgrid Node Users";
 /// The node's pipe.
@@ -276,6 +281,23 @@ pub mod sys {
     /// The SID this process runs as.
     pub fn my_sid() -> String {
         process_token().and_then(|t| token_sid(t.0)).unwrap_or_default()
+    }
+
+    /// Whether this process's token holds the group `sid` (string form),
+    /// enabled: builtin groups such as Event Log Readers.
+    pub fn in_group(sid: &str) -> bool {
+        use windows_sys::Win32::Security::Authorization::ConvertStringSidToSidW;
+        use windows_sys::Win32::Security::{CheckTokenMembership, PSID};
+        let w = wide(sid);
+        let mut p: PSID = std::ptr::null_mut();
+        // SAFETY: Windows allocates the SID; `Local` frees it.
+        if unsafe { ConvertStringSidToSidW(w.as_ptr(), &mut p) } == 0 {
+            return false;
+        }
+        let _free = super::Local(p);
+        let mut member = 0;
+        // SAFETY: a null token means the calling thread's or process's token.
+        (unsafe { CheckTokenMembership(std::ptr::null_mut(), p, &mut member) } != 0) && member != 0
     }
 
     /// True when this process has a full administrator token (elevated).

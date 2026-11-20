@@ -399,8 +399,18 @@ pub fn caps() -> Caps {
 
 /// Capabilities the Windows node implements so far (docs/WINDOWS.md); the
 /// app uses its SSH path for the rest, as with an older node.
-pub const WINDOWS_CAPS: &[&str] =
-    &[cap::NODE, cap::METRICS, cap::METRICS_SYNC, cap::EVENTS, cap::UPTIME, cap::DISK, cap::ALERTS, cap::SUMMARY];
+pub const WINDOWS_CAPS: &[&str] = &[
+    cap::NODE,
+    cap::METRICS,
+    cap::METRICS_SYNC,
+    cap::EVENTS,
+    cap::UPTIME,
+    cap::DISK,
+    cap::ALERTS,
+    cap::SUMMARY,
+    cap::LOGINS,
+    cap::LOGS,
+];
 
 /// What `hello` advertises on this platform: [`caps`] on Linux, the part
 /// of it in [`WINDOWS_CAPS`] on Windows.
