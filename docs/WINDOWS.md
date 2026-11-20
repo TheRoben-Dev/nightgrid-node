@@ -39,7 +39,7 @@ Supported: Windows Server 2016, 2019, 2022 and 2025 (and Windows 10/11, which us
 
 | Linux | Windows | Notes |
 |---|---|---|
-| systemd unit, account `nightgrid-node` | Windows service `nightgrid-node` running as the virtual account `NT SERVICE\nightgrid-node` | No password, no logon rights, not an administrator. Created by `install` through the Service Control Manager. |
+| systemd unit, account `nightgrid-node` | Windows service `nightgrid-node` running as the virtual account `NT SERVICE\nightgrid-node` | No password, no logon rights, not an administrator. Created by `install` through the Service Control Manager. It is a member of the builtin Performance Monitor Users, which a non-interactive account needs to read performance counters (read-only). |
 | `NoNewPrivileges`, empty capability set | Required privileges limited to `SeChangeNotifyPrivilege` | Windows removes every other privilege from the service's token. |
 | `ProtectSystem=strict`, `ReadWritePaths` | Service SID type *restricted* (a write-restricted token) | The service can only write where its own SID is granted: its data folder. |
 | `IPAddressDeny=any`, `RestrictAddressFamilies=AF_UNIX` | Windows Service Hardening rules that block all inbound and outbound traffic for the service SID | Enforced by Windows even when the firewall profile is off. |

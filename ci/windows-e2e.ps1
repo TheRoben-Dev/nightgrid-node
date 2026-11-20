@@ -48,7 +48,7 @@ Step 'version and help work without a service'
 if ($LASTEXITCODE -ne 0) { Fail 'version' }
 
 Step 'bridge before install says not_running'
-$r = Bridge @('{"id":1,"method":"hello","params":{"protoMin":1,"protoMax":2,"client":"ci"}}') $Exe
+$r = @(Bridge @('{"id":1,"method":"hello","params":{"protoMin":1,"protoMax":2,"client":"ci"}}') $Exe)
 if (-not ($r -join '' | Select-String '"not_running"')) { Fail "bridge before install: $r" }
 
 Step 'install'
@@ -87,7 +87,7 @@ $lines = @(
     '{"id":1,"method":"hello","params":{"protoMin":1,"protoMax":2,"client":"ci"}}',
     '{"id":2,"method":"node.info"}'
 )
-$r = Bridge $lines
+$r = @(Bridge $lines)
 if ($r.Count -lt 2) { Fail "bridge answers: $r" }
 $w = $r[0] | ConvertFrom-Json
 if ($w.result.proto -ne 2 -or -not $w.result.caps.'metrics.sync') { Fail "hello: $($r[0])" }
@@ -100,7 +100,7 @@ Step 'a sample with CPU, memory and disks arrives'
 $deadline = (Get-Date).AddSeconds(40)
 do {
     Start-Sleep -Seconds 3
-    $r = Bridge @('{"id":1,"method":"hello","params":{"protoMin":1,"protoMax":2,"client":"ci"}}', '{"id":2,"method":"metrics.latest"}')
+    $r = @(Bridge @('{"id":1,"method":"hello","params":{"protoMin":1,"protoMax":2,"client":"ci"}}', '{"id":2,"method":"metrics.latest"}'))
     $s = ($r[1] | ConvertFrom-Json).result
 } while (($null -eq $s -or $null -eq $s.cpu) -and (Get-Date) -lt $deadline)
 if ($null -eq $s -or $null -eq $s.cpu) { Fail "no sample: $($r[1])" }
@@ -146,7 +146,7 @@ Step 'install again is an upgrade in place and keeps the node id'
 $id1 = $info.node.nodeId
 & $Exe install --json | Out-Null
 if ($LASTEXITCODE -ne 0) { Fail 'reinstall' }
-$r = Bridge @('{"id":1,"method":"hello","params":{"protoMin":1,"protoMax":2,"client":"ci"}}')
+$r = @(Bridge @('{"id":1,"method":"hello","params":{"protoMin":1,"protoMax":2,"client":"ci"}}'))
 if (($r[0] | ConvertFrom-Json).result.node.nodeId -ne $id1) { Fail 'node id changed on reinstall' }
 
 Step 'the service comes back after a crash'

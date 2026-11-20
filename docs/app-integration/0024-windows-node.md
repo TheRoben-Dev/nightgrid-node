@@ -111,6 +111,6 @@ Boot and outage events, disk forecasts and the node's alerts are as on Linux. Th
 
 ## 7. Security notes for the app's UI
 
-- The node service runs as the virtual account `NT SERVICE\nightgrid-node` with a write-restricted token and one privilege, and Windows blocks all of its network traffic (a service hardening rule). It opens no port. The pipe rejects remote clients.
+- The node service runs as the virtual account `NT SERVICE\nightgrid-node` (a member of Performance Monitor Users, to read counters) with a write-restricted token and one privilege, and Windows blocks all of its network traffic (a service hardening rule). It opens no port. The pipe rejects remote clients.
 - Who may read the node is Administrators plus the members of `Nightgrid Node Users`. Show the members where the app shows the `nightgrid-node` group's members on Linux (`Get-LocalGroupMember 'Nightgrid Node Users'`).
 - Config: `%ProgramData%\Nightgrid Node\config.toml`, same format as on Linux, writable only by Administrators.

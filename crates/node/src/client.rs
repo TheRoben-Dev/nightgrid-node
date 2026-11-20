@@ -123,7 +123,11 @@ pub fn bridge_error(path: &Path, e: &std::io::Error) -> String {
     };
     let message = match code {
         "no_access" => {
-            format!("{}: {e} (the login user is not in the socket's group yet, or needs a new login)", path.display())
+            format!(
+                "{}: {e} (the login user is not in {} yet, or needs a new login)",
+                path.display(),
+                if cfg!(windows) { "\"Nightgrid Node Users\"" } else { "the socket's group" }
+            )
         }
         _ => format!("{}: {e} (the service is not running)", path.display()),
     };
