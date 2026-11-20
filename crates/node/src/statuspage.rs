@@ -451,6 +451,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg_attr(windows, ignore = "Linux paths")]
     fn routes_only_the_secret_path() {
         let t = "a".repeat(64);
         let page = || "PAGE".to_string();

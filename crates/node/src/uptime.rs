@@ -312,7 +312,8 @@ mod tests {
 
     #[test]
     fn reads_this_machine() {
-        let c = Clocks::read(1);
-        assert!(!c.boot_id.is_empty() && c.btime > 0 && c.suspended >= 0);
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+        let c = Clocks::read(now);
+        assert!(!c.boot_id.is_empty() && c.btime > 0 && c.btime <= now && c.suspended >= 0, "{c:?}");
     }
 }

@@ -1484,6 +1484,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(windows, ignore = "the Linux installer")]
     fn allow_and_deny_netwatch() {
         let (_d, layout, exe) = setup();
         let mut sys = FakeSys::default();
@@ -1510,6 +1511,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(windows, ignore = "the Linux installer")]
     fn allow_and_deny_checks() {
         let (_d, layout, exe) = setup();
         let mut sys = FakeSys::default();
@@ -1538,6 +1540,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(windows, ignore = "the Linux installer")]
     fn allow_and_deny_peers() {
         let (_d, layout, exe) = setup();
         let mut sys = FakeSys::default();
@@ -1556,6 +1559,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(windows, ignore = "the Linux installer")]
     fn allow_and_deny_statuspage() {
         let (_d, layout, exe) = setup();
         let mut sys = FakeSys::default();
@@ -1584,6 +1588,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(windows, ignore = "the Linux installer")]
     fn allow_and_deny_helper() {
         let (_d, layout, exe) = setup();
         let mut sys = FakeSys::default();
@@ -1659,6 +1664,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(windows, ignore = "the Linux installer")]
     fn serve_without_the_link_says_how_to_turn_it_on() {
         let (_d, layout, exe) = setup();
         let mut sys = FakeSys::default();
@@ -1674,6 +1680,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(windows, ignore = "the Linux installer")]
     fn install_opens_a_config_dir_the_umask_closed() {
         // 0.26.0 created /etc/nightgrid-node with the sudo shell's umask; under
         // 0077 the service account couldn't read its config. Reinstalling fixes it.
@@ -1691,6 +1698,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(windows, ignore = "the Linux installer")]
     fn install_then_reinstall_then_uninstall() {
         let (_d, layout, exe) = setup();
         let mut sys = FakeSys { users: vec!["alice"], ..Default::default() };
@@ -1777,6 +1785,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(windows, ignore = "the Linux installer")]
     fn openrc_host_gets_a_service_script() {
         let (_d, layout, exe) = setup();
         std::fs::create_dir_all(layout.path("/run/openrc")).unwrap();
@@ -1818,6 +1827,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(windows, ignore = "the Linux installer")]
     fn busybox_sysvinit_host_without_shadow_tools() {
         let (_d, layout, exe) = setup();
         for d in ["/etc/init.d", "/etc/rc2.d", "/etc/rc3.d", "/etc/rc0.d"] {
@@ -1848,6 +1858,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(windows, ignore = "the Linux installer")]
     fn old_systemd_gets_a_unit_it_understands() {
         let (_d, layout, exe) = setup();
         std::fs::create_dir_all(layout.path("/run/systemd/system")).unwrap();

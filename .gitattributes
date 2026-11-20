@@ -1,0 +1,4 @@
+# Same bytes on every checkout: tests compare embedded and fixture files
+# byte for byte, and Windows runners would otherwise check out CRLF.
+* text=auto eol=lf
+*.ps1 text eol=crlf

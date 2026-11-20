@@ -1105,7 +1105,11 @@ mod tests {
             codes.map(|c| serde_json::to_value(c).unwrap().as_str().unwrap().to_owned()).join(" ")
         );
         let mut fields = BTreeSet::new();
-        shape(w.result.as_ref().unwrap(), "", &mut fields);
+        let mut hello = w.result.clone().unwrap();
+        // Windows advertises a subset of the same capabilities (`advertised`);
+        // the frozen shape is the full set.
+        hello["caps"] = serde_json::to_value(caps()).unwrap();
+        shape(&hello, "", &mut fields);
         o += &format!("hello -> {}\n", fields.into_iter().collect::<Vec<_>>().join(" "));
         let mut methods = all_methods();
         methods.sort();
@@ -1126,7 +1130,7 @@ mod tests {
             std::fs::write(&path, &o).unwrap();
         }
         let want = std::fs::read_to_string(&path).unwrap_or_default();
-        if want != o {
+        if !want.lines().eq(o.lines()) {
             let gone: Vec<_> = want.lines().filter(|l| !o.lines().any(|x| x == *l)).collect();
             let new: Vec<_> = o.lines().filter(|l| !want.lines().any(|x| x == *l)).collect();
             panic!("the app-facing protocol changed (N-048)\nwas:\n{}\nnow:\n{}", gone.join("\n"), new.join("\n"));
@@ -1291,7 +1295,9 @@ mod tests {
         assert_eq!(crate::engine::load_rules(&s.store.lock().unwrap()).disk_percent, 80);
         assert_eq!(call(&s, &mut ses, 10, "alerts.active", Value::Null).result, Some(json!([])));
         let r = call(&s, &mut ses, 11, "containers.list", Value::Null).result.unwrap();
-        assert_eq!((r["access"].as_str(), r["containers"].as_array().map(Vec::len)), (Some("absent"), Some(0)));
+        // Windows has no container watcher yet (W3), so it reads as off.
+        let access = if cfg!(windows) { "off" } else { "absent" };
+        assert_eq!((r["access"].as_str(), r["containers"].as_array().map(Vec::len)), (Some(access), Some(0)));
     }
 
     #[test]

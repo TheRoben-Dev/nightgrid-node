@@ -563,6 +563,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(windows, ignore = "cgroups and /proc")]
     fn rates_from_two_reads() {
         let d = tempfile::tempdir().unwrap();
         tree(d.path(), 1_000_000, 0, 0, 0, 1_000_000);
@@ -596,6 +597,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(windows, ignore = "cgroups and /proc")]
     fn reads_this_machine() {
         let mut r = UsageReader::system();
         r.read(&HashMap::new());

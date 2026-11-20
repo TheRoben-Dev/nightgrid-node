@@ -343,6 +343,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(windows, ignore = "the Linux doctor")]
     fn a_healthy_install_is_ok_and_problems_are_named() {
         let dir = tempfile::tempdir().unwrap();
         let layout = Layout { root: dir.path().into() };

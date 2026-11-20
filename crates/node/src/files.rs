@@ -410,6 +410,7 @@ mod tests {
     use crate::compat::fs::PermissionsExt;
 
     #[test]
+    #[cfg_attr(windows, ignore = "Linux paths, modes and owners")]
     fn reports_added_changed_removed_and_never_contents() {
         let d = tempfile::tempdir().unwrap();
         let conf = d.path().join("sshd_config");
@@ -453,6 +454,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(windows, ignore = "Linux paths, modes and owners")]
     fn baseline_paths_come_from_roots_config_and_passwd() {
         let passwd = "root:x:0:0:root:/root:/bin/bash
 daemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin

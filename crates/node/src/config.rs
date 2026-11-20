@@ -937,7 +937,12 @@ mod tests {
 
     #[test]
     fn template_is_the_default() {
-        assert_eq!(Config::parse(TEMPLATE).unwrap(), Config::default());
+        #[cfg(unix)]
+        let template = TEMPLATE;
+        // Windows writes its own template (pipe name, no Linux paths).
+        #[cfg(windows)]
+        let template = crate::win::install::TEMPLATE;
+        assert_eq!(Config::parse(template).unwrap(), Config::default());
         assert_eq!(Config::parse("").unwrap(), Config::default());
     }
 

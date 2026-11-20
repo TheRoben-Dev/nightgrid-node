@@ -517,6 +517,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(windows, ignore = "a unix socket")]
     fn reads_are_checked_on_the_root_side() {
         let mut c = Config::default();
         let r = handle(&c, &ReadRequest { read: "ups".into(), target: Some("ups@localhost".into()) });

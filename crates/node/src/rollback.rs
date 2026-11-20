@@ -504,6 +504,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(windows, ignore = "Linux paths")]
     fn snapshot_restore_and_new_files() {
         let (d, c, store) = setup();
         let f = d.path().join("srv/compose.yml");
@@ -527,6 +528,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(windows, ignore = "Linux paths")]
     fn refuses_paths_root_did_not_list() {
         let (d, c, store) = setup();
         let id = "00000000000000aa";
@@ -557,6 +559,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(windows, ignore = "Linux paths")]
     fn discard_is_idempotent() {
         let (d, c, store) = setup();
         let f = d.path().join("srv/a");
