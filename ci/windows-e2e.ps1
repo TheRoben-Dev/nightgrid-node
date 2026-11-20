@@ -167,7 +167,10 @@ $doc = (& $bin doctor --json) -join ''
 if ($doc -notmatch '"check":"eventlog","level":"ok"') { Fail "doctor after allow eventlog: $doc" }
 $ip = (Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*' } | Select-Object -First 1).IPAddress
 Write-Host "failing three network logons against $ip"
-foreach ($i in 1..3) { net use "\\$ip\IPC$" /user:ngnobody 'Wrong-pass-1' 2>&1 | Out-Null }
+# Through cmd: Windows PowerShell turns a native command's stderr into a
+# terminating error under ErrorActionPreference Stop.
+foreach ($i in 1..3) { cmd /c "net use \\$ip\IPC$ /user:ngnobody Wrong-pass-1 >nul 2>&1" }
+$global:LASTEXITCODE = 0
 $deadline = (Get-Date).AddSeconds(100)
 do {
     Start-Sleep -Seconds 5
