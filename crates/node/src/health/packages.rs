@@ -18,6 +18,9 @@ pub enum Manager {
     /// Image-based OS (Fedora Atomic, Bazzite, ...): updated as one image
     /// with rpm-ostree, which stages it for the next boot.
     Ostree,
+    /// NODE: Windows Update (Windows hosts; as in the app's later
+    /// core/src/system/packages.rs, read by `super::windows`).
+    WindowsUpdate,
 }
 
 impl Manager {
@@ -27,6 +30,7 @@ impl Manager {
             Self::Dnf => "dnf",
             Self::Pacman => "pacman",
             Self::Ostree => "rpm-ostree",
+            Self::WindowsUpdate => "Windows Update",
         }
     }
 }
@@ -232,7 +236,8 @@ pub fn parse_check(out: &str) -> UpdatesReport {
         Some(Manager::Dnf) => parse_dnf(&body),
         Some(Manager::Pacman) => parse_pacman(&body),
         Some(Manager::Ostree) => ostree_updates,
-        None => Vec::new(),
+        // NODE: never from this scan (see `super::windows`).
+        Some(Manager::WindowsUpdate) | None => Vec::new(),
     };
     let note = match manager {
         Some(Manager::Apt) => list

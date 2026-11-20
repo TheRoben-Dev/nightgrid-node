@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.33.0 · W2c: Windows health (disks, Storage Spaces, Windows Update) (2026-11-20)
+
+Additive only: no frozen method, field, frame or link request changed. A Windows node now also advertises `health`. App spec [0028](docs/app-integration/0028-windows-node-health.md). Decision N-084.
+
+- **`allow health` / `deny health` on Windows**: the service `nightgrid-node-health` (LocalSystem, demand start, write-restricted, no privileges beyond traversal, no network). The node may start it and nothing more; it stops itself after three idle minutes. `uninstall` removes it and `doctor` has a `health` finding.
+- **Disks**: physical disk health, operational status, temperature, wear, power-on hours and read/write errors from the Storage module, reported as `smart.report` like on Linux.
+- **Pools**: Storage Spaces pools and their virtual disks as `pools.report`, with the new pool kind `storageSpaces`.
+- **Updates**: pending Windows updates (security ones marked) and pending restarts as `updates.report`, with the new manager `windowsUpdate`. Hidden updates are left out.
+- Refusals for actions that aren't allowed now name the Windows config path on Windows.
+- The Windows CI end-to-end test now allows health, checks the service's account, token, privileges and hardening rule, waits for disks and pools in `health.latest`, and checks the service is gone after `uninstall`.
+
 ## 0.32.0 · W2b: `upgrade` on Windows (2026-11-20)
 
 Additive only: no frozen method, field, frame or link request changed. App spec [0027](docs/app-integration/0027-windows-node-upgrade.md). Decision N-083.

@@ -239,7 +239,7 @@ pub fn peer_uid(fd: i32) -> Option<u32> {
 /// `nightgrid-node helper` on Windows: the helper service's command line.
 #[cfg(windows)]
 pub fn serve(config_path: &Path) -> Result<(), String> {
-    crate::win::helper::serve(config_path)
+    crate::win::helper::serve(&crate::win::helper::ADMIN, config_path)
 }
 
 /// `nightgrid-node helper`: serves the one connection on stdin/stdout.
@@ -290,7 +290,7 @@ pub fn serve(config_path: &Path) -> Result<(), String> {
 /// while its server runs, so the helper's service is asked for instead.
 #[cfg(windows)]
 pub fn installed(socket: &Path) -> bool {
-    socket == Path::new(SOCKET) && crate::win::helper::installed()
+    crate::win::helper::by_pipe(socket).is_some_and(crate::win::helper::installed)
 }
 
 /// Whether the helper's socket is there (`allow helper`).
@@ -303,8 +303,8 @@ pub fn installed(socket: &Path) -> bool {
 /// Asks the helper (from the service). `Err` is a transport problem.
 pub fn call(socket: &Path, req: &HelperRequest) -> Result<Reply, String> {
     #[cfg(windows)]
-    let s = if socket == Path::new(SOCKET) {
-        crate::win::helper::connect()?
+    let s = if let Some(k) = crate::win::helper::by_pipe(socket) {
+        crate::win::helper::connect(k)?
     } else {
         UnixStream::connect(socket).map_err(|e| format!("admin helper ({}): {e}", socket.display()))?
     };

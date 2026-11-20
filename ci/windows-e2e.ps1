@@ -92,6 +92,7 @@ if ($r.Count -lt 2) { Fail "bridge answers: $r" }
 $w = $r[0] | ConvertFrom-Json
 if ($w.result.proto -ne 2 -or -not $w.result.caps.'metrics.sync') { Fail "hello: $($r[0])" }
 if ($w.result.caps.PSObject.Properties.Name -contains 'containers') { Fail 'advertises containers, which Windows lacks so far' }
+if (-not $w.result.caps.health) { Fail 'does not advertise health' }
 $info = ($r[1] | ConvertFrom-Json).result
 if ($info.node.hostname -eq '' -or $info.rssBytes -le 0) { Fail "node.info: $($r[1])" }
 Write-Host "working set: $([math]::Round($info.rssBytes / 1MB, 1)) MB"
@@ -247,6 +248,32 @@ if (($r[1] | ConvertFrom-Json).result.outcome -ne 'refused') { Fail "unit.restar
 & $bin allow helper --json | Out-Null
 if ($LASTEXITCODE -ne 0) { Fail 'allow helper again' }
 
+Step 'allow health: disks and Storage Spaces through the read-only health helper'
+$j = (& $bin allow health --json) -join ''
+Write-Host $j
+if ($LASTEXITCODE -ne 0) { Fail 'allow health' }
+$hs = Get-CimInstance Win32_Service -Filter "Name='nightgrid-node-health'"
+if ($null -eq $hs -or $hs.StartMode -ne 'Manual' -or $hs.StartName -ne 'LocalSystem') { Fail "health service: $($hs | Out-String)" }
+$sidType = (sc.exe qsidtype nightgrid-node-health) -join ' '
+if ($sidType -notmatch 'RESTRICTED') { Fail "health helper SID type: $sidType" }
+$privs = (sc.exe qprivs nightgrid-node-health) -join ' '
+if ($privs -match 'SeShutdown|SeDebug|SeTcb|SeBackup|SeImpersonate') { Fail "health helper privileges: $privs" }
+if (-not $fw.ServiceRestriction.ServiceRestricted('nightgrid-node-health', $bin)) { Fail 'no hardening rule for the health helper' }
+$deadline = (Get-Date).AddSeconds(150)
+do {
+    Start-Sleep -Seconds 5
+    $r = @(Bridge @($hello, '{"id":2,"method":"health.latest"}'))
+    $hl = ($r[1] | ConvertFrom-Json).result
+} while (($null -eq $hl -or $null -eq $hl.smart -or $null -eq $hl.pools) -and (Get-Date) -lt $deadline)
+Write-Host $r[1]
+if ($hl.access -ne 'ok') { Fail "health access: $($r[1])" }
+if ($null -eq $hl.smart.report -or @($hl.smart.report.disks).Count -lt 1) { Fail "no disks from the health helper: $($r[1])" }
+if ($null -eq $hl.pools.report) { Fail "no pools report: $($r[1])" }
+Write-Host "disks: $(@($hl.smart.report.disks | ForEach-Object { "$($_.name) $($_.protocol) $($_.health)" }) -join '; ')"
+if ($hl.updates) { Write-Host "updates: $(@($hl.updates.report.updates).Count) pending, note $($hl.updates.report.note), error $($hl.updates.error)" }
+$doc = (& $bin doctor --json) -join ''
+if ($doc -notmatch '"check":"health","level":"ok"') { Fail "doctor after allow health: $doc" }
+
 Step 'an account outside the group is refused'
 $pw = 'Ng-' + [guid]::NewGuid().ToString('N').Substring(0, 16) + '!a1'
 $sec = ConvertTo-SecureString $pw -AsPlainText -Force
@@ -313,6 +340,7 @@ Step 'uninstall keeps history; uninstall --purge removes everything'
 if ($LASTEXITCODE -ne 0) { Fail 'uninstall' }
 if (Get-Service nightgrid-node -ErrorAction SilentlyContinue) { Fail 'service still there' }
 if (Get-Service nightgrid-node-helper -ErrorAction SilentlyContinue) { Fail 'helper service still there' }
+if (Get-Service nightgrid-node-health -ErrorAction SilentlyContinue) { Fail 'health service still there' }
 if (-not (Test-Path (Join-Path $etc 'data\node.db'))) { Fail 'history removed by a plain uninstall' }
 $re = (& $Exe install --json) -join ''
 if ($LASTEXITCODE -ne 0 -or $re -notmatch 'blocked all network traffic') {

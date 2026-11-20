@@ -17,6 +17,9 @@ pub enum PoolKind {
     Zfs,
     Mdraid,
     Btrfs,
+    /// NODE: Windows Storage Spaces (as in the app's later
+    /// core/src/system/pools.rs; read by `super::windows`).
+    StorageSpaces,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -432,6 +435,7 @@ pub fn kind_word(k: PoolKind) -> &'static str {
         PoolKind::Zfs => "ZFS pool",
         PoolKind::Mdraid => "RAID array",
         PoolKind::Btrfs => "btrfs",
+        PoolKind::StorageSpaces => "storage pool",
     }
 }
 

@@ -289,7 +289,10 @@ fn windows_command(a: &Args) -> Option<Result<(), String>> {
             win::install::eventlog(a.cmd == "allow", a.no_start).map(|r| print_report(&r, a.json))
         }
         "allow" | "deny" if a.rest.first().map(String::as_str) == Some("helper") => {
-            win::helper::allow(a.cmd == "allow").map(|r| print_report(&r, a.json))
+            win::helper::allow(&win::helper::ADMIN, a.cmd == "allow").map(|r| print_report(&r, a.json))
+        }
+        "allow" | "deny" if a.rest.first().map(String::as_str) == Some("health") => {
+            win::helper::allow(&win::helper::HEALTH, a.cmd == "allow").map(|r| print_report(&r, a.json))
         }
         "allow" | "deny" | "serve" => {
             Err(not_on_windows(format!("nightgrid-node {} {}", a.cmd, a.rest.join(" ")).trim_end()))
@@ -321,8 +324,8 @@ fn windows_command(a: &Args) -> Option<Result<(), String>> {
                 (None, false) => Err("upgrade failed".into()),
             }
         })(),
-        "helper" => win::helper::serve(&a.config),
-        "health-helper" => Err(not_on_windows("the health helper")),
+        "helper" => win::helper::serve(&win::helper::ADMIN, &a.config),
+        "health-helper" => win::helper::serve(&win::helper::HEALTH, &a.config),
         "checker" | "peer" | "status-page" | "netwatch" => Err(not_on_windows(&a.cmd)),
         _ => return None,
     })

@@ -230,20 +230,35 @@ fn check(shared: &Shared, req: &ActionRequest, now: i64) -> std::result::Result<
     crate::heal::refresh_fixes(shared);
     let local = shared.fixes.lock().unwrap_or_else(|e| e.into_inner()).local.clone();
     if !crate::fixes::allowed(&shared.config, &local, &req.action) {
-        return Err(format!(
-            "{} is not allowed on this host (root can allow it with `sudo nightgrid-node fix`, or add it to \
-             [actions] allow in /etc/nightgrid-node/config.toml)",
-            req.action
-        ));
+        return Err(if cfg!(windows) {
+            format!(
+                "{} is not allowed on this host (an administrator can add it to [actions] allow in \
+                 C:\\ProgramData\\Nightgrid Node\\config.toml)",
+                req.action
+            )
+        } else {
+            format!(
+                "{} is not allowed on this host (root can allow it with `sudo nightgrid-node fix`, or add it to \
+                 [actions] allow in /etc/nightgrid-node/config.toml)",
+                req.action
+            )
+        });
     }
     if crate::fixes::needs_helper(&req.action) {
         if crate::fixes::takes_unit(&req.action) {
             let unit = req.target.as_deref().unwrap_or("");
             if !crate::fixes::unit_listed(&shared.config, &local, unit) {
-                return Err(format!(
-                    "{unit:?} is not a unit root listed (root can add it with `sudo nightgrid-node fix`, or to \
-                     [actions] units in /etc/nightgrid-node/config.toml)"
-                ));
+                return Err(if cfg!(windows) {
+                    format!(
+                        "{unit:?} is not a service an administrator listed (they can add it to [actions] units \
+                         in C:\\ProgramData\\Nightgrid Node\\config.toml)"
+                    )
+                } else {
+                    format!(
+                        "{unit:?} is not a unit root listed (root can add it with `sudo nightgrid-node fix`, or to \
+                         [actions] units in /etc/nightgrid-node/config.toml)"
+                    )
+                });
             }
         }
         match req.action.as_str() {

@@ -119,6 +119,20 @@ pub fn run(config_path: &Path, socket: Option<&Path>) -> Report {
         Err(_) => {}
     }
 
+    match super::scm::status(super::helper::HEALTH.service) {
+        Ok(Some(s)) => r.add(
+            "health",
+            Level::Ok,
+            format!("health helper installed, starts when the node needs it ({} now)", s.word()),
+        ),
+        Ok(None) => r.add(
+            "health",
+            Level::Info,
+            "disk, Storage Spaces and update health are off (an administrator can run: nightgrid-node allow health)",
+        ),
+        Err(_) => {}
+    }
+
     // Network restriction.
     if crate::compat::am_root() {
         match super::install::firewall_restricted() {

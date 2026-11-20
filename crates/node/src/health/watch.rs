@@ -26,7 +26,11 @@ use crate::daemon::{now_secs, Shared};
 use crate::events::NewEvent;
 
 /// Where the health helper's socket unit listens.
+#[cfg(unix)]
 pub const SOCKET: &str = "/run/nightgrid-node-health.sock";
+/// The Windows health helper service's pipe (`crate::win::helper::HEALTH`).
+#[cfg(windows)]
+pub const SOCKET: &str = crate::win::helper::HEALTH_PIPE;
 const MAX_OUTPUT: u64 = 4 << 20;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -87,7 +91,18 @@ pub fn handle(config: &Config, req: &ReadRequest) -> ReadReply {
     if !config.health.enabled {
         return ReadReply { error: "[health] is off".into(), ..Default::default() };
     }
+    #[cfg(windows)]
+    let r = match req.read.as_str() {
+        "smart" => powershell(super::windows::DISKS, 240),
+        "pools" => powershell(super::windows::POOLS, 60),
+        "updates" => powershell(super::windows::CHECK, 300),
+        "ups" => Err("UPS readings on Windows come in a later node release".into()),
+        "files" => crate::files::helper_snapshot(&config.files),
+        other => Err(format!("unknown read {other:?}")),
+    };
+    #[cfg(unix)]
     let script = |s: String, secs: u64| run_capped("/bin/sh", &["-c", &s], Duration::from_secs(secs));
+    #[cfg(unix)]
     let r = match req.read.as_str() {
         "smart" => script(super::smart::scan_command(), 240),
         "pools" => script(super::pools::scan_command(), 60),
@@ -114,11 +129,29 @@ pub fn handle(config: &Config, req: &ReadRequest) -> ReadReply {
     }
 }
 
-/// `nightgrid-node health-helper` on Windows: the helper service arrives in
-/// a later release (docs/WINDOWS.md, W2).
+/// Runs one of the vendored PowerShell reads with a time limit. A script
+/// that throws answers `@error <message>` instead of its JSON.
 #[cfg(windows)]
-pub fn serve(_config_path: &Path) -> Result<(), String> {
-    Err("the health helper is not available on Windows yet".into())
+fn powershell(script: &str, secs: u64) -> Result<String, String> {
+    let wrapped = format!(
+        "$ProgressPreference='SilentlyContinue'\ntry {{ & {{\n{script}\n}} }} catch {{ [Console]::Out.Write('@error ' + $_.Exception.Message) }}"
+    );
+    let enc = crate::win::install::encode_utf16_base64(&wrapped);
+    let sys = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
+    let exe = format!(r"{sys}\System32\WindowsPowerShell\v1.0\powershell.exe");
+    let args = ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", &enc];
+    let out = run_capped(&exe, &args, Duration::from_secs(secs))?;
+    match out.trim().strip_prefix("@error ") {
+        Some(e) => Err(crate::events::tidy(e.trim(), 300)),
+        None if out.trim().is_empty() => Err("PowerShell gave no answer".into()),
+        None => Ok(out),
+    }
+}
+
+/// `nightgrid-node health-helper` on Windows: the health helper service.
+#[cfg(windows)]
+pub fn serve(config_path: &Path) -> Result<(), String> {
+    crate::win::helper::serve(&crate::win::helper::HEALTH, config_path)
 }
 
 /// `nightgrid-node health-helper`: serves the one connection on stdin/stdout.
@@ -149,6 +182,12 @@ pub fn serve(config_path: &Path) -> Result<(), String> {
 
 /// Asks the health helper (service side).
 pub fn call(socket: &Path, req: &ReadRequest) -> Result<String, String> {
+    #[cfg(windows)]
+    let mut s = match crate::win::helper::by_pipe(socket) {
+        Some(k) => crate::win::helper::connect(k)?,
+        None => UnixStream::connect(socket).map_err(|e| format!("health helper: {e}"))?,
+    };
+    #[cfg(unix)]
     let mut s = UnixStream::connect(socket).map_err(|e| format!("health helper: {e}"))?;
     s.set_read_timeout(Some(Duration::from_secs(300))).map_err(|e| e.to_string())?;
     let mut line = serde_json::to_vec(req).map_err(|e| e.to_string())?;
@@ -324,6 +363,22 @@ impl Due {
     }
 }
 
+// The service-side parsers: the Linux scans' text, or the Windows reads' JSON.
+#[cfg(unix)]
+fn parse_pools(o: &str) -> Result<PoolsReport, String> {
+    Ok(super::pools::parse_scan(o))
+}
+#[cfg(unix)]
+fn parse_smart(o: &str) -> Result<DisksReport, String> {
+    super::smart::parse_scan(o)
+}
+#[cfg(unix)]
+fn parse_updates(o: &str) -> Result<UpdatesReport, String> {
+    Ok(super::packages::parse_check(o))
+}
+#[cfg(windows)]
+use super::windows::{parse_disks as parse_smart, parse_pools, parse_updates};
+
 fn read<T>(shared: &Shared, what: &str, parse: impl Fn(&str) -> Result<T, String>, now: i64) -> Reading<T> {
     let r = call(&shared.health_socket, &ReadRequest { read: what.into(), target: None }).and_then(|o| parse(&o));
     match r {
@@ -354,7 +409,7 @@ fn tick(shared: &Shared, due: &mut [Due; 4]) {
         return;
     }
     if due[0].take(now) {
-        let r = read(shared, "pools", |o| Ok(super::pools::parse_scan(o)), now);
+        let r = read(shared, "pools", parse_pools, now);
         let mut h = shared.health.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(rep) = &r.report {
             h.pools = pool_conditions(&host, rep);
@@ -362,7 +417,7 @@ fn tick(shared: &Shared, due: &mut [Due; 4]) {
         h.result.pools = Some(r);
     }
     if due[1].take(now) {
-        let r = read(shared, "smart", super::smart::parse_scan, now);
+        let r = read(shared, "smart", parse_smart, now);
         let mut h = shared.health.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(rep) = &r.report {
             h.smart = smart_conditions(&host, rep);
@@ -370,7 +425,7 @@ fn tick(shared: &Shared, due: &mut [Due; 4]) {
         h.result.smart = Some(r);
     }
     if due[2].take(now) {
-        let r = read(shared, "updates", |o| Ok(super::packages::parse_check(o)), now);
+        let r = read(shared, "updates", parse_updates, now);
         let events = {
             let mut h = shared.health.lock().unwrap_or_else(|e| e.into_inner());
             let old = h.result.updates.as_ref().and_then(|x| x.report.clone());
@@ -466,6 +521,19 @@ impl HealthWatcher {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The vendored PowerShell reads work on a real Windows Server (CI runs
+    /// as an administrator, like the helper's LocalSystem).
+    #[cfg(windows)]
+    #[test]
+    fn windows_reads_disks_and_pools() {
+        let d = powershell(super::super::windows::DISKS, 120).unwrap();
+        let r = parse_smart(&d).unwrap_or_else(|e| panic!("{e}: {d}"));
+        assert!(!r.disks.is_empty(), "{d}");
+        let p = powershell(super::super::windows::POOLS, 60).unwrap();
+        parse_pools(&p).unwrap_or_else(|e| panic!("{e}: {p}"));
+        assert_eq!(powershell("throw 'boom'", 30), Err("boom".into()));
+    }
 
     #[test]
     fn ups_alerts() {
