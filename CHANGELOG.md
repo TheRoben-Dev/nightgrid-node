@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.32.0 · W2b: `upgrade` on Windows (2026-11-20)
+
+Additive only: no frozen method, field, frame or link request changed. App spec [0027](docs/app-integration/0027-windows-node-upgrade.md). Decision N-083.
+
+- **`nightgrid-node upgrade FILE --sha256 HEX` on Windows**, with the same report as on Linux. It hashes a staged copy, checks that it is a Windows exe that runs and says it is `nightgrid-node`, and refuses downgrades without `--allow-downgrade`. It keeps the installed exe as `nightgrid-node.prev.exe` and lets the new one install itself. If the service doesn't answer with the new version, or doesn't keep the same process for 10 seconds, the previous exe installs itself again.
+- `uninstall` also removes the kept and staged exes.
+- The Windows CI end-to-end test now checks that a wrong checksum is refused and leaves nothing behind, and that a verified upgrade keeps the node id.
+
 ## 0.31.0 · W2a: Windows admin helper, service and power actions (2026-11-20)
 
 Additive only: no frozen method, field, frame or link request changed (the frozen protocol test passes as it was). A Windows node now also advertises `actions`. App spec [0026](docs/app-integration/0026-windows-node-w2a.md). Decisions N-080 to N-082.

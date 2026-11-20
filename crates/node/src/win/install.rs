@@ -270,6 +270,11 @@ pub fn uninstall(purge: bool) -> Result<Report, String> {
     if remove_from_path(&super::bin_dir())? {
         step(&mut rep, format!("removed {} from the machine PATH", super::bin_dir().display()));
     }
+    // The exe kept by the last upgrade, and leftovers of a replaced one.
+    for f in [super::upgrade::previous(), super::upgrade::staged(), super::installed_binary().with_extension("exe.old")]
+    {
+        let _ = std::fs::remove_file(f);
+    }
     remove_binary(&super::installed_binary(), &mut rep);
     if purge {
         let etc = super::etc_dir();

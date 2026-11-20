@@ -272,6 +272,23 @@ if ($LASTEXITCODE -ne 0) { Fail 'reinstall' }
 $r = @(Bridge @('{"id":1,"method":"hello","params":{"protoMin":1,"protoMax":2,"client":"ci"}}'))
 if (($r[0] | ConvertFrom-Json).result.node.nodeId -ne $id1) { Fail 'node id changed on reinstall' }
 
+Step 'upgrade refuses a wrong checksum and installs a verified exe in place'
+$ErrorActionPreference = 'Continue'
+$o = (& $bin upgrade $Exe --sha256 ('0' * 64) --json 2>&1 | Out-String)
+$code = $LASTEXITCODE
+$ErrorActionPreference = 'Stop'
+if ($code -eq 0 -or $o -notmatch 'checksum mismatch') { Fail "a wrong checksum was not refused: $o" }
+if (Test-Path (Join-Path (Split-Path $bin) '.nightgrid-node.new.exe')) { Fail 'the staged exe was left behind' }
+$sha = (Get-FileHash $Exe -Algorithm SHA256).Hash.ToLower()
+$up = (& $bin upgrade $Exe --sha256 $sha --json) -join ''
+Write-Host $up
+if ($LASTEXITCODE -ne 0) { Fail "upgrade: $up" }
+$u = $up | ConvertFrom-Json
+if (-not $u.ok -or $u.reverted) { Fail "upgrade report: $up" }
+if (-not (Test-Path (Join-Path (Split-Path $bin) 'nightgrid-node.prev.exe'))) { Fail 'no previous exe kept' }
+$r = @(Bridge @($hello))
+if (($r[0] | ConvertFrom-Json).result.node.nodeId -ne $id1) { Fail 'node id changed on upgrade' }
+
 Step 'the service comes back after a crash'
 $pid1 = (Get-CimInstance Win32_Service -Filter "Name='nightgrid-node'").ProcessId
 Stop-Process -Id $pid1 -Force

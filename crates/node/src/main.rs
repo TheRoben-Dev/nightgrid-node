@@ -295,7 +295,32 @@ fn windows_command(a: &Args) -> Option<Result<(), String>> {
             Err(not_on_windows(format!("nightgrid-node {} {}", a.cmd, a.rest.join(" ")).trim_end()))
         }
         "fix" | "fix-apply" => Err(not_on_windows("the fix menu")),
-        "upgrade" => Err(not_on_windows("upgrade (run install with the new binary for now)")),
+        "upgrade" => (|| {
+            let file = a.rest.first().ok_or("upgrade needs the new binary: upgrade FILE --sha256 HEX")?;
+            let opts = nightgrid_node::upgrade::UpgradeOptions {
+                sha256: a.sha256.clone().ok_or("upgrade needs --sha256 (from the release's SHA256SUMS)")?,
+                allow_downgrade: a.allow_downgrade,
+            };
+            let pipe = socket(a);
+            let r = win::upgrade::upgrade(std::path::Path::new(file), &opts, &pipe).inspect_err(|e| {
+                if a.json {
+                    println!("{}", install::error_json(e));
+                }
+            })?;
+            nightgrid_node::upgrade::note(&pipe, &r);
+            if a.json {
+                println!("{}", serde_json::to_string(&r).unwrap_or_default());
+            } else {
+                for s in &r.steps {
+                    println!("{s}");
+                }
+            }
+            match (&r.error, r.ok) {
+                (_, true) => Ok(()),
+                (Some(e), false) => Err(e.clone()),
+                (None, false) => Err("upgrade failed".into()),
+            }
+        })(),
         "helper" => win::helper::serve(&a.config),
         "health-helper" => Err(not_on_windows("the health helper")),
         "checker" | "peer" | "status-page" | "netwatch" => Err(not_on_windows(&a.cmd)),
