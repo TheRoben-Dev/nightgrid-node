@@ -313,7 +313,7 @@ pub fn run(config: Config, paths: Paths) -> Result<(), String> {
     let sampler =
         Sampler::start(shared.clone(), Reader::system(), Duration::from_secs(config.metrics.interval_secs.into()))
             .map_err(|e| format!("sampler: {e}"))?;
-    let files = if cfg!(unix) && config.files.enabled && !config.files.watch.is_empty() {
+    let files = if config.files.enabled && !config.files.watch.is_empty() {
         Some(crate::files::FileWatcher::start(shared.clone()).map_err(|e| format!("file watcher: {e}"))?)
     } else {
         None
@@ -339,12 +339,12 @@ pub fn run(config: Config, paths: Paths) -> Result<(), String> {
     } else {
         None
     };
-    let logins = if cfg!(unix) && config.logins.enabled {
+    let logins = if config.logins.enabled {
         Some(crate::logins::LoginWatcher::start(shared.clone()).map_err(|e| format!("login watcher: {e}"))?)
     } else {
         None
     };
-    let network = if cfg!(unix) && config.network.enabled {
+    let network = if config.network.enabled {
         Some(
             crate::netwatch::NetWatcher::start(shared.clone(), crate::netwatch::Sources::default())
                 .map_err(|e| format!("network watcher: {e}"))?,
@@ -353,7 +353,7 @@ pub fn run(config: Config, paths: Paths) -> Result<(), String> {
         None
     };
     let healer = crate::heal::Healer::start(shared.clone()).map_err(|e| format!("self-healing: {e}"))?;
-    let usage = if cfg!(unix) && config.usage.enabled {
+    let usage = if config.usage.enabled {
         Some(
             crate::usage::UsageWatcher::start(shared.clone(), crate::usage::UsageReader::system())
                 .map_err(|e| format!("usage watcher: {e}"))?,
@@ -361,7 +361,7 @@ pub fn run(config: Config, paths: Paths) -> Result<(), String> {
     } else {
         None
     };
-    let logs = if cfg!(unix) && config.logs.enabled {
+    let logs = if config.logs.enabled {
         Some(crate::logs::LogWatcher::start(shared.clone()).map_err(|e| format!("log watcher: {e}"))?)
     } else {
         None
@@ -371,7 +371,7 @@ pub fn run(config: Config, paths: Paths) -> Result<(), String> {
     } else {
         None
     };
-    let ports = if cfg!(unix) && config.ports.enabled {
+    let ports = if config.ports.enabled {
         Some(
             crate::ports::PortWatcher::start(shared.clone(), PathBuf::from("/"))
                 .map_err(|e| format!("port watcher: {e}"))?,

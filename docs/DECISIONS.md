@@ -163,6 +163,23 @@ The app already samples Windows hosts over SSH with PowerShell (`core/src/win/me
 ### N-074 · Windows releases sit apart in the manifest
 `manifest.json` gets a top-level `windows` map (and `windowsArch` for `PROCESSOR_ARCHITECTURE`) next to `programs`, not inside it, so an app that only knows `programs` can never pick a Windows file for a Linux host. The exe is static (`crt-static`), built on a Windows runner, and listed in `SHA256SUMS` with build provenance like the Linux files.
 
+## Windows Server · W1 (2026-11-20)
+
+### N-075 · The Event Log is polled by record id, not subscribed to
+`EvtSubscribe` needs a callback thread and a bookmark to survive restarts. The node instead asks each channel for `EventRecordID > N` every few seconds and keeps one number per channel in the store (`logins_cursor`). Nothing is lost while the service is stopped, unless the log wraps past the cursor, and a first start begins at the newest record instead of reading years of history. The rendered XML is parsed by a small reader (`evtx.rs`) that is tested on every platform.
+
+### N-076 · `allow eventlog` is the journal grant, and Event Log Readers is the group
+Reading the Security log takes membership in the builtin Event Log Readers group (S-1-5-32-573), the counterpart of `systemd-journal`. `allow eventlog` (alias `allow journal`) adds the service's virtual account to it and restarts the service. `deny` and `uninstall` take it out. The node's `journal` access reads `ok` or `denied` from its own token, so the app's existing grant flow works unchanged.
+
+### N-077 · Security log logons count only where they mean someone came in from elsewhere
+4624 type 10 (Remote Desktop) is an accepted login with method `rdp`. 4625 types 3 and 10 from another address are failed logins, so SMB and RDP password guessing feed the same burst detector as SSH. Local, service, loopback and sshd's own logons are left out, because the OpenSSH log already reports SSH with the method and key.
+
+### N-078 · Usage reads the process list without opening processes
+The service account can't open other accounts' processes, and it shouldn't need to. `NtQuerySystemInformation(SystemProcessInformation)` (what Task Manager reads) gives every process's CPU time, working set and I/O counters to any caller. The SCM's process ids map services onto them. Services that share one process are one item named for all of them, so no time is counted twice. Process CPU deltas are keyed by pid and start time, because Windows reuses pids quickly.
+
+### N-079 · The Windows file baseline watches places that run code at start-up or let someone in
+These are the Windows counterparts of `/etc/ssh`, `/etc/profile.d`, cron and `authorized_keys`: the OpenSSH config and keys, the hosts file, the all-users StartUp folder, Group Policy scripts, the machine PowerShell profiles and the Tasks folder. Owner and DACL changes aren't compared yet. Reading them needs `READ_CONTROL`, which the service lacks on most of these paths, and asking the helper (W2) for them fits better than widening the service.
+
 ## N11 · Fix menu (2026-11-18)
 
 ### N-060 · Fixes are node-local actions on the existing action path, outside the frozen protocol

@@ -242,7 +242,7 @@ const COMMANDS: &[&str] = &[
     "help",
 ];
 const GRANTS: &[&str] =
-    &["docker", "journal", "netwatch", "helper", "health", "power", "checks", "peers", "statuspage"];
+    &["docker", "journal", "eventlog", "netwatch", "helper", "health", "power", "checks", "peers", "statuspage"];
 const FIX_WORDS: &str = "list auto restart reset start journal logs packages prune ssh reboot run";
 
 const OPTIONS: &[&str] = &[

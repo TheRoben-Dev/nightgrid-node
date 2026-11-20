@@ -94,7 +94,7 @@ A 0.29.0 Windows node's `hello` lists:
 
 `node`, `metrics`, `metrics.sync`, `events`, `uptime`, `disk`, `alerts`, `summary`
 
-and nothing else, so on Windows the app keeps its own SSH paths for everything else (containers, logins, logs, health, actions), exactly as it does today. Later milestones (W1 to W3 in [WINDOWS.md](../WINDOWS.md)) add capabilities to this list; they need no new spec work in the app beyond what 0005 to 0019 already describe, except where a later spec says so.
+and nothing else, so on Windows the app keeps its own SSH paths for everything else (containers, logins, logs, health, actions), exactly as it does today. 0.30.0 adds `logins`, `logs`, `security`, `net`, `usage` and `files`: see [0025](0025-windows-node-w1.md). Later milestones (W1 to W3 in [WINDOWS.md](../WINDOWS.md)) add capabilities to this list; they need no new spec work in the app beyond what 0005 to 0019 already describe, except where a later spec says so.
 
 ### Metrics
 

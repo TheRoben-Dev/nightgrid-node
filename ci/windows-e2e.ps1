@@ -116,6 +116,72 @@ if ($LASTEXITCODE -ne 0) { Fail 'doctor reported a failure' }
 & $bin events --count 5
 if ($LASTEXITCODE -ne 0) { Fail 'events' }
 
+Step 'ports with their processes, LAN devices and the gateway'
+$hello = '{"id":1,"method":"hello","params":{"protoMin":1,"protoMax":2,"client":"ci"}}'
+$deadline = (Get-Date).AddSeconds(90)
+do {
+    Start-Sleep -Seconds 5
+    $r = @(Bridge @($hello, '{"id":2,"method":"ports.list"}', '{"id":3,"method":"net.devices"}'))
+    $ports = ($r[1] | ConvertFrom-Json).result
+    $net = ($r[2] | ConvertFrom-Json).result
+} while (($null -eq $ports -or $ports.at -eq 0 -or $null -eq $net -or $net.at -eq 0) -and (Get-Date) -lt $deadline)
+$rpc = @($ports.listeners | Where-Object { $_.proto -eq 'tcp' -and $_.port -eq 135 })
+if ($rpc.Count -lt 1 -or -not $rpc[0].process) { Fail "ports.list: $($r[1])" }
+Write-Host "listeners $(@($ports.listeners).Count), 135 is $($rpc[0].process)"
+if ($null -eq $net -or $net.at -eq 0 -or -not $net.gateway) { Fail "net.devices: $($r[2])" }
+Write-Host "gateway $($net.gateway), devices $(@($net.devices).Count)"
+
+Step 'usage per service and per process'
+$deadline = (Get-Date).AddSeconds(60)
+do {
+    Start-Sleep -Seconds 5
+    $r = @(Bridge @($hello, '{"id":2,"method":"usage.latest"}'))
+    $u = ($r[1] | ConvertFrom-Json).result
+    $svc = @($u.items | Where-Object { $_.kind -eq 'service' })
+} while ($svc.Count -lt 5 -and (Get-Date) -lt $deadline)
+if ($svc.Count -lt 5 -or -not $u.cgroups) { Fail "usage.latest: $($r[1])" }
+$me = @($svc | Where-Object { $_.name -eq 'nightgrid-node' })
+if ($me.Count -ne 1 -or $me[0].mem -le 0) { Fail "the node's own service is missing from usage: $($r[1])" }
+$procs = @($u.items | Where-Object { $_.kind -eq 'process' })
+if ($procs.Count -lt 5) { Fail "usage processes: $($r[1])" }
+Write-Host "services $($svc.Count), top process $($procs[0].name) $($procs[0].cpu)%, node $([math]::Round($me[0].mem / 1MB, 1)) MB"
+
+Step 'a change to the hosts file becomes a file event'
+$hosts = Join-Path $env:SystemRoot 'System32\drivers\etc\hosts'
+$saved = [IO.File]::ReadAllBytes($hosts)
+Add-Content -Path $hosts -Value '# nightgrid ci'
+$deadline = (Get-Date).AddSeconds(60)
+do {
+    Start-Sleep -Seconds 5
+    $ev = (& $bin events --count 20) -join "`n"
+} while ($ev -notmatch 'changed .*hosts' -and (Get-Date) -lt $deadline)
+[IO.File]::WriteAllBytes($hosts, $saved)
+if ($ev -notmatch 'changed .*hosts') { Fail "no file event for hosts: $ev" }
+Write-Host ($ev -split "`n" | Select-String 'hosts' | Select-Object -First 1)
+
+Step 'allow eventlog: failed network logons become login events'
+$j = & $bin allow eventlog --json
+Write-Host $j
+if ($LASTEXITCODE -ne 0) { Fail 'allow eventlog' }
+$doc = (& $bin doctor --json) -join ''
+if ($doc -notmatch '"check":"eventlog","level":"ok"') { Fail "doctor after allow eventlog: $doc" }
+$ip = (Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*' } | Select-Object -First 1).IPAddress
+Write-Host "failing three network logons against $ip"
+# Through cmd: Windows PowerShell turns a native command's stderr into a
+# terminating error under ErrorActionPreference Stop.
+foreach ($i in 1..3) { cmd /c "net use \\$ip\IPC$ /user:ngnobody Wrong-pass-1 >nul 2>&1" }
+$global:LASTEXITCODE = 0
+$deadline = (Get-Date).AddSeconds(100)
+do {
+    Start-Sleep -Seconds 5
+    $ev = (& $bin events --count 20) -join "`n"
+} while ($ev -notmatch 'failed login' -and (Get-Date) -lt $deadline)
+if ($ev -notmatch 'failed login') {
+    Get-WinEvent -FilterHashtable @{ LogName = 'Security'; Id = 4625 } -MaxEvents 2 -ErrorAction SilentlyContinue | Format-List TimeCreated, Message
+    Fail "no failed-login event: $ev"
+}
+Write-Host ($ev -split "`n" | Select-String 'failed login' | Select-Object -First 1)
+
 Step 'an account outside the group is refused'
 $pw = 'Ng-' + [guid]::NewGuid().ToString('N').Substring(0, 16) + '!a1'
 $sec = ConvertTo-SecureString $pw -AsPlainText -Force
@@ -144,7 +210,8 @@ try {
 
 Step 'install again is an upgrade in place and keeps the node id'
 $id1 = $info.node.nodeId
-& $Exe install --json | Out-Null
+$re = (& $Exe install --json) -join ''
+if ($LASTEXITCODE -ne 0 -or $re -match 'firewall') { Fail "reinstall: $re" }
 if ($LASTEXITCODE -ne 0) { Fail 'reinstall' }
 $r = @(Bridge @('{"id":1,"method":"hello","params":{"protoMin":1,"protoMax":2,"client":"ci"}}'))
 if (($r[0] | ConvertFrom-Json).result.node.nodeId -ne $id1) { Fail 'node id changed on reinstall' }
@@ -164,11 +231,22 @@ Step 'uninstall keeps history; uninstall --purge removes everything'
 if ($LASTEXITCODE -ne 0) { Fail 'uninstall' }
 if (Get-Service nightgrid-node -ErrorAction SilentlyContinue) { Fail 'service still there' }
 if (-not (Test-Path (Join-Path $etc 'data\node.db'))) { Fail 'history removed by a plain uninstall' }
-& $Exe install --json | Out-Null
-& $Exe uninstall --purge --json
+$re = (& $Exe install --json) -join ''
+if ($LASTEXITCODE -ne 0 -or $re -notmatch 'blocked all network traffic') {
+    Get-ChildItem 'HKLM:\SYSTEM\CurrentControlSet\Services\SharedAccess\Parameters\FirewallPolicy\RestrictedServices' -Recurse -ErrorAction SilentlyContinue |
+        ForEach-Object { $_.Name; $_.GetValueNames() | Where-Object { $_ -match 'nightgrid' -or "$($_)" -eq '' } }
+    Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\SharedAccess\Parameters\FirewallPolicy\RestrictedServices\*\*' -ErrorAction SilentlyContinue |
+        Out-String -Stream | Select-String -Pattern 'nightgrid'
+    Fail "install after uninstall: $re"
+}
+$pu = (& $Exe uninstall --purge --json) -join ''
+Write-Host $pu
 if ($LASTEXITCODE -ne 0) { Fail 'uninstall --purge' }
+if ($pu -match '"warnings":\["') { Fail "uninstall --purge warned: $pu" }
 if (Test-Path $etc) { Fail "$etc still there" }
 if (@(Get-NetFirewallRule -Group 'Nightgrid Node' -ErrorAction SilentlyContinue).Count -ne 0) { Fail 'firewall rules left' }
 if (Get-LocalGroup -Name 'Nightgrid Node Users' -ErrorAction SilentlyContinue) { Fail 'group left' }
+$readers = @(Get-LocalGroupMember -SID 'S-1-5-32-573' -ErrorAction SilentlyContinue | Where-Object { $_.Name -match 'nightgrid-node' })
+if ($readers.Count -ne 0) { Fail 'service left in Event Log Readers' }
 
 Write-Host 'Windows e2e passed'

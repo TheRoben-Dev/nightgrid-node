@@ -95,6 +95,17 @@ pub fn run(config_path: &Path, socket: Option<&Path>) -> Report {
         Err(_) => r.add("history", Level::Info, format!("{} not created yet", db.display())),
     }
 
+    // Event Log access (logins and logs).
+    match super::install::eventlog_allowed() {
+        Some(true) => r.add("eventlog", Level::Ok, "the service may read the Event Log (logins and logs)"),
+        Some(false) => r.add(
+            "eventlog",
+            Level::Info,
+            "logins and log errors are not read (an administrator can run: nightgrid-node allow eventlog)",
+        ),
+        None => {}
+    }
+
     // Network restriction.
     if crate::compat::am_root() {
         match super::install::firewall_restricted() {

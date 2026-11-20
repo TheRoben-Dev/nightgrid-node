@@ -243,7 +243,9 @@ fn access(shared: &Shared) -> std::collections::BTreeMap<String, String> {
         "off".into()
     };
     let journal = if shared.config.logins.enabled { crate::logins::journal_access() } else { "off" };
-    let netwatch = if !shared.config.network.enabled {
+    // The wire watch (rogue DHCP) needs a raw socket helper, which Windows
+    // doesn't have (it would need Npcap).
+    let netwatch = if !shared.config.network.enabled || cfg!(windows) {
         "off"
     } else if shared.dhcp.lock().unwrap_or_else(|e| e.into_inner()).watching(crate::daemon::now_secs()) {
         "ok"
@@ -399,8 +401,22 @@ pub fn caps() -> Caps {
 
 /// Capabilities the Windows node implements so far (docs/WINDOWS.md); the
 /// app uses its SSH path for the rest, as with an older node.
-pub const WINDOWS_CAPS: &[&str] =
-    &[cap::NODE, cap::METRICS, cap::METRICS_SYNC, cap::EVENTS, cap::UPTIME, cap::DISK, cap::ALERTS, cap::SUMMARY];
+pub const WINDOWS_CAPS: &[&str] = &[
+    cap::NODE,
+    cap::METRICS,
+    cap::METRICS_SYNC,
+    cap::EVENTS,
+    cap::UPTIME,
+    cap::DISK,
+    cap::ALERTS,
+    cap::SUMMARY,
+    cap::LOGINS,
+    cap::LOGS,
+    cap::SECURITY,
+    cap::NET,
+    cap::USAGE,
+    cap::FILES,
+];
 
 /// What `hello` advertises on this platform: [`caps`] on Linux, the part
 /// of it in [`WINDOWS_CAPS`] on Windows.

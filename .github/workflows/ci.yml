@@ -9,6 +9,11 @@ on:
 permissions:
   contents: read
 
+# A newer push to a pull request replaces its older runs (main keeps every run).
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   CARGO_TERM_COLOR: always
 

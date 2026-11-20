@@ -40,6 +40,8 @@ COMMANDS:
     allow docker            Let the service read containers through the engine
                             socket's group (root; root-equivalent access)
     allow journal           Let the service read the journal for SSH logins (root)
+    allow eventlog          Windows: the same through the Event Log (Event Log Readers;
+                            SSH and Remote Desktop logins, log errors) (Administrator)
     allow netwatch          Start the listen-only helper for ARP and DHCP (root; CAP_NET_RAW)
     allow helper            Install the root helper for unit and power actions (root)
     allow health            Install the read-only helper for SMART, pools, updates
@@ -282,6 +284,9 @@ fn windows_command(a: &Args) -> Option<Result<(), String>> {
             } else {
                 Ok(())
             }
+        }
+        "allow" | "deny" if matches!(a.rest.first().map(String::as_str), Some("eventlog" | "journal")) => {
+            win::install::eventlog(a.cmd == "allow", a.no_start).map(|r| print_report(&r, a.json))
         }
         "allow" | "deny" | "serve" => {
             Err(not_on_windows(format!("nightgrid-node {} {}", a.cmd, a.rest.join(" ")).trim_end()))

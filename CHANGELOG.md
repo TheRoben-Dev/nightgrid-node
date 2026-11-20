@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.30.0 · W1: Windows logins, logs, ports, LAN, usage and files (2026-11-20)
+
+Additive only: no frozen method, field, frame or link request changed (the frozen protocol test passes as it was). A Windows node now also advertises `logins`, `logs`, `security`, `net`, `usage` and `files`. App spec [0025](docs/app-integration/0025-windows-node-w1.md). Decisions N-075 to N-079.
+
+- **Event Log reader** (`wevtapi`): channels are polled by record id, with one cursor per channel kept in the store, so nothing is missed while the service is stopped.
+- **`allow eventlog`** (alias `allow journal`) and `deny eventlog`: add the service to Event Log Readers, or take it out, and restart the service. `doctor` has an `eventlog` finding, and `node.info` access `journal` reads `ok` or `denied`.
+- **Logins on Windows**: SSH logins and failures from `OpenSSH/Operational`, Remote Desktop logons (method `rdp`), and failed network logons from other addresses (RDP and SMB guessing) from the Security log. All of them feed the same burst alerts as on Linux.
+- **Logs on Windows**: the System and Application logs stand in for the journal. Providers are the identifiers, messages are formatted by the provider, and levels map to journal priorities. Service crashes and unexpected shutdowns show up as errors there.
+- **Ports on Windows**: TCP and UDP listeners for v4 and v6, each with its owning process's name. Ephemeral UDP is skipped from 49152 up.
+- **LAN devices on Windows**: the neighbour table and the default gateway from IP Helper, with interfaces named by their alias. The wire watch (rogue DHCP) stays off, because it would need Npcap.
+- **Usage on Windows**: CPU, working set and I/O per service and for the busiest process names, read from the system process list without opening any process. Services that share a process are named together.
+- **Watched files on Windows**: the defaults are the OpenSSH server's config, administrators' keys and the hosts file. The baseline adds start-up folders, Group Policy scripts, the machine PowerShell profiles, scheduled tasks and users' `authorized_keys`.
+- The Windows CI end-to-end test now also checks failed network logons becoming login events, ports with processes, the gateway, usage per service, and a hosts-file change becoming a file event.
 ## 0.29.1 · Memory: answers written straight to text (2026-11-20)
 
 - **Lower memory with a full history.** The node built every answer as an in-memory JSON tree before sending it, about eight times the size of the text: a 5 000-point `metrics.sync` page (1.6 MB) briefly took about 13 MB. The release builds' musl allocator keeps such freed memory fragmented, so RSS climbed with each big sync, to 37 to 55 MB on hosts in use and 59 MB in a test with 260 full syncs. It was not a leak (valgrind finds nothing lost, and RSS falls back between peaks). Answers are now written straight to text; the same test ends at about 12 MB with a 14.5 MB peak (11 to 18 MB on 32-bit).

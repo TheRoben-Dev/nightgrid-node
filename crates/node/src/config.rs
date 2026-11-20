@@ -435,12 +435,49 @@ pub const DEFAULT_WATCH: &[&str] = &[
     "/etc/systemd/system",
 ];
 
+/// What `[files] watch` starts with: [`DEFAULT_WATCH`], or on Windows the
+/// OpenSSH server's config and administrators' keys and the hosts file.
+pub fn default_watch() -> Vec<PathBuf> {
+    if cfg!(windows) {
+        let (data, root) = windows_roots();
+        vec![
+            data.join(r"ssh\sshd_config"),
+            data.join(r"ssh\administrators_authorized_keys"),
+            root.join(r"System32\drivers\etc\hosts"),
+        ]
+    } else {
+        DEFAULT_WATCH.iter().map(PathBuf::from).collect()
+    }
+}
+
+/// `%ProgramData%` and `%SystemRoot%`.
+pub fn windows_roots() -> (PathBuf, PathBuf) {
+    let env = |k: &str, d: &str| std::env::var_os(k).map(PathBuf::from).unwrap_or_else(|| PathBuf::from(d));
+    (env("ProgramData", r"C:\ProgramData"), env("SystemRoot", r"C:\Windows"))
+}
+
+/// Windows counterpart of [`BASELINE_WATCH`]: places that run code at
+/// start-up or logon, or let someone in.
+pub fn windows_baseline() -> Vec<PathBuf> {
+    let (data, root) = windows_roots();
+    vec![
+        data.join("ssh"),
+        data.join(r"Microsoft\Windows\Start Menu\Programs\StartUp"),
+        root.join(r"System32\GroupPolicy\Machine\Scripts\Startup"),
+        root.join(r"System32\GroupPolicy\Machine\Scripts\Shutdown"),
+        root.join(r"System32\GroupPolicy\User\Scripts\Logon"),
+        root.join(r"System32\WindowsPowerShell\v1.0\profile.ps1"),
+        root.join(r"System32\WindowsPowerShell\v1.0\Microsoft.PowerShell_profile.ps1"),
+        root.join("System32\\Tasks"),
+    ]
+}
+
 impl Default for FilesConfig {
     fn default() -> Self {
         Self {
             enabled: true,
             // Windows defaults arrive with the Windows file watcher (W1).
-            watch: if cfg!(windows) { Vec::new() } else { DEFAULT_WATCH.iter().map(PathBuf::from).collect() },
+            watch: default_watch(),
             baseline: true,
             interval_secs: 10,
         }

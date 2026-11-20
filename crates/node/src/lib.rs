@@ -5,6 +5,7 @@
 pub mod log;
 
 pub mod compat;
+pub mod evtx;
 
 pub mod actions;
 pub mod alerts;

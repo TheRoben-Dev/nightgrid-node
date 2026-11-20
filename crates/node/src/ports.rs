@@ -193,6 +193,13 @@ pub fn merge(raw: Vec<(String, String, u16)>, containers: &[ContainerInfo]) -> V
 /// The lowest port of the kernel's ephemeral range. Unconnected UDP sockets
 /// there are mostly clients (resolvers, NTP), so they're listed but not
 /// reported when they come and go.
+#[cfg(windows)]
+fn ephemeral_floor(_root: &Path) -> u16 {
+    // Windows' dynamic port range starts at 49152 unless changed.
+    49152
+}
+
+#[cfg(unix)]
 fn ephemeral_floor(root: &Path) -> u16 {
     std::fs::read_to_string(root.join("proc/sys/net/ipv4/ip_local_port_range"))
         .ok()
@@ -200,7 +207,22 @@ fn ephemeral_floor(root: &Path) -> u16 {
         .unwrap_or(32768)
 }
 
+/// Windows: the TCP and UDP tables from the IP helper, with each socket's
+/// process (Windows shows every process's name, so the node names them all).
+#[cfg(windows)]
+pub fn read(_root: &Path, containers: &[ContainerInfo]) -> Vec<Listener> {
+    let rows = crate::win::net::listeners();
+    let names = crate::win::net::process_names();
+    let pids: BTreeMap<(String, u16), u32> = rows.iter().map(|(p, _, port, pid)| ((p.clone(), *port), *pid)).collect();
+    let mut out = merge(rows.into_iter().map(|(p, a, port, _)| (p, a, port)).collect(), containers);
+    for l in out.iter_mut().filter(|l| l.container.is_none()) {
+        l.process = pids.get(&(l.proto.clone(), l.port)).and_then(|pid| names.get(pid)).cloned();
+    }
+    out
+}
+
 /// Reads the socket tables under `root` (`/` normally).
+#[cfg(unix)]
 pub fn read(root: &Path, containers: &[ContainerInfo]) -> Vec<Listener> {
     let mut raw = Vec::new();
     for (file, proto) in [("tcp", "tcp"), ("tcp6", "tcp"), ("udp", "udp"), ("udp6", "udp")] {

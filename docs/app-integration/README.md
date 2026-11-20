@@ -28,6 +28,7 @@ The Nightgrid app repository is developed elsewhere and is read-only from here. 
 | [0022 · Old and 32-bit hosts, the release manifest, clearer failures](0022-legacy-hardware-and-releases.md) | 0.28.0 | proposed |
 | [0023 · Links on the LAN, hub on several addresses, hub doctor, event kinds](0023-lan-links-and-hub-doctor.md) | 0.28.0 | proposed |
 | [0024 · Nightgrid Node on Windows Server](0024-windows-node.md) | 0.29.0 (W0) | proposed |
+| [0025 · Windows node W1: logins, logs, ports, LAN, usage, files](0025-windows-node-w1.md) | 0.30.0 (W1) | proposed |
 
 Rules every spec follows:
 
