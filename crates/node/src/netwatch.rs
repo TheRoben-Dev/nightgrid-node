@@ -449,6 +449,22 @@ impl Inbox {
 /// Most devices `net.devices` returns.
 pub const LIST_LIMIT: usize = 1000;
 
+/// The neighbour table and the default gateway.
+#[cfg(unix)]
+fn tables(src: &Sources) -> std::result::Result<(Vec<Neigh>, Option<String>), String> {
+    let arp = std::fs::read_to_string(&src.arp).map_err(|e| format!("{}: {e}", src.arp.display()))?;
+    let gateway = std::fs::read_to_string(&src.route).ok().and_then(|r| parse_gateway(&r));
+    Ok((parse_arp(&arp), gateway))
+}
+
+/// The neighbour table and the default gateway, from IP Helper (the
+/// sources are Linux paths and unused here).
+#[cfg(windows)]
+fn tables(_src: &Sources) -> std::result::Result<(Vec<Neigh>, Option<String>), String> {
+    let table = crate::win::net::neighbours().map_err(|e| e.to_string())?;
+    Ok((table, crate::win::net::gateway()))
+}
+
 fn run(shared: &Shared, src: &Sources, stop: &mpsc::Receiver<()>) {
     let cfg = &shared.config.network;
     let interval = Duration::from_secs(cfg.interval_secs.into());
@@ -465,11 +481,9 @@ fn run(shared: &Shared, src: &Sources, stop: &mpsc::Receiver<()>) {
         }
     };
     loop {
-        match std::fs::read_to_string(&src.arp) {
-            Ok(arp) => {
-                let gateway = std::fs::read_to_string(&src.route).ok().and_then(|r| parse_gateway(&r));
+        match tables(src) {
+            Ok((mut table, gateway)) => {
                 let now = now_secs();
-                let mut table = parse_arp(&arp);
                 {
                     let mut inbox = shared.net_inbox.lock().unwrap_or_else(|e| e.into_inner());
                     for (mac, name) in inbox.names.drain(..) {
@@ -493,7 +507,7 @@ fn run(shared: &Shared, src: &Sources, stop: &mpsc::Receiver<()>) {
                 drop(st);
                 *shared.net.lock().unwrap_or_else(|e| e.into_inner()) = watch.result(LIST_LIMIT);
             }
-            Err(e) => crate::warn!("could not read {}: {e}", src.arp.display()),
+            Err(e) => crate::warn!("could not read the neighbour table: {e}"),
         }
         match stop.recv_timeout(interval) {
             Err(RecvTimeoutError::Timeout) => continue,

@@ -344,7 +344,7 @@ pub fn run(config: Config, paths: Paths) -> Result<(), String> {
     } else {
         None
     };
-    let network = if cfg!(unix) && config.network.enabled {
+    let network = if config.network.enabled {
         Some(
             crate::netwatch::NetWatcher::start(shared.clone(), crate::netwatch::Sources::default())
                 .map_err(|e| format!("network watcher: {e}"))?,

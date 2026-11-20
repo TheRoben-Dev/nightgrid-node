@@ -153,6 +153,77 @@ pub fn process_names() -> std::collections::HashMap<u32, String> {
     out
 }
 
+/// The IPv4 neighbour (ARP) table: entries Windows has resolved (states
+/// probe to reachable; permanent ones are the host's own broadcast and
+/// multicast mappings) with a real Ethernet MAC, named by interface alias.
+pub fn neighbours() -> std::io::Result<Vec<crate::netwatch::Neigh>> {
+    use windows_sys::Win32::NetworkManagement::IpHelper::{FreeMibTable, GetIpNetTable2, MIB_IPNET_TABLE2};
+    use windows_sys::Win32::Networking::WinSock::{NlnsProbe, NlnsReachable};
+    let mut t: *mut MIB_IPNET_TABLE2 = std::ptr::null_mut();
+    // SAFETY: Windows allocates the table; freed below.
+    let r = unsafe { GetIpNetTable2(AF_INET, &mut t) };
+    if r != 0 {
+        return Err(std::io::Error::from_raw_os_error(r as i32));
+    }
+    let mut aliases = std::collections::HashMap::<u64, String>::new();
+    let mut out = Vec::new();
+    // SAFETY: `NumEntries` rows follow the header, as Windows wrote them.
+    unsafe {
+        let rows = std::slice::from_raw_parts((*t).Table.as_ptr(), (*t).NumEntries as usize);
+        for row in rows {
+            if !(NlnsProbe..=NlnsReachable).contains(&row.State) || row.PhysicalAddressLength != 6 {
+                continue;
+            }
+            let mac = &row.PhysicalAddress[..6];
+            let ip = Ipv4Addr::from(row.Address.Ipv4.sin_addr.S_un.S_addr.to_ne_bytes());
+            if mac.iter().all(|b| *b == 0) || mac.iter().all(|b| *b == 0xff) || ip.is_multicast() || ip.is_broadcast() {
+                continue;
+            }
+            let luid = row.InterfaceLuid.Value;
+            let iface = aliases.entry(luid).or_insert_with(|| alias(&row.InterfaceLuid)).clone();
+            let mac = mac.iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(":");
+            out.push(crate::netwatch::Neigh { ip: ip.to_string(), mac, iface });
+        }
+        FreeMibTable(t.cast());
+    }
+    Ok(out)
+}
+
+/// An interface's alias ("Ethernet 2"), or its LUID in hex.
+fn alias(luid: &windows_sys::Win32::NetworkManagement::Ndis::NET_LUID_LH) -> String {
+    use windows_sys::Win32::NetworkManagement::IpHelper::ConvertInterfaceLuidToAlias;
+    let mut buf = [0u16; 257];
+    // SAFETY: a buffer of 257 characters, as the docs ask for.
+    if unsafe { ConvertInterfaceLuidToAlias(luid, buf.as_mut_ptr(), buf.len()) } == 0 {
+        super::from_wide(&buf)
+    } else {
+        // SAFETY: the union's plain value.
+        format!("{:x}", unsafe { luid.Value })
+    }
+}
+
+/// The IPv4 default gateway: the 0.0.0.0/0 route with the lowest metric.
+pub fn gateway() -> Option<String> {
+    use windows_sys::Win32::NetworkManagement::IpHelper::{FreeMibTable, GetIpForwardTable2, MIB_IPFORWARD_TABLE2};
+    let mut t: *mut MIB_IPFORWARD_TABLE2 = std::ptr::null_mut();
+    // SAFETY: Windows allocates the table; freed below.
+    if unsafe { GetIpForwardTable2(AF_INET, &mut t) } != 0 {
+        return None;
+    }
+    // SAFETY: `NumEntries` rows follow the header, as Windows wrote them.
+    unsafe {
+        let rows = std::slice::from_raw_parts((*t).Table.as_ptr(), (*t).NumEntries as usize);
+        let best = rows
+            .iter()
+            .filter(|r| r.DestinationPrefix.PrefixLength == 0 && !r.Loopback)
+            .map(|r| (r.Metric, Ipv4Addr::from(r.NextHop.Ipv4.sin_addr.S_un.S_addr.to_ne_bytes())))
+            .filter(|(_, ip)| !ip.is_unspecified())
+            .min();
+        FreeMibTable(t.cast());
+        best.map(|(_, ip)| ip.to_string())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -165,5 +236,14 @@ mod tests {
         let names = process_names();
         assert!(names.values().any(|n| n.eq_ignore_ascii_case("svchost.exe")));
         assert!(names.values().any(|n| n.eq_ignore_ascii_case("System")) || names.contains_key(&4));
+    }
+
+    #[test]
+    fn reads_the_neighbour_table_and_gateway() {
+        // A runner has a default route; its gateway is usually resolved.
+        let gw = gateway();
+        assert!(gw.is_some());
+        let n = neighbours().unwrap();
+        assert!(n.iter().all(|x| x.mac.len() == 17 && !x.iface.is_empty()), "{n:?}");
     }
 }

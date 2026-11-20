@@ -116,6 +116,21 @@ if ($LASTEXITCODE -ne 0) { Fail 'doctor reported a failure' }
 & $bin events --count 5
 if ($LASTEXITCODE -ne 0) { Fail 'events' }
 
+Step 'ports with their processes, LAN devices and the gateway'
+$hello = '{"id":1,"method":"hello","params":{"protoMin":1,"protoMax":2,"client":"ci"}}'
+$deadline = (Get-Date).AddSeconds(90)
+do {
+    Start-Sleep -Seconds 5
+    $r = @(Bridge @($hello, '{"id":2,"method":"ports.list"}', '{"id":3,"method":"net.devices"}'))
+    $ports = ($r[1] | ConvertFrom-Json).result
+    $net = ($r[2] | ConvertFrom-Json).result
+} while (($null -eq $ports -or $ports.at -eq 0 -or $null -eq $net -or $net.at -eq 0) -and (Get-Date) -lt $deadline)
+$rpc = @($ports.listeners | Where-Object { $_.proto -eq 'tcp' -and $_.port -eq 135 })
+if ($rpc.Count -lt 1 -or -not $rpc[0].process) { Fail "ports.list: $($r[1])" }
+Write-Host "listeners $(@($ports.listeners).Count), 135 is $($rpc[0].process)"
+if ($null -eq $net -or $net.at -eq 0 -or -not $net.gateway) { Fail "net.devices: $($r[2])" }
+Write-Host "gateway $($net.gateway), devices $(@($net.devices).Count)"
+
 Step 'allow eventlog: failed network logons become login events'
 $j = & $bin allow eventlog --json
 Write-Host $j

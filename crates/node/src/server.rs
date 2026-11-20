@@ -243,7 +243,9 @@ fn access(shared: &Shared) -> std::collections::BTreeMap<String, String> {
         "off".into()
     };
     let journal = if shared.config.logins.enabled { crate::logins::journal_access() } else { "off" };
-    let netwatch = if !shared.config.network.enabled {
+    // The wire watch (rogue DHCP) needs a raw socket helper, which Windows
+    // doesn't have (it would need Npcap).
+    let netwatch = if !shared.config.network.enabled || cfg!(windows) {
         "off"
     } else if shared.dhcp.lock().unwrap_or_else(|e| e.into_inner()).watching(crate::daemon::now_secs()) {
         "ok"
@@ -411,6 +413,7 @@ pub const WINDOWS_CAPS: &[&str] = &[
     cap::LOGINS,
     cap::LOGS,
     cap::SECURITY,
+    cap::NET,
 ];
 
 /// What `hello` advertises on this platform: [`caps`] on Linux, the part
