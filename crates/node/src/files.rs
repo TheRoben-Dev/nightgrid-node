@@ -123,9 +123,15 @@ pub fn take(watch: &[PathBuf], previous: &Snapshot) -> Snapshot {
 
 fn sensitive(p: &Path) -> bool {
     let s = p.to_string_lossy();
-    ["ssh", "sudoers", "shadow", "passwd", "/group", "ld.so.preload", "pam.d", "/cron", "sudo.conf"]
+    if ["ssh", "sudoers", "shadow", "passwd", "/group", "ld.so.preload", "pam.d", "/cron", "sudo.conf"]
         .iter()
         .any(|k| s.contains(k))
+    {
+        return true;
+    }
+    // Windows paths are case-insensitive.
+    let l = s.to_ascii_lowercase();
+    cfg!(windows) && ["\\startup", "\\grouppolicy\\", "profile.ps1", "\\system32\\tasks"].iter().any(|k| l.contains(k))
 }
 
 /// `authorized_keys` of every login user in `/etc/passwd` text (uid 1000 and
@@ -161,12 +167,35 @@ pub fn authorized_keys(passwd: &str) -> Vec<PathBuf> {
 pub fn root_paths(cfg: &crate::config::FilesConfig, passwd: &str) -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = cfg.watch.clone();
     if cfg.baseline {
-        out.extend(crate::config::BASELINE_WATCH.iter().map(PathBuf::from));
-        out.extend(authorized_keys(passwd));
+        if cfg!(windows) {
+            out.extend(crate::config::windows_baseline());
+            out.extend(windows_authorized_keys());
+        } else {
+            out.extend(crate::config::BASELINE_WATCH.iter().map(PathBuf::from));
+            out.extend(authorized_keys(passwd));
+        }
     }
     let mut seen = std::collections::HashSet::new();
     out.retain(|p| seen.insert(p.clone()));
     out
+}
+
+/// Windows: `.ssh\authorized_keys` of every profile under `C:\Users`
+/// (OpenSSH reads it for accounts outside Administrators). Profiles the
+/// service may not look into are simply not seen.
+fn windows_authorized_keys() -> Vec<PathBuf> {
+    let users = std::env::var_os("SystemDrive")
+        .map(|d| PathBuf::from(format!("{}\\Users", d.to_string_lossy())))
+        .unwrap_or_else(|| PathBuf::from(r"C:\Users"));
+    let Ok(rd) = std::fs::read_dir(&users) else { return Vec::new() };
+    let mut names: Vec<String> = rd
+        .flatten()
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| !["Public", "Default", "Default User", "All Users"].contains(&n.as_str()))
+        .collect();
+    names.sort();
+    names.into_iter().take(MAX_USERS).map(|n| users.join(n).join(r".ssh\authorized_keys")).collect()
 }
 
 fn passwd() -> String {
@@ -485,5 +514,20 @@ bad:x:1003:1003::relative:/bin/sh
         cfg.baseline = false;
         assert_eq!(root_paths(&cfg, passwd), cfg.watch);
         assert!(sensitive(Path::new("/home/bob/.ssh/authorized_keys")) && sensitive(Path::new("/etc/pam.d/sshd")));
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn windows_watches_ssh_hosts_and_start_up_places() {
+        let cfg = crate::config::FilesConfig::default();
+        let all = root_paths(&cfg, "");
+        let has = |end: &str| all.iter().any(|p| p.to_string_lossy().to_ascii_lowercase().ends_with(end));
+        assert!(has(r"ssh\sshd_config") && has(r"etc\hosts") && has(r"programs\startup"), "{all:?}");
+        assert!(sensitive(Path::new(r"C:\ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp\x.lnk")));
+        assert!(!sensitive(Path::new(r"C:\Windows\System32\drivers\etc\hosts")));
+        // The hosts file is readable by everyone: it is hashed.
+        let snap = take(&all, &Snapshot::new());
+        let hosts = snap.iter().find(|(p, _)| p.to_string_lossy().to_ascii_lowercase().ends_with(r"etc\hosts"));
+        assert!(hosts.is_some_and(|(_, s)| s.sha.is_some()), "{snap:?}");
     }
 }

@@ -313,7 +313,7 @@ pub fn run(config: Config, paths: Paths) -> Result<(), String> {
     let sampler =
         Sampler::start(shared.clone(), Reader::system(), Duration::from_secs(config.metrics.interval_secs.into()))
             .map_err(|e| format!("sampler: {e}"))?;
-    let files = if cfg!(unix) && config.files.enabled && !config.files.watch.is_empty() {
+    let files = if config.files.enabled && !config.files.watch.is_empty() {
         Some(crate::files::FileWatcher::start(shared.clone()).map_err(|e| format!("file watcher: {e}"))?)
     } else {
         None

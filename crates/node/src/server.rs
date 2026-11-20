@@ -415,6 +415,7 @@ pub const WINDOWS_CAPS: &[&str] = &[
     cap::SECURITY,
     cap::NET,
     cap::USAGE,
+    cap::FILES,
 ];
 
 /// What `hello` advertises on this platform: [`caps`] on Linux, the part

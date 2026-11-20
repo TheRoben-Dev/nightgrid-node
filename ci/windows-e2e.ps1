@@ -146,6 +146,19 @@ $procs = @($u.items | Where-Object { $_.kind -eq 'process' })
 if ($procs.Count -lt 5) { Fail "usage processes: $($r[1])" }
 Write-Host "services $($svc.Count), top process $($procs[0].name) $($procs[0].cpu)%, node $([math]::Round($me[0].mem / 1MB, 1)) MB"
 
+Step 'a change to the hosts file becomes a file event'
+$hosts = Join-Path $env:SystemRoot 'System32\drivers\etc\hosts'
+$saved = [IO.File]::ReadAllBytes($hosts)
+Add-Content -Path $hosts -Value '# nightgrid ci'
+$deadline = (Get-Date).AddSeconds(60)
+do {
+    Start-Sleep -Seconds 5
+    $ev = (& $bin events --count 20) -join "`n"
+} while ($ev -notmatch 'changed .*hosts' -and (Get-Date) -lt $deadline)
+[IO.File]::WriteAllBytes($hosts, $saved)
+if ($ev -notmatch 'changed .*hosts') { Fail "no file event for hosts: $ev" }
+Write-Host ($ev -split "`n" | Select-String 'hosts' | Select-Object -First 1)
+
 Step 'allow eventlog: failed network logons become login events'
 $j = & $bin allow eventlog --json
 Write-Host $j
