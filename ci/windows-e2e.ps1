@@ -210,7 +210,8 @@ try {
 
 Step 'install again is an upgrade in place and keeps the node id'
 $id1 = $info.node.nodeId
-& $Exe install --json | Out-Null
+$re = (& $Exe install --json) -join ''
+if ($LASTEXITCODE -ne 0 -or $re -match 'firewall') { Fail "reinstall: $re" }
 if ($LASTEXITCODE -ne 0) { Fail 'reinstall' }
 $r = @(Bridge @('{"id":1,"method":"hello","params":{"protoMin":1,"protoMax":2,"client":"ci"}}'))
 if (($r[0] | ConvertFrom-Json).result.node.nodeId -ne $id1) { Fail 'node id changed on reinstall' }
@@ -230,9 +231,12 @@ Step 'uninstall keeps history; uninstall --purge removes everything'
 if ($LASTEXITCODE -ne 0) { Fail 'uninstall' }
 if (Get-Service nightgrid-node -ErrorAction SilentlyContinue) { Fail 'service still there' }
 if (-not (Test-Path (Join-Path $etc 'data\node.db'))) { Fail 'history removed by a plain uninstall' }
-& $Exe install --json | Out-Null
-& $Exe uninstall --purge --json
+$re = (& $Exe install --json) -join ''
+if ($LASTEXITCODE -ne 0 -or $re -notmatch 'blocked all network traffic') { Fail "install after uninstall: $re" }
+$pu = (& $Exe uninstall --purge --json) -join ''
+Write-Host $pu
 if ($LASTEXITCODE -ne 0) { Fail 'uninstall --purge' }
+if ($pu -match '"warnings":\["') { Fail "uninstall --purge warned: $pu" }
 if (Test-Path $etc) { Fail "$etc still there" }
 if (@(Get-NetFirewallRule -Group 'Nightgrid Node' -ErrorAction SilentlyContinue).Count -ne 0) { Fail 'firewall rules left' }
 if (Get-LocalGroup -Name 'Nightgrid Node Users' -ErrorAction SilentlyContinue) { Fail 'group left' }

@@ -623,7 +623,8 @@ pub fn firewall(on: bool, bin: &Path) -> Result<(), String> {
             "$ErrorActionPreference='Continue'\n\
              $fw = New-Object -ComObject HNetCfg.FwPolicy2\n\
              try {{ $fw.ServiceRestriction.RestrictService('{SERVICE}', '{exe}', $false, $false) }} catch {{}}\n\
-             Get-NetFirewallRule -Group '{FIREWALL_GROUP}' -ErrorAction SilentlyContinue | Remove-NetFirewallRule\n"
+             Get-NetFirewallRule -Group '{FIREWALL_GROUP}' -ErrorAction SilentlyContinue | Remove-NetFirewallRule\n\
+             exit 0\n"
         )
     };
     powershell(&script).map(|_| ())
@@ -642,7 +643,8 @@ pub fn firewall_restricted() -> Option<bool> {
 /// Runs a short PowerShell script (Windows PowerShell 5.1, built in).
 pub fn powershell(script: &str) -> Result<String, String> {
     use std::os::windows::process::CommandExt;
-    let encoded = encode_utf16_base64(script);
+    // No progress records: they arrive on stderr as CLIXML.
+    let encoded = encode_utf16_base64(&format!("$ProgressPreference='SilentlyContinue'\n{script}"));
     let out = std::process::Command::new("powershell.exe")
         .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", &encoded])
         .creation_flags(0x0800_0000)
@@ -651,7 +653,8 @@ pub fn powershell(script: &str) -> Result<String, String> {
         .map_err(|e| format!("powershell: {e}"))?;
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr);
-        let first = err.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("failed");
+        let first =
+            err.lines().map(str::trim).find(|l| !l.is_empty() && !l.starts_with("#< CLIXML")).unwrap_or("failed");
         return Err(first.to_owned());
     }
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
