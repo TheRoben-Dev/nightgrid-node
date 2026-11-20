@@ -690,10 +690,16 @@ impl Config {
         if self.actions.units.len() > 64 {
             return Err("actions.units takes at most 64 units".into());
         }
-        if let Some(u) = self.actions.units.iter().find(|u| !nightgrid_node_proto::action::valid_unit(u)) {
-            return Err(format!(
-                "actions.units: {u:?} is not a full unit name like nginx.service (the node's own units can't be listed)"
-            ));
+        if let Some(u) = self.actions.units.iter().find(|u| !crate::fixes::valid_unit(u)) {
+            return Err(if cfg!(windows) {
+                format!(
+                    "actions.units: {u:?} is not a service name like W32Time (the node's own services can't be listed)"
+                )
+            } else {
+                format!(
+                    "actions.units: {u:?} is not a full unit name like nginx.service (the node's own units can't be listed)"
+                )
+            });
         }
         if !(30..=3600).contains(&self.logs.interval_secs) {
             return Err("logs.interval_secs must be 30-3600".into());

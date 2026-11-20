@@ -288,12 +288,16 @@ fn windows_command(a: &Args) -> Option<Result<(), String>> {
         "allow" | "deny" if matches!(a.rest.first().map(String::as_str), Some("eventlog" | "journal")) => {
             win::install::eventlog(a.cmd == "allow", a.no_start).map(|r| print_report(&r, a.json))
         }
+        "allow" | "deny" if a.rest.first().map(String::as_str) == Some("helper") => {
+            win::helper::allow(a.cmd == "allow").map(|r| print_report(&r, a.json))
+        }
         "allow" | "deny" | "serve" => {
             Err(not_on_windows(format!("nightgrid-node {} {}", a.cmd, a.rest.join(" ")).trim_end()))
         }
         "fix" | "fix-apply" => Err(not_on_windows("the fix menu")),
         "upgrade" => Err(not_on_windows("upgrade (run install with the new binary for now)")),
-        "helper" | "health-helper" => Err(not_on_windows("the helper service")),
+        "helper" => win::helper::serve(&a.config),
+        "health-helper" => Err(not_on_windows("the health helper")),
         "checker" | "peer" | "status-page" | "netwatch" => Err(not_on_windows(&a.cmd)),
         _ => return None,
     })

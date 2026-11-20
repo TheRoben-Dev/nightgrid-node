@@ -285,7 +285,7 @@ impl LocalFixes {
         if self.units.len() > 64 {
             return Err("units takes at most 64 units".into());
         }
-        if let Some(u) = self.units.iter().find(|u| !action::valid_unit(u)) {
+        if let Some(u) = self.units.iter().find(|u| !valid_unit(u)) {
             return Err(format!("units: {u:?} is not a full unit name like nginx.service"));
         }
         if !valid_size(&self.journal_keep) {
@@ -363,9 +363,19 @@ pub fn allowed(config: &Config, local: &LocalFixes, a: &str) -> bool {
     config.actions.allow.iter().chain(&local.allow).any(|x| x == a)
 }
 
+/// A unit the helper may act on: a systemd unit name on Linux, a service
+/// name on Windows (`W32Time`), never one of the node's own.
+pub fn valid_unit(name: &str) -> bool {
+    if cfg!(windows) {
+        action::valid_service(name)
+    } else {
+        action::valid_unit(name)
+    }
+}
+
 /// Whether root listed the unit, in `config.toml` or `fixes.toml`.
 pub fn unit_listed(config: &Config, local: &LocalFixes, unit: &str) -> bool {
-    action::valid_unit(unit) && config.actions.units.iter().chain(&local.units).any(|u| u == unit)
+    valid_unit(unit) && config.actions.units.iter().chain(&local.units).any(|u| u == unit)
 }
 
 /// Every unit root listed, without repeats.

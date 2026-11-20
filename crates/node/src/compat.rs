@@ -229,28 +229,78 @@ pub fn disk_usage(path: &std::path::Path) -> Option<(u64, u64, u64)> {
 #[cfg(unix)]
 pub use std::os::unix::net::UnixStream as LocalStream;
 
+/// A pipe client with the parts of `UnixStream` the node uses. A read
+/// timeout is honoured by waiting for data with `PeekNamedPipe`, since a
+/// synchronous pipe read can't time out by itself.
 #[cfg(windows)]
-pub struct LocalStream(std::fs::File);
+pub struct LocalStream(std::fs::File, std::sync::Mutex<Option<std::time::Duration>>);
 
 #[cfg(windows)]
 impl LocalStream {
     pub fn connect(path: impl AsRef<std::path::Path>) -> std::io::Result<Self> {
         let name = path.as_ref().to_string_lossy().into_owned();
-        crate::win::pipe::open_sync(&name).map(Self)
+        crate::win::pipe::open_sync(&name).map(Self::from_file)
     }
-    pub fn set_read_timeout(&self, _t: Option<std::time::Duration>) -> std::io::Result<()> {
+    pub fn from_file(f: std::fs::File) -> Self {
+        Self(f, std::sync::Mutex::new(None))
+    }
+    pub fn set_read_timeout(&self, t: Option<std::time::Duration>) -> std::io::Result<()> {
+        *self.1.lock().unwrap_or_else(|e| e.into_inner()) = t;
         Ok(())
     }
     pub fn set_write_timeout(&self, _t: Option<std::time::Duration>) -> std::io::Result<()> {
         Ok(())
+    }
+
+    /// Waits until the pipe has data, has closed, or the timeout passed.
+    fn wait_readable(&self) -> std::io::Result<()> {
+        use std::os::windows::io::AsRawHandle;
+        let Some(t) = *self.1.lock().unwrap_or_else(|e| e.into_inner()) else { return Ok(()) };
+        let until = std::time::Instant::now() + t;
+        let mut nap = 1u64;
+        loop {
+            let mut avail = 0u32;
+            // SAFETY: a pipe handle we own; only the byte count is asked for.
+            let ok = unsafe {
+                windows_sys::Win32::System::Pipes::PeekNamedPipe(
+                    self.0.as_raw_handle() as _,
+                    std::ptr::null_mut(),
+                    0,
+                    std::ptr::null_mut(),
+                    &mut avail,
+                    std::ptr::null_mut(),
+                )
+            };
+            // A failed peek (closed pipe) is left to the read to report.
+            if ok == 0 || avail > 0 {
+                return Ok(());
+            }
+            if std::time::Instant::now() >= until {
+                return Err(std::io::ErrorKind::TimedOut.into());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(nap));
+            nap = (nap * 2).min(50);
+        }
     }
 }
 
 #[cfg(windows)]
 impl std::io::Read for LocalStream {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.wait_readable()?;
         match self.0.read(buf) {
             // A closed pipe is the end of the stream, like a closed socket.
+            Err(e) if e.raw_os_error() == Some(109) => Ok(0),
+            r => r,
+        }
+    }
+}
+
+#[cfg(windows)]
+impl std::io::Read for &LocalStream {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.wait_readable()?;
+        match (&self.0).read(buf) {
             Err(e) if e.raw_os_error() == Some(109) => Ok(0),
             r => r,
         }

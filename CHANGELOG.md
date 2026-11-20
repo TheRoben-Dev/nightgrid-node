@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.31.0 · W2a: Windows admin helper, service and power actions (2026-11-20)
+
+Additive only: no frozen method, field, frame or link request changed (the frozen protocol test passes as it was). A Windows node now also advertises `actions`. App spec [0026](docs/app-integration/0026-windows-node-w2a.md). Decisions N-080 to N-082.
+
+- **`allow helper` / `deny helper` on Windows**: the service `nightgrid-node-helper` (LocalSystem, demand start, only the shutdown privilege, no network). The node may start it and nothing more; it stops itself after three idle minutes. `uninstall` removes it, `install` stops it before replacing the binary, and `doctor` has a `helper` finding.
+- **Service actions on Windows**: `unit.restart`, `unit.start` and `unit.stop` on services listed in `[actions] units` (service names such as `W32Time`), through the Service Control Manager.
+- **Power actions on Windows**: `power.reboot` and `power.poweroff` run `shutdown.exe` a minute ahead with a planned reason code; an administrator cancels with `shutdown /a`.
+- Blocks, rollbacks and the local fixes are left out of `actions.policy` on Windows, and refused, until W2b.
+- The pipe client now honours read timeouts on Windows, so a helper or node that stops answering can't hold a request forever.
+- The Windows CI end-to-end test now allows the helper, checks its account, privileges, DACLs and hardening rule, restarts `W32Time` through `actions.run`, sees an unlisted service refused, and denies the helper again.
+
 ## 0.30.0 · W1: Windows logins, logs, ports, LAN, usage and files (2026-11-20)
 
 Additive only: no frozen method, field, frame or link request changed (the frozen protocol test passes as it was). A Windows node now also advertises `logins`, `logs`, `security`, `net`, `usage` and `files`. App spec [0025](docs/app-integration/0025-windows-node-w1.md). Decisions N-075 to N-079.
@@ -13,6 +24,7 @@ Additive only: no frozen method, field, frame or link request changed (the froze
 - **Usage on Windows**: CPU, working set and I/O per service and for the busiest process names, read from the system process list without opening any process. Services that share a process are named together.
 - **Watched files on Windows**: the defaults are the OpenSSH server's config, administrators' keys and the hosts file. The baseline adds start-up folders, Group Policy scripts, the machine PowerShell profiles, scheduled tasks and users' `authorized_keys`.
 - The Windows CI end-to-end test now also checks failed network logons becoming login events, ports with processes, the gateway, usage per service, and a hosts-file change becoming a file event.
+
 ## 0.29.1 · Memory: answers written straight to text (2026-11-20)
 
 - **Lower memory with a full history.** The node built every answer as an in-memory JSON tree before sending it, about eight times the size of the text: a 5 000-point `metrics.sync` page (1.6 MB) briefly took about 13 MB. The release builds' musl allocator keeps such freed memory fragmented, so RSS climbed with each big sync, to 37 to 55 MB on hosts in use and 59 MB in a test with 260 full syncs. It was not a leak (valgrind finds nothing lost, and RSS falls back between peaks). Answers are now written straight to text; the same test ends at about 12 MB with a 14.5 MB peak (11 to 18 MB on 32-bit).

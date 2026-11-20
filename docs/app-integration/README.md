@@ -29,6 +29,7 @@ The Nightgrid app repository is developed elsewhere and is read-only from here. 
 | [0023 · Links on the LAN, hub on several addresses, hub doctor, event kinds](0023-lan-links-and-hub-doctor.md) | 0.28.0 | proposed |
 | [0024 · Nightgrid Node on Windows Server](0024-windows-node.md) | 0.29.0 (W0) | proposed |
 | [0025 · Windows node W1: logins, logs, ports, LAN, usage, files](0025-windows-node-w1.md) | 0.30.0 (W1) | proposed |
+| [0026 · Windows node W2a: admin helper, service and power actions](0026-windows-node-w2a.md) | 0.31.0 (W2a) | proposed |
 
 Rules every spec follows:
 

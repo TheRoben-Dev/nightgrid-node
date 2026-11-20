@@ -182,6 +182,62 @@ if ($ev -notmatch 'failed login') {
 }
 Write-Host ($ev -split "`n" | Select-String 'failed login' | Select-Object -First 1)
 
+Step 'allow helper: a listed service restarts through the admin helper'
+$cfg = Join-Path $etc 'config.toml'
+Add-Content -Path $cfg -Value "`n[actions]`nallow = [`"unit.restart`", `"power.reboot`"]`nunits = [`"W32Time`"]`n"
+Set-Service W32Time -StartupType Manual
+Start-Service W32Time
+Restart-Service nightgrid-node
+$j = (& $bin allow helper --json) -join ''
+Write-Host $j
+if ($LASTEXITCODE -ne 0) { Fail 'allow helper' }
+$h = Get-CimInstance Win32_Service -Filter "Name='nightgrid-node-helper'"
+if ($null -eq $h -or $h.StartMode -ne 'Manual' -or $h.StartName -ne 'LocalSystem') { Fail "helper service: $($h | Out-String)" }
+$privs = (sc.exe qprivs nightgrid-node-helper) -join ' '
+if ($privs -notmatch 'SeShutdownPrivilege' -or $privs -match 'SeDebug|SeTcb|SeBackup|SeImpersonate') { Fail "helper privileges: $privs" }
+if (-not $fw.ServiceRestriction.ServiceRestricted('nightgrid-node-helper', $bin)) { Fail 'no hardening rule for the helper' }
+$sd = (sc.exe sdshow nightgrid-node-helper) -join ''
+$nodeSid = (New-Object Security.Principal.NTAccount('NT SERVICE\nightgrid-node')).Translate([Security.Principal.SecurityIdentifier]).Value
+if ($sd -notmatch [regex]::Escape("(A;;LCRP;;;$nodeSid)")) { Fail "helper service DACL: $sd" }
+$doc = (& $bin doctor --json) -join ''
+if ($doc -notmatch '"check":"helper","level":"ok"') { Fail "doctor after allow helper: $doc" }
+$t0 = Get-Date
+$deadline = (Get-Date).AddSeconds(30)
+do {
+    Start-Sleep -Seconds 2
+    $r = @(Bridge @($hello, '{"id":2,"method":"actions.policy"}'))
+    $pol = ($r[1] | ConvertFrom-Json).result
+} while (($null -eq $pol -or -not $pol.helper) -and (Get-Date) -lt $deadline)
+if (-not $pol.helper -or $pol.allowed -notcontains 'unit.restart' -or $pol.units -notcontains 'W32Time') { Fail "actions.policy: $($r[1])" }
+if ($pol.allowed -contains 'firewall.block') { Fail "Windows offers firewall.block: $($r[1])" }
+$r = @(Bridge @($hello,
+    '{"id":2,"method":"actions.run","params":{"action":"unit.restart","target":"W32Time"}}',
+    '{"id":3,"method":"actions.run","params":{"action":"unit.restart","target":"Spooler"}}',
+    '{"id":4,"method":"actions.run","params":{"action":"power.reboot","dryRun":true}}'))
+Write-Host ($r -join "`n")
+$a = ($r[1] | ConvertFrom-Json).result
+if ($a.outcome -ne 'ok' -or $a.detail -notmatch 'restarted W32Time') { Fail "unit.restart W32Time: $($r[1])" }
+$stopped = @(Get-WinEvent -FilterHashtable @{ LogName = 'System'; ProviderName = 'Service Control Manager'; Id = 7036; StartTime = $t0 } -ErrorAction SilentlyContinue |
+    Where-Object { $_.Message -match 'Windows Time.*stopped' })
+if ((Get-Service W32Time).Status -ne 'Running' -or $stopped.Count -lt 1) { Fail "W32Time was not restarted (stops seen: $($stopped.Count))" }
+if (($r[2] | ConvertFrom-Json).result.outcome -ne 'refused') { Fail "an unlisted service was not refused: $($r[2])" }
+if (($r[3] | ConvertFrom-Json).result.outcome -ne 'dryRun') { Fail "power.reboot dry run: $($r[3])" }
+if ((Get-Service nightgrid-node-helper).Status -ne 'Running') { Fail 'the node did not start the helper' }
+
+Step 'only the node and administrators may use the helper pipe'
+try { $pipeSd = [IO.Directory]::GetAccessControl('\\.\pipe\nightgrid-node-helper') } catch { Fail "read the helper pipe's ACL: $_" }
+$who = $pipeSd.Access | ForEach-Object { $_.IdentityReference.Value }
+Write-Host "helper pipe: $($who -join ', ')"
+if ($who -match 'Users|Everyone|Authenticated|Nightgrid Node Users') { Fail "helper pipe ACL: $($who -join ', ')" }
+
+Step 'deny helper removes it; actions say so'
+$j = (& $bin deny helper --json) -join ''
+if ($LASTEXITCODE -ne 0 -or (Get-Service nightgrid-node-helper -ErrorAction SilentlyContinue)) { Fail "deny helper: $j" }
+$r = @(Bridge @($hello, '{"id":2,"method":"actions.run","params":{"action":"unit.restart","target":"W32Time"}}'))
+if (($r[1] | ConvertFrom-Json).result.outcome -ne 'refused') { Fail "unit.restart without the helper: $($r[1])" }
+& $bin allow helper --json | Out-Null
+if ($LASTEXITCODE -ne 0) { Fail 'allow helper again' }
+
 Step 'an account outside the group is refused'
 $pw = 'Ng-' + [guid]::NewGuid().ToString('N').Substring(0, 16) + '!a1'
 $sec = ConvertTo-SecureString $pw -AsPlainText -Force
@@ -230,6 +286,7 @@ Step 'uninstall keeps history; uninstall --purge removes everything'
 & $Exe uninstall --json
 if ($LASTEXITCODE -ne 0) { Fail 'uninstall' }
 if (Get-Service nightgrid-node -ErrorAction SilentlyContinue) { Fail 'service still there' }
+if (Get-Service nightgrid-node-helper -ErrorAction SilentlyContinue) { Fail 'helper service still there' }
 if (-not (Test-Path (Join-Path $etc 'data\node.db'))) { Fail 'history removed by a plain uninstall' }
 $re = (& $Exe install --json) -join ''
 if ($LASTEXITCODE -ne 0 -or $re -notmatch 'blocked all network traffic') {

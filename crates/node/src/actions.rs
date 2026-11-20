@@ -32,7 +32,7 @@ pub fn policy(config: &Config, local: &LocalFixes) -> ActionsPolicy {
     ActionsPolicy {
         allowed: crate::fixes::allow_list(config, local)
             .into_iter()
-            .filter(|a| action::ALL.contains(&a.as_str()))
+            .filter(|a| action::ALL.contains(&a.as_str()) && crate::helper::supported(a))
             .collect(),
         known: action::ALL.iter().map(|s| (*s).to_owned()).collect(),
         max_per_hour: config.actions.max_per_hour,
@@ -222,6 +222,9 @@ fn check(shared: &Shared, req: &ActionRequest, now: i64) -> std::result::Result<
     }
     if req.action == action::FILES_ROLLBACK {
         return Err("files.rollback runs through changes.begin".into());
+    }
+    if !crate::helper::supported(&req.action) {
+        return Err(format!("{} is not available on Windows yet", req.action));
     }
     // Root may just have allowed it from the menu.
     crate::heal::refresh_fixes(shared);

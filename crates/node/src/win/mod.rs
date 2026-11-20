@@ -4,6 +4,7 @@
 pub mod acl;
 pub mod doctor;
 pub mod eventlog;
+pub mod helper;
 pub mod install;
 pub mod net;
 pub mod pipe;

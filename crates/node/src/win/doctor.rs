@@ -106,6 +106,19 @@ pub fn run(config_path: &Path, socket: Option<&Path>) -> Report {
         None => {}
     }
 
+    // Admin helper (actions).
+    match super::scm::status(super::helper::SERVICE) {
+        Ok(Some(s)) => {
+            r.add("helper", Level::Ok, format!("installed, starts when the node needs it ({} now)", s.word()))
+        }
+        Ok(None) => r.add(
+            "helper",
+            Level::Info,
+            "service and power actions are off (an administrator can run: nightgrid-node allow helper)",
+        ),
+        Err(_) => {}
+    }
+
     // Network restriction.
     if crate::compat::am_root() {
         match super::install::firewall_restricted() {
