@@ -274,6 +274,30 @@ if ($hl.updates) { Write-Host "updates: $(@($hl.updates.report.updates).Count) p
 $doc = (& $bin doctor --json) -join ''
 if ($doc -notmatch '"check":"health","level":"ok"') { Fail "doctor after allow health: $doc" }
 
+Step 'UPS on USB: "battery" reads through the health helper and the guard follows it'
+$c = Get-Content $cfg -Raw
+if ($c -notmatch '(?m)^ups = \[\]') { Fail "no ups line in the template: $c" }
+$c = $c -replace '(?m)^ups = \[\]', 'ups = ["battery"]'
+$c += "`n[ups]`nshutdown = true`ndry_run = true`nlow_battery = true`n"
+Set-Content -Path $cfg -Value $c -NoNewline
+Restart-Service nightgrid-node
+$deadline = (Get-Date).AddSeconds(90)
+do {
+    Start-Sleep -Seconds 5
+    $r = @(Bridge @($hello, '{"id":2,"method":"health.latest"}', '{"id":3,"method":"ups.guard"}'))
+    $hl = ($r[1] | ConvertFrom-Json).result
+} while (($null -eq $hl -or @($hl.ups).Count -lt 1) -and (Get-Date) -lt $deadline)
+Write-Host ($r -join "`n")
+if (-not $w.result.caps.ups) { Fail 'does not advertise ups' }
+$u = @($hl.ups)[0]
+if ($null -eq $u -or $u.target -ne 'battery') { Fail "no battery reading: $($r[1])" }
+$hasBattery = @(Get-CimInstance Win32_Battery).Count -gt 0
+if ($hasBattery) {
+    if ($u.reading.error) { Fail "battery read failed on a host with a battery: $($r[1])" }
+} elseif ($u.reading.error -notmatch 'no UPS or battery') { Fail "a host without a battery should say so: $($r[1])" }
+$g = ($r[2] | ConvertFrom-Json).result
+if (-not $g.enabled -or -not $g.dryRun -or $g.target -ne 'battery') { Fail "ups.guard: $($r[2])" }
+
 Step 'an account outside the group is refused'
 $pw = 'Ng-' + [guid]::NewGuid().ToString('N').Substring(0, 16) + '!a1'
 $sec = ConvertTo-SecureString $pw -AsPlainText -Force

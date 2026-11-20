@@ -32,6 +32,7 @@ The Nightgrid app repository is developed elsewhere and is read-only from here. 
 | [0026 · Windows node W2a: admin helper, service and power actions](0026-windows-node-w2a.md) | 0.31.0 (W2a) | proposed |
 | [0027 · Windows node W2b: upgrade](0027-windows-node-upgrade.md) | 0.32.0 (W2b) | proposed |
 | [0028 · Windows node W2c: health](0028-windows-node-health.md) | 0.33.0 (W2c) | proposed |
+| [0029 · Windows node W2d: UPS](0029-windows-node-ups.md) | 0.34.0 (W2d) | proposed |
 
 Rules every spec follows:
 

@@ -370,3 +370,95 @@ mod tests {
         assert_eq!(p.progress, Some(42.0));
     }
 }
+
+// NODE: the battery read is the node's own (W2d); the app has no Windows UPS read.
+
+/// The UPS target that means "the UPS on this host's USB port": Windows
+/// shows a USB HID UPS as a battery (`Win32_Battery`).
+pub const BATTERY_TARGET: &str = "battery";
+
+pub const BATTERY: &str = r#"$ErrorActionPreference = 'Stop'
+$out = @(Get-CimInstance -ClassName Win32_Battery | ForEach-Object {
+  [ordered]@{ name = [string]$_.Name; device = [string]$_.DeviceID; state = [int]$_.BatteryStatus; charge = $_.EstimatedChargeRemaining; minutes = $_.EstimatedRunTime; status = [string]$_.Status }
+})
+ConvertTo-Json -InputObject $out -Depth 2 -Compress"#;
+
+#[derive(Deserialize)]
+struct RawBattery {
+    name: Option<String>,
+    device: Option<String>,
+    state: i64,
+    charge: Option<i64>,
+    minutes: Option<i64>,
+    status: Option<String>,
+}
+
+/// Turns the battery read into `upsc`-style `key: value` lines, so the UPS
+/// reading, its alerts and the shutdown guard are the same as with NUT.
+/// `BatteryStatus`: 1 discharging, 2 on AC, 3 fully charged, 4 low,
+/// 5 critical, 6–9 charging (8 and 9 also low or critical), 11 partly charged.
+pub fn battery_text(json: &str) -> Result<String, String> {
+    let all: Vec<RawBattery> = serde_json::from_str(json.trim()).map_err(|e| format!("battery read: {e}"))?;
+    let Some(b) = all.first() else {
+        return Ok("Error: Windows sees no UPS or battery on this host (connect the UPS's USB cable)\n".into());
+    };
+    let mut flags: Vec<&str> = match b.state {
+        1 | 4 | 5 => vec!["OB"],
+        _ => vec!["OL"],
+    };
+    if matches!(b.state, 4 | 5 | 8 | 9) {
+        flags.push("LB");
+    }
+    if matches!(b.state, 6..=9) {
+        flags.push("CHRG");
+    }
+    if matches!(b.status.as_deref(), Some("Degraded" | "Pred Fail")) {
+        flags.push("RB");
+    }
+    let mut out = format!("ups.status: {}\n", flags.join(" "));
+    if let Some(c) = b.charge.filter(|c| (0..=100).contains(c)) {
+        out.push_str(&format!("battery.charge: {c}\n"));
+    }
+    // 71582788 minutes is Windows' "unknown" (on AC); only a real estimate counts.
+    if let Some(m) = b.minutes.filter(|m| (0..=100_000).contains(m)) {
+        out.push_str(&format!("battery.runtime: {}\n", m * 60));
+    }
+    let model = b.name.as_deref().filter(|n| !n.trim().is_empty()).or(b.device.as_deref());
+    if let Some(m) = model.map(str::trim).filter(|m| !m.is_empty()) {
+        out.push_str(&format!("device.model: {m}\n"));
+    }
+    Ok(out)
+}
+
+#[cfg(test)]
+mod battery_tests {
+    use super::*;
+    use crate::health::ups::parse;
+
+    #[test]
+    fn battery_reads_like_upsc() {
+        let r = parse(
+            &battery_text(
+                r#"[{"name":"Back-UPS ES 700","device":"3B1234","state":1,"charge":64,"minutes":11,"status":"OK"}]"#,
+            )
+            .unwrap(),
+        );
+        assert!(r.on_battery && !r.low_battery && !r.replace_battery && r.error.is_none());
+        assert_eq!((r.charge, r.runtime, r.model.as_deref()), (Some(64.0), Some(660), Some("Back-UPS ES 700")));
+
+        let r = parse(
+            &battery_text(r#"[{"name":"","device":"X","state":5,"charge":4,"minutes":null,"status":"Pred Fail"}]"#)
+                .unwrap(),
+        );
+        assert!(r.on_battery && r.low_battery && r.replace_battery && r.runtime.is_none());
+
+        let r = parse(
+            &battery_text(r#"[{"name":"UPS","device":"X","state":2,"charge":100,"minutes":71582788,"status":"OK"}]"#)
+                .unwrap(),
+        );
+        assert!(!r.on_battery && r.runtime.is_none() && r.status == ["OL"]);
+
+        let r = parse(&battery_text("[]").unwrap());
+        assert!(r.error.unwrap().contains("no UPS or battery"));
+    }
+}
