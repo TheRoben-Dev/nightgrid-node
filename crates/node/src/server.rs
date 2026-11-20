@@ -5,10 +5,16 @@
 //! an SSH user who is a member of that group (through `nightgrid-node bridge`
 //! or SSH streamlocal forwarding). Nothing listens on the network. Every
 //! connection's peer uid is logged.
+//!
+//! On Windows the same connections arrive over a named pipe
+//! ([`crate::win::pipe`]), and the "uid" is the caller's account SID.
 
+#[cfg(unix)]
+use crate::compat::fs::PermissionsExt;
 use std::collections::BTreeSet;
+#[cfg(unix)]
 use std::future::Future;
-use std::os::unix::fs::PermissionsExt;
+#[cfg(unix)]
 use std::path::Path;
 use std::sync::Arc;
 
@@ -21,14 +27,18 @@ use nightgrid_node_proto::{
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::Value;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
-use tokio::net::{UnixListener, UnixStream};
-use tokio::sync::{broadcast, Semaphore};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
+#[cfg(unix)]
+use tokio::net::UnixListener;
+use tokio::sync::broadcast;
+#[cfg(unix)]
+use tokio::sync::Semaphore;
 
 use crate::daemon::{now_secs, rss_bytes, Shared};
 use crate::store::{HOURLY_DAYS, ROLLUP_DAYS};
 
 /// Binds the socket, replacing a stale one, with mode 0660.
+#[cfg(unix)]
 pub fn bind(path: &Path) -> Result<UnixListener, String> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
@@ -45,6 +55,7 @@ pub fn bind(path: &Path) -> Result<UnixListener, String> {
 }
 
 /// Serves until `shutdown` completes.
+#[cfg(unix)]
 pub async fn serve(listener: UnixListener, shared: Arc<Shared>, shutdown: impl Future<Output = ()>) {
     let slots = Arc::new(Semaphore::new(shared.config.server.max_connections as usize));
     tokio::pin!(shutdown);
@@ -61,7 +72,8 @@ pub async fn serve(listener: UnixListener, shared: Arc<Shared>, shutdown: impl F
                 tokio::spawn(async move {
                     let uid = stream.peer_cred().map(|c| c.uid().to_string()).unwrap_or_else(|_| "?".into());
                     crate::debug!("client connected (uid {uid})");
-                    if let Err(e) = connection(stream, &shared, uid.clone()).await {
+                    let root = uid == "0";
+                    if let Err(e) = connection(stream, &shared, uid.clone(), root).await {
                         crate::debug!("client (uid {uid}): {e}");
                     }
                     crate::debug!("client disconnected (uid {uid})");
@@ -122,10 +134,18 @@ fn pushed<T: Serialize>(name: &str, r: Result<T, broadcast::error::RecvError>) -
     }
 }
 
-async fn connection(stream: UnixStream, shared: &Arc<Shared>, uid: String) -> std::io::Result<()> {
-    let (r, mut w) = stream.into_split();
+/// Serves one connection: `uid` names the caller for the log and the
+/// own-account checks, `root` says it is root (an elevated administrator or
+/// SYSTEM on Windows).
+pub(crate) async fn connection<S: AsyncRead + AsyncWrite>(
+    stream: S,
+    shared: &Arc<Shared>,
+    uid: String,
+    root: bool,
+) -> std::io::Result<()> {
+    let (r, mut w) = tokio::io::split(stream);
     let mut r = BufReader::with_capacity(16 * 1024, r);
-    let mut session = Session { uid, ..Default::default() };
+    let mut session = Session { uid, root, ..Default::default() };
     let mut subs = Subs::default();
     let mut buf = Vec::new();
     loop {
@@ -178,7 +198,7 @@ async fn connection(stream: UnixStream, shared: &Arc<Shared>, uid: String) -> st
     }
 }
 
-async fn send(w: &mut tokio::net::unix::OwnedWriteHalf, r: &impl Serialize) -> std::io::Result<()> {
+async fn send<W: AsyncWrite + Unpin>(w: &mut W, r: &impl Serialize) -> std::io::Result<()> {
     let mut line = serde_json::to_vec(r).unwrap_or_default();
     line.push(b'\n');
     w.write_all(&line).await
@@ -204,8 +224,10 @@ fn slow(line: &[u8]) -> bool {
 pub struct Session {
     /// The negotiated version, once `hello` succeeded.
     pub proto: Option<u32>,
-    /// The peer's uid, for the log.
+    /// The peer's uid (Windows: account SID), for the log.
     pub uid: String,
+    /// The peer is root (Windows: an elevated administrator or SYSTEM).
+    pub root: bool,
     /// What the client called itself in `hello`.
     pub client: String,
     /// Streams subscribed to (protocol 2).
@@ -375,6 +397,21 @@ pub fn caps() -> Caps {
     .collect()
 }
 
+/// Capabilities the Windows node implements so far (docs/WINDOWS.md); the
+/// app uses its SSH path for the rest, as with an older node.
+pub const WINDOWS_CAPS: &[&str] =
+    &[cap::NODE, cap::METRICS, cap::METRICS_SYNC, cap::EVENTS, cap::UPTIME, cap::DISK, cap::ALERTS, cap::SUMMARY];
+
+/// What `hello` advertises on this platform: [`caps`] on Linux, the part
+/// of it in [`WINDOWS_CAPS`] on Windows.
+pub fn advertised() -> Caps {
+    let mut c = caps();
+    if cfg!(windows) {
+        c.retain(|k, _| WINDOWS_CAPS.contains(&k.as_str()));
+    }
+    c
+}
+
 fn params<T: DeserializeOwned>(v: &Value) -> Result<T, Response> {
     let v = if v.is_null() { Value::Object(Default::default()) } else { v.clone() };
     serde_json::from_value(v).map_err(|e| Response::err(0, ErrorCode::BadRequest, format!("params: {e}")))
@@ -411,13 +448,12 @@ fn dispatch(shared: &Shared, session: &mut Session, req: &Request) -> Result<Res
         let client: String = h.client.chars().filter(|c| !c.is_control()).take(80).collect();
         session.client = client.clone();
         // The node's own units (link, check runner, helpers) connect often.
-        // SAFETY: geteuid has no preconditions.
-        if session.uid.parse::<u32>().ok() == Some(unsafe { libc::geteuid() }) && client.starts_with("nightgrid-node") {
+        if crate::compat::is_self(&session.uid) && client.starts_with("nightgrid-node") {
             crate::debug!("hello from {client:?} as uid {} (protocol {v})", session.uid);
         } else {
             crate::info!("hello from {client:?} as uid {} (protocol {v})", session.uid);
         }
-        return Ok(Response::ok(0, Welcome { proto: v, node: shared.identity.clone(), caps: caps() }));
+        return Ok(Response::ok(0, Welcome { proto: v, node: shared.identity.clone(), caps: advertised() }));
     }
     if session.proto.is_none() {
         return Err(Response::err(0, ErrorCode::HelloRequired, "send hello first"));
@@ -542,9 +578,7 @@ fn dispatch(shared: &Shared, session: &mut Session, req: &Request) -> Result<Res
         }
         method::NET_REPORT => {
             // Only the helper, which runs as the service's own account.
-            // SAFETY: geteuid has no preconditions.
-            let me = unsafe { libc::geteuid() };
-            if session.uid.parse::<u32>().ok() != Some(me) {
+            if !crate::compat::is_self(&session.uid) {
                 return Err(Response::err(0, ErrorCode::Forbidden, "only the network watch helper may report"));
             }
             let r: nightgrid_node_proto::NetReport = params(&req.params)?;
@@ -652,9 +686,7 @@ fn dispatch(shared: &Shared, session: &mut Session, req: &Request) -> Result<Res
         }
         method::CHECKS_REPORT => {
             // Only the check runner, which runs as the service's own account.
-            // SAFETY: geteuid has no preconditions.
-            let me = unsafe { libc::geteuid() };
-            if session.uid.parse::<u32>().ok() != Some(me) {
+            if !crate::compat::is_self(&session.uid) {
                 return Err(Response::err(0, ErrorCode::Forbidden, "only the check runner may report"));
             }
             let r: nightgrid_node_proto::ChecksReport = params(&req.params)?;
@@ -688,7 +720,7 @@ fn dispatch(shared: &Shared, session: &mut Session, req: &Request) -> Result<Res
         }
         method::UPGRADE_NOTE => {
             // Only root, which is who runs `nightgrid-node upgrade`.
-            if session.uid != "0" {
+            if !session.root {
                 return Err(Response::err(0, ErrorCode::Forbidden, "only root's upgrade may report"));
             }
             let ok = req.params["ok"].as_bool().unwrap_or(false);
@@ -768,9 +800,7 @@ fn dispatch(shared: &Shared, session: &mut Session, req: &Request) -> Result<Res
         }
         method::PEERS_REPORT => {
             // Only the link unit, which runs as the service's own account.
-            // SAFETY: geteuid has no preconditions.
-            let me = unsafe { libc::geteuid() };
-            if session.uid.parse::<u32>().ok() != Some(me) {
+            if !crate::compat::is_self(&session.uid) {
                 return Err(Response::err(0, ErrorCode::Forbidden, "only the node-to-node link may report"));
             }
             let r: nightgrid_node_proto::PeersReport = params(&req.params)?;
@@ -784,9 +814,7 @@ fn dispatch(shared: &Shared, session: &mut Session, req: &Request) -> Result<Res
         method::PEERS_INBOUND => {
             // Only the link, which runs as the service's own account and has
             // checked the peer's certificate.
-            // SAFETY: geteuid has no preconditions.
-            let me = unsafe { libc::geteuid() };
-            if session.uid.parse::<u32>().ok() != Some(me) {
+            if !crate::compat::is_self(&session.uid) {
                 return Err(Response::err(0, ErrorCode::Forbidden, "only the node-to-node link may pass requests on"));
             }
             let p: nightgrid_node_proto::PeerInbound = params(&req.params)?;
@@ -978,8 +1006,7 @@ mod tests {
         let mut cfg = Config::default();
         cfg.peers.serve = vec!["ping".into(), "sync".into()];
         let s = Shared::new(cfg, Store::open_in_memory().unwrap());
-        // SAFETY: geteuid has no preconditions.
-        let me = unsafe { libc::geteuid() }.to_string();
+        let me = crate::compat::my_id();
         let mut ses = Session { uid: me, ..Default::default() };
         call(
             &s,

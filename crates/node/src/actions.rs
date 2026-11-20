@@ -474,6 +474,7 @@ mod tests {
         assert_eq!((r.outcome, r.detail.as_str()), (ActionOutcome::DryRun, "would restart web"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn unit_actions_go_through_the_helper() {
         use std::io::{BufRead, BufReader, Write};

@@ -1,7 +1,11 @@
 //! A small blocking client (for `status`, `query`, tests) and the stdio bridge.
 
 use std::io::{BufRead, BufReader, Read, Write};
+#[cfg(unix)]
 use std::os::unix::net::UnixStream;
+/// The node's socket (Windows: its named pipe, opened for blocking use).
+#[cfg(windows)]
+type UnixStream = std::fs::File;
 use std::path::Path;
 
 use nightgrid_node_proto::{method, Frame, Hello, Request, Response, RpcError, Welcome, MAX_LINE};
@@ -42,7 +46,10 @@ impl From<std::io::Error> for CallError {
 impl Client {
     /// Connects and says hello.
     pub fn connect(path: &Path, client: &str) -> Result<Self, CallError> {
+        #[cfg(unix)]
         let w = UnixStream::connect(path)?;
+        #[cfg(windows)]
+        let w = crate::win::pipe::open_sync(&path.to_string_lossy())?;
         let r = BufReader::new(w.try_clone()?);
         let mut c = Self { w, r, next: 1, frames: Default::default(), welcome: placeholder() };
         let v = c.call(method::HELLO, serde_json::to_value(Hello::this_client(client)).unwrap_or_default())?;
@@ -143,6 +150,13 @@ fn placeholder() -> Welcome {
 /// When the socket can't be reached it prints one JSON line on stdout before
 /// failing, `{"error":{"code":"no_access"|"not_running","message":...}}`, so
 /// the app can try the bridge first and probe only when it fails.
+#[cfg(windows)]
+pub fn bridge(path: &Path) -> std::io::Result<()> {
+    crate::win::pipe::bridge(&path.to_string_lossy())
+}
+
+/// See above: the Unix version.
+#[cfg(unix)]
 pub fn bridge(path: &Path) -> std::io::Result<()> {
     let sock = match UnixStream::connect(path) {
         Ok(s) => s,

@@ -31,6 +31,8 @@ pub const MAX_POINTS: usize = 5000;
 
 /// Default socket path of the system service.
 pub const DEFAULT_SOCKET: &str = "/run/nightgrid-node/node.sock";
+/// The service's named pipe on Windows hosts (the socket's counterpart).
+pub const DEFAULT_PIPE: &str = r"\\.\pipe\nightgrid-node";
 
 /// Method names.
 pub mod method {

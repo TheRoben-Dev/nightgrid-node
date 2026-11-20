@@ -12,7 +12,7 @@
 //! where `/usr/local` and `/etc` are writable) and Proxmox VE: it only needs
 //! systemd (with `systemd-sysusers`) and `usermod`.
 
-use std::os::unix::fs::PermissionsExt;
+use crate::compat::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -503,7 +503,7 @@ impl Sys for RealSys {
 
     fn run_starter(&mut self, prog: &str, args: &[&str]) -> Result<String, String> {
         // Output goes to an unlinked temp file, read back after the script exits.
-        use std::os::unix::fs::OpenOptionsExt;
+        use crate::compat::fs::OpenOptionsExt;
         let path = std::env::temp_dir().join(format!("nightgrid-node-start.{}", std::process::id()));
         let _ = std::fs::remove_file(&path);
         let mut f = std::fs::OpenOptions::new()
@@ -658,8 +658,7 @@ pub fn preflight_root(layout: &Layout) -> Result<(), String> {
     if !layout.is_system() {
         return Ok(());
     }
-    // SAFETY: geteuid has no preconditions.
-    if unsafe { libc::geteuid() } != 0 {
+    if !crate::compat::am_root() {
         return Err("run this as root (sudo nightgrid-node ...)".into());
     }
     Ok(())
@@ -840,7 +839,7 @@ fn enable_sysv(layout: &Layout, sys: &mut dyn Sys) -> Result<(), String> {
         if dir.is_dir() {
             let link = dir.join(format!("{name}{SERVICE}"));
             let _ = std::fs::remove_file(&link);
-            std::os::unix::fs::symlink("../init.d/nightgrid-node", &link)
+            crate::compat::fs::symlink("../init.d/nightgrid-node", &link)
                 .map_err(|e| format!("{}: {e}", link.display()))?;
         }
     }
@@ -1175,7 +1174,7 @@ pub fn serve(layout: &Layout, sys: &mut dyn Sys, name: &str, add: bool) -> Resul
 
 /// Group that owns `path`, by name.
 fn socket_group(sys: &mut dyn Sys, path: &Path, system: bool) -> Result<String, String> {
-    use std::os::unix::fs::MetadataExt;
+    use crate::compat::fs::MetadataExt;
     let md = std::fs::metadata(path)
         .map_err(|e| format!("{}: {e} (is the engine installed and running?)", path.display()))?;
     if md.gid() == 0 && system {
@@ -1560,7 +1559,7 @@ mod tests {
         let url = rep.url.clone().unwrap();
         assert!(url.starts_with("http://127.0.0.1:7420/") && url.len() == "http://127.0.0.1:7420/".len() + 64, "{url}");
         let token = layout.at(crate::statuspage::TOKEN_FILE);
-        use std::os::unix::fs::PermissionsExt;
+        use crate::compat::fs::PermissionsExt;
         assert_eq!(std::fs::metadata(&token).unwrap().permissions().mode() & 0o777, 0o640);
         // Again: same link.
         assert_eq!(allow(&layout, &mut sys, Grant::StatusPage, Path::new("/x"), false).unwrap().url.unwrap(), url);

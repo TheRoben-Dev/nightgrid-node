@@ -107,7 +107,7 @@ pub fn previous(layout: &Layout) -> PathBuf {
 }
 
 fn copy_exec(from: &Path, to: &Path) -> Result<(), String> {
-    use std::os::unix::fs::PermissionsExt;
+    use crate::compat::fs::PermissionsExt;
     let tmp = to.with_extension("ngn-tmp");
     std::fs::copy(from, &tmp).map_err(|e| format!("copy to {}: {e}", tmp.display()))?;
     std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755)).map_err(|e| e.to_string())?;

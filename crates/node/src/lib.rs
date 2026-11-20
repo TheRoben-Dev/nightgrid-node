@@ -4,6 +4,8 @@
 
 pub mod log;
 
+pub mod compat;
+
 pub mod actions;
 pub mod alerts;
 pub mod backups;
@@ -40,6 +42,7 @@ pub mod ports;
 pub mod redact;
 pub mod rollback;
 pub mod server;
+#[cfg(unix)]
 pub mod sniff;
 pub mod statuspage;
 pub mod store;
@@ -50,3 +53,5 @@ pub mod upgrade;
 pub mod upsguard;
 pub mod uptime;
 pub mod usage;
+#[cfg(windows)]
+pub mod win;

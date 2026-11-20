@@ -5,8 +5,8 @@
 //! actions root allowed (N4): start, stop, restart a container, and prune
 //! dangling images.
 
+use crate::compat::LocalStream as UnixStream;
 use std::io::{Read, Write};
-use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::time::Duration;
 
@@ -352,6 +352,7 @@ mod tests {
         assert_eq!(e.access, ContainerAccess::Absent);
     }
 
+    #[cfg(unix)]
     #[test]
     fn talks_http_over_a_unix_socket() {
         let d = tempfile::tempdir().unwrap();

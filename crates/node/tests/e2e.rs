@@ -1,6 +1,8 @@
 //! Runs the real binary as a service on a temporary socket and talks to it
 //! the way the app does: directly, and through `nightgrid-node bridge`.
 
+#![cfg(unix)]
+
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};

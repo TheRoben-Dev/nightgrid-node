@@ -7,9 +7,9 @@
 //! instead of inotify, so editors that replace files by renaming, and
 //! directories created later, need no special handling.
 
+use crate::compat::fs::MetadataExt;
 use std::collections::BTreeMap;
 use std::io::Read;
-use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::Arc;
@@ -407,7 +407,7 @@ fn save(shared: &Shared, snapshot: &Snapshot) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::PermissionsExt;
+    use crate::compat::fs::PermissionsExt;
 
     #[test]
     fn reports_added_changed_removed_and_never_contents() {

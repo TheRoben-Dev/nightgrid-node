@@ -196,7 +196,7 @@ pub fn run(layout: &Layout, config_path: &Path, socket: Option<&Path>, probe: &m
     let socket = socket
         .map(Path::to_path_buf)
         .or_else(|| cfg.as_ref().map(|c| c.server.socket.clone()))
-        .unwrap_or_else(|| nightgrid_node_proto::DEFAULT_SOCKET.into());
+        .unwrap_or_else(|| crate::config::DEFAULT_SOCKET.into());
     let info = match probe.node_info(&socket) {
         Ok(v) => {
             r.add("socket", Level::Ok, format!("{} answers", socket.display()));

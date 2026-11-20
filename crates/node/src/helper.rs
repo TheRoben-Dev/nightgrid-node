@@ -13,8 +13,10 @@
 //! it and the app can show it, and root can still cancel with `shutdown -c`.
 
 use std::io::{BufRead, BufReader, Read, Write};
+#[cfg(unix)]
 use std::os::fd::{AsRawFd, FromRawFd};
-use std::os::unix::net::UnixStream;
+
+use crate::compat::LocalStream as UnixStream;
 use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
@@ -156,7 +158,14 @@ pub fn handle(config: &Config, local: &LocalFixes, req: &HelperRequest, store: &
     }
 }
 
+/// uid of the service account (none on Windows, where callers are SIDs).
+#[cfg(windows)]
+pub fn service_uid() -> Option<u32> {
+    None
+}
+
 /// uid of the service account, or `None` if it doesn't exist.
+#[cfg(unix)]
 pub fn service_uid() -> Option<u32> {
     let name = std::ffi::CString::new(crate::install::USER).ok()?;
     // SAFETY: getpwnam takes a valid C string; the result is read at once.
@@ -165,6 +174,7 @@ pub fn service_uid() -> Option<u32> {
     (!pw.is_null()).then(|| unsafe { (*pw).pw_uid })
 }
 
+#[cfg(unix)]
 pub fn peer_uid(fd: i32) -> Option<u32> {
     let mut cred = libc::ucred { pid: 0, uid: 0, gid: 0 };
     let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
@@ -175,7 +185,15 @@ pub fn peer_uid(fd: i32) -> Option<u32> {
     (r == 0).then_some(cred.uid)
 }
 
+/// `nightgrid-node helper` on Windows: the helper service arrives in a
+/// later release (docs/WINDOWS.md, W2).
+#[cfg(windows)]
+pub fn serve(_config_path: &Path) -> Result<(), String> {
+    Err("the root helper is not available on Windows yet".into())
+}
+
 /// `nightgrid-node helper`: serves the one connection on stdin/stdout.
+#[cfg(unix)]
 pub fn serve(config_path: &Path) -> Result<(), String> {
     // SAFETY: systemd hands the accepted connection over as fd 0; the
     // stream takes ownership of it for the life of this process.
@@ -219,8 +237,18 @@ pub fn serve(config_path: &Path) -> Result<(), String> {
 }
 
 /// Whether the helper's socket is there (`allow helper`).
+#[cfg(windows)]
 pub fn installed(socket: &Path) -> bool {
-    use std::os::unix::fs::FileTypeExt;
+    // A pipe "exists" only while its server runs; the helper service
+    // (W2) will be checked through the Service Control Manager.
+    let _ = socket;
+    false
+}
+
+/// Whether the helper's socket is there (`allow helper`).
+#[cfg(unix)]
+pub fn installed(socket: &Path) -> bool {
+    use crate::compat::fs::FileTypeExt;
     std::fs::metadata(socket).is_ok_and(|m| m.file_type().is_socket())
 }
 
@@ -346,6 +374,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn talks_over_a_socket() {
         let d = tempfile::tempdir().unwrap();

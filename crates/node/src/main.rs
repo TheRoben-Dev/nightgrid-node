@@ -156,7 +156,7 @@ fn socket(a: &Args) -> PathBuf {
     a.socket.clone().unwrap_or_else(|| {
         Config::load(&a.config)
             .map(|c| c.server.socket)
-            .unwrap_or_else(|_| PathBuf::from(nightgrid_node_proto::DEFAULT_SOCKET))
+            .unwrap_or_else(|_| PathBuf::from(nightgrid_node::config::DEFAULT_SOCKET))
     })
 }
 
@@ -199,7 +199,10 @@ fn real_main() -> Result<(), String> {
         // Rust ignores SIGPIPE; let `nightgrid-node events | head` end quietly
         // instead of panicking on the closed pipe.
         // SAFETY: setting a signal's disposition to its default has no preconditions.
-        unsafe { libc::signal(libc::SIGPIPE, libc::SIG_DFL) };
+        #[cfg(unix)]
+        unsafe {
+            libc::signal(libc::SIGPIPE, libc::SIG_DFL)
+        };
     }
     if a.cmd.is_empty() && nightgrid_node::tui::interactive() {
         // `nightgrid-node` alone on a terminal: the home menu.
@@ -238,7 +241,67 @@ fn dispatch(a: Args) -> Result<(), String> {
     r
 }
 
+/// What a command that isn't on Windows yet says (docs/WINDOWS.md).
+#[cfg(windows)]
+fn not_on_windows(what: &str) -> String {
+    format!("{what} is not available on Windows yet (see docs/WINDOWS.md for what comes when)")
+}
+
+/// The commands whose Windows form differs: the service, install and
+/// uninstall, doctor and the accesses that come in later milestones.
+#[cfg(windows)]
+fn windows_command(a: &Args) -> Option<Result<(), String>> {
+    use nightgrid_node::win;
+    Some(match a.cmd.as_str() {
+        "run" => (|| {
+            let mut config = Config::load(&a.config)?;
+            if let Some(s) = &a.socket {
+                config.server.socket = s.clone();
+            }
+            let mut paths = daemon::Paths::from_env();
+            paths.fixes = nightgrid_node::fixes::path_for(&a.config);
+            if let Some(d) = &a.data_dir {
+                paths.data_dir = d.clone();
+            }
+            win::service::run(config, paths)
+        })(),
+        "install" => (|| {
+            let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+            let opts = install::InstallOptions { allow_users: a.users.clone(), no_start: a.no_start };
+            let r = win::install::install(&exe, &opts)?;
+            print_report(&r, a.json);
+            Ok(())
+        })(),
+        "uninstall" => win::install::uninstall(a.purge).map(|r| print_report(&r, a.json)),
+        "doctor" => {
+            let r = win::doctor::run(&a.config, a.socket.as_deref());
+            if a.json {
+                println!("{}", serde_json::to_string(&r).unwrap_or_default());
+            } else {
+                print!("{}", nightgrid_node::doctor::render(&r));
+            }
+            if r.worst() == nightgrid_node::doctor::Level::Fail {
+                Err("doctor found a failure".into())
+            } else {
+                Ok(())
+            }
+        }
+        "allow" | "deny" | "serve" => {
+            Err(not_on_windows(format!("nightgrid-node {} {}", a.cmd, a.rest.join(" ")).trim_end()))
+        }
+        "fix" | "fix-apply" => Err(not_on_windows("the fix menu")),
+        "upgrade" => Err(not_on_windows("upgrade (run install with the new binary for now)")),
+        "helper" | "health-helper" => Err(not_on_windows("the helper service")),
+        "checker" | "peer" | "status-page" | "netwatch" => Err(not_on_windows(&a.cmd)),
+        _ => return None,
+    })
+}
+
 fn run_command(a: Args) -> Result<(), String> {
+    #[cfg(windows)]
+    if let Some(r) = windows_command(&a) {
+        return r;
+    }
     match a.cmd.as_str() {
         "fix" => nightgrid_node::menu::fix(&fix_ctx(&a), &a.rest),
         "fix-apply" => match a.rest.as_slice() {
@@ -315,7 +378,13 @@ fn run_command(a: Args) -> Result<(), String> {
             if let Some(s) = &a.socket {
                 config.server.socket = s.clone();
             }
-            nightgrid_node::sniff::run(&config)
+            #[cfg(unix)]
+            return nightgrid_node::sniff::run(&config);
+            #[cfg(windows)]
+            {
+                let _ = config;
+                Err(not_on_windows("the network watch helper"))
+            }
         }
         "upgrade" => {
             let file = a.rest.first().ok_or("upgrade needs the new binary: upgrade FILE --sha256 HEX")?;

@@ -40,6 +40,16 @@ pub struct Clocks {
 }
 
 impl Clocks {
+    #[cfg(windows)]
+    pub fn read(now: i64) -> Self {
+        let btime = now - (crate::win::sys::ticks_ms() / 1000) as i64;
+        // Without the boot counter, boot time to the minute stands in (the
+        // tick count and the wall clock drift apart by seconds, not minutes).
+        let boot_id = crate::win::sys::boot_id().unwrap_or_else(|| format!("windows-btime-{}", btime / 60));
+        Self { now, boot_id, btime, suspended: suspended_secs() }
+    }
+
+    #[cfg(unix)]
     pub fn read(now: i64) -> Self {
         let boot_id = std::fs::read_to_string("/proc/sys/kernel/random/boot_id").unwrap_or_default().trim().to_owned();
         let btime = std::fs::read_to_string("/proc/stat")
@@ -50,6 +60,7 @@ impl Clocks {
     }
 }
 
+#[cfg(unix)]
 fn clock(id: libc::clockid_t) -> i64 {
     let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
     // SAFETY: `ts` is a valid, writable timespec.
@@ -62,8 +73,15 @@ fn clock(id: libc::clockid_t) -> i64 {
 }
 
 /// Seconds the host spent suspended since boot.
+#[cfg(unix)]
 pub fn suspended_secs() -> i64 {
     (clock(libc::CLOCK_BOOTTIME) - clock(libc::CLOCK_MONOTONIC)).max(0)
+}
+
+/// Seconds the host spent asleep since boot.
+#[cfg(windows)]
+pub fn suspended_secs() -> i64 {
+    crate::win::sys::suspended_secs()
 }
 
 /// Adds `secs` of `col` to the hours that `[from, from + secs)` covers.

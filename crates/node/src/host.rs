@@ -178,7 +178,14 @@ pub fn init_at(root: &Path) -> Init {
     Init::Other
 }
 
+/// `uname -m` and `uname -r` (Windows: the arch and `10.0.BUILD`).
+#[cfg(windows)]
+pub fn uname() -> (String, String) {
+    (std::env::consts::ARCH.to_owned(), crate::win::sys::os_version())
+}
+
 /// `uname -m` and `uname -r`.
+#[cfg(unix)]
 pub fn uname() -> (String, String) {
     // SAFETY: uname fills the struct we pass and nothing else.
     let mut u: libc::utsname = unsafe { std::mem::zeroed() };

@@ -7,6 +7,12 @@ use serde::Serialize;
 
 /// `2026-11-17 21:04` in the host's time zone. Times a 32-bit `time_t`
 /// can't hold (after 2038-01-19 on the 32-bit musl builds) are shown in UTC.
+#[cfg(windows)]
+pub fn local_time(t: i64) -> String {
+    crate::win::sys::local_time(t).unwrap_or_else(|| format!("{} UTC", utc_time(t)))
+}
+
+#[cfg(unix)]
 pub fn local_time(t: i64) -> String {
     // libc's musl time_t is 32-bit on 32-bit targets for now, i64 elsewhere.
     #[allow(deprecated, irrefutable_let_patterns, clippy::useless_conversion)]

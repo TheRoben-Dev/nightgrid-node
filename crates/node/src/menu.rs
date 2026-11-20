@@ -29,28 +29,46 @@ pub struct Ctx {
     pub json: bool,
 }
 
-fn euid() -> u32 {
-    // SAFETY: geteuid has no preconditions.
-    unsafe { libc::geteuid() }
+fn is_root() -> bool {
+    crate::compat::am_root()
 }
 
 fn hostname() -> String {
-    std::fs::read_to_string("/proc/sys/kernel/hostname").unwrap_or_default().trim().to_owned()
+    crate::compat::hostname()
 }
 
+#[cfg(unix)]
 fn who() -> String {
-    if euid() == 0 {
+    // SAFETY: geteuid has no preconditions.
+    let euid = unsafe { libc::geteuid() };
+    if euid == 0 {
         "root".into()
     } else {
-        std::env::var("USER").unwrap_or_else(|_| format!("uid {}", euid()))
+        std::env::var("USER").unwrap_or_else(|_| format!("uid {euid}"))
+    }
+}
+
+#[cfg(windows)]
+fn who() -> String {
+    let user = std::env::var("USERNAME").unwrap_or_else(|_| "?".into());
+    if is_root() {
+        format!("{user} (Administrator)")
+    } else {
+        user
     }
 }
 
 /// The login user a fix for "me" means: under sudo, the one who ran it;
 /// otherwise whoever we run as (from the password database, not $USER,
 /// which an environment can carry over).
+#[cfg(windows)]
 fn me() -> Option<String> {
-    if euid() == 0 {
+    std::env::var("USERNAME").ok().filter(|u| !u.is_empty())
+}
+
+#[cfg(unix)]
+fn me() -> Option<String> {
+    if is_root() {
         return std::env::var("SUDO_USER").ok().filter(|u| !u.is_empty() && u != "root");
     }
     // SAFETY: getuid has no preconditions; getpwuid's result is read at once.
@@ -352,7 +370,22 @@ fn failed_units() -> Vec<String> {
     }
 }
 
+/// Fixed volumes and how full they are (percent).
+#[cfg(windows)]
+fn full_disks(threshold: u64) -> Vec<(String, u64)> {
+    crate::metrics::collect::volumes()
+        .into_iter()
+        .filter_map(|v| {
+            let (total, used, avail) = crate::compat::disk_usage(std::path::Path::new(&v.root))?;
+            let _ = total;
+            let pct = (used * 100).checked_div(used + avail)?;
+            (pct >= threshold).then_some((v.root, pct))
+        })
+        .collect()
+}
+
 /// Mounts of real file systems and how full they are (percent).
+#[cfg(unix)]
 fn full_disks(threshold: u64) -> Vec<(String, u64)> {
     let mounts = std::fs::read_to_string("/proc/mounts").unwrap_or_default();
     let mut out: Vec<(String, u64)> = Vec::new();
@@ -639,7 +672,7 @@ fn ensure_allowed(ctx: &Ctx, pol: &mut Policy, a: &str, target: Option<&str>) ->
         what.push(format!("list {} for unit actions", target.unwrap_or("?")));
     }
     let what = what.join(" and ");
-    if euid() != 0 {
+    if !is_root() {
         say(Tone::Dim, "not allowed", &format!("Root hasn't let the node {what} on this host."));
         println!("  To allow it: sudo nightgrid-node fix {}", ctx_hint(a, target));
         return Err(String::new());
@@ -677,7 +710,7 @@ fn ensure_helper(ctx: &Ctx, pol: &mut Policy, a: &str) -> Result<bool, String> {
     if !fixes::needs_helper(a) || pol.helper {
         return Ok(true);
     }
-    if euid() != 0 {
+    if !is_root() {
         say(Tone::Warn, "needs helper", "This fix runs through the root helper, which isn't installed.");
         println!("  Install it: sudo nightgrid-node allow helper");
         return Err(String::new());
@@ -833,7 +866,7 @@ fn auto_menu(pol: &Policy) -> Menu {
 }
 
 fn change_preset(ctx: &Ctx, pol: &mut Policy, key: &str, state: &str) -> Result<(), String> {
-    if euid() != 0 {
+    if !is_root() {
         say(Tone::Dim, "root only", "Only root decides what the node does by itself.");
         println!("  Run: sudo nightgrid-node fix auto {key} {state}");
         return Ok(());
@@ -1044,7 +1077,7 @@ pub fn access(config_path: &Path) -> Result<(), String> {
         let on = g.is_allowed(&layout);
         println!("\n{}", tui::banner("node", &format!("access · {}", g.name())));
         println!("  {}", about(g));
-        if euid() != 0 {
+        if !is_root() {
             say(
                 Tone::Dim,
                 "root only",
@@ -1107,7 +1140,7 @@ pub fn serve(config_path: &Path) -> Result<(), String> {
         let Some(i) = tui::pick(&m) else { return Ok(()) };
         let s = crate::config::PEER_SERVES[i];
         let on = config.peers.serve.iter().any(|x| x == s);
-        if euid() != 0 {
+        if !is_root() {
             say(
                 Tone::Dim,
                 "root only",
