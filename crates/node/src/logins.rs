@@ -8,9 +8,11 @@
 //! each; failed ones are summed per minute so a scanned host doesn't flood
 //! the timeline.
 
+#[cfg(unix)]
+use crate::compat::fs::MetadataExt;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io::{BufRead, BufReader};
-use std::os::unix::fs::MetadataExt;
+#[cfg(unix)]
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{self, RecvTimeoutError};
@@ -194,7 +196,15 @@ pub fn accepted_event(at: i64, user: &str, from: &str, method: &str) -> NewEvent
     NewEvent::new(at, EventKind::Login, Level::Info, format!("{user} logged in from {from}"), format!("ssh, {method}"))
 }
 
+/// The journal's group and whether this process is in it (Windows: the
+/// Event Log comes in W1, so "absent" until then).
+#[cfg(windows)]
+pub fn journal_access() -> &'static str {
+    "absent"
+}
+
 /// The journal's group and whether this process is in it.
+#[cfg(unix)]
 pub fn journal_access() -> &'static str {
     let dir = ["/var/log/journal", "/run/log/journal"].into_iter().map(Path::new).find(|p| p.is_dir());
     let Some(dir) = dir else { return "absent" };

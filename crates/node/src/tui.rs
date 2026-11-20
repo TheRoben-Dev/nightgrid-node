@@ -245,11 +245,84 @@ pub fn interactive() -> bool {
         && !std::env::var("TERM").is_ok_and(|t| t == "dumb")
 }
 
+/// Puts the console in raw mode with VT input and output until dropped.
+#[cfg(windows)]
+struct Raw {
+    saved_in: u32,
+    saved_out: u32,
+}
+
+#[cfg(windows)]
+impl Raw {
+    fn on() -> Option<Self> {
+        use windows_sys::Win32::System::Console::{
+            GetConsoleMode, GetStdHandle, SetConsoleMode, ENABLE_ECHO_INPUT, ENABLE_LINE_INPUT, ENABLE_PROCESSED_INPUT,
+            ENABLE_VIRTUAL_TERMINAL_INPUT, ENABLE_VIRTUAL_TERMINAL_PROCESSING, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
+        };
+        let (mut i, mut o) = (0u32, 0u32);
+        // SAFETY: console handles of this process; plain mode words.
+        unsafe {
+            let (hi, ho) = (GetStdHandle(STD_INPUT_HANDLE), GetStdHandle(STD_OUTPUT_HANDLE));
+            if GetConsoleMode(hi, &mut i) == 0 || GetConsoleMode(ho, &mut o) == 0 {
+                return None;
+            }
+            let raw_in =
+                (i & !(ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT | ENABLE_PROCESSED_INPUT)) | ENABLE_VIRTUAL_TERMINAL_INPUT;
+            if SetConsoleMode(hi, raw_in) == 0 || SetConsoleMode(ho, o | ENABLE_VIRTUAL_TERMINAL_PROCESSING) == 0 {
+                SetConsoleMode(hi, i);
+                return None;
+            }
+        }
+        print!("\x1b[?1049h\x1b[?25l");
+        let _ = std::io::stdout().flush();
+        Some(Self { saved_in: i, saved_out: o })
+    }
+}
+
+#[cfg(windows)]
+impl Drop for Raw {
+    fn drop(&mut self) {
+        use windows_sys::Win32::System::Console::{GetStdHandle, SetConsoleMode, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE};
+        print!("\x1b[?25h\x1b[?1049l");
+        let _ = std::io::stdout().flush();
+        // SAFETY: restoring the modes read in `on`.
+        unsafe {
+            SetConsoleMode(GetStdHandle(STD_INPUT_HANDLE), self.saved_in);
+            SetConsoleMode(GetStdHandle(STD_OUTPUT_HANDLE), self.saved_out);
+        }
+    }
+}
+
+#[cfg(windows)]
+fn term_size() -> (usize, usize) {
+    use windows_sys::Win32::System::Console::{GetConsoleScreenBufferInfo, GetStdHandle, STD_OUTPUT_HANDLE};
+    // SAFETY: a plain out-struct.
+    let mut i = unsafe { std::mem::zeroed() };
+    if unsafe { GetConsoleScreenBufferInfo(GetStdHandle(STD_OUTPUT_HANDLE), &mut i) } != 0 {
+        let w = (i.srWindow.Right - i.srWindow.Left + 1).max(20) as usize;
+        let h = (i.srWindow.Bottom - i.srWindow.Top + 1).max(10) as usize;
+        (w, h)
+    } else {
+        (80, 24)
+    }
+}
+
+/// Whether more bytes follow an Esc right away (an arrow, not a lone Esc).
+#[cfg(windows)]
+fn stdin_ready() -> bool {
+    use windows_sys::Win32::System::Console::{GetStdHandle, STD_INPUT_HANDLE};
+    use windows_sys::Win32::System::Threading::WaitForSingleObject;
+    // SAFETY: waits on this process's console input handle.
+    unsafe { WaitForSingleObject(GetStdHandle(STD_INPUT_HANDLE), 40) == 0 }
+}
+
 /// Puts the terminal in raw mode until dropped.
+#[cfg(unix)]
 struct Raw {
     saved: libc::termios,
 }
 
+#[cfg(unix)]
 impl Raw {
     fn on() -> Option<Self> {
         // SAFETY: an all-zero termios is a valid out-buffer for tcgetattr.
@@ -273,6 +346,7 @@ impl Raw {
     }
 }
 
+#[cfg(unix)]
 impl Drop for Raw {
     fn drop(&mut self) {
         print!("\x1b[?25h\x1b[?1049l");
@@ -282,6 +356,7 @@ impl Drop for Raw {
     }
 }
 
+#[cfg(unix)]
 fn term_size() -> (usize, usize) {
     // SAFETY: an all-zero winsize is a valid out-buffer for TIOCGWINSZ.
     let mut w: libc::winsize = unsafe { std::mem::zeroed() };
@@ -306,6 +381,7 @@ enum Key {
 }
 
 /// Whether more bytes follow an Esc right away (an arrow, not a lone Esc).
+#[cfg(unix)]
 fn stdin_ready() -> bool {
     let mut fds = libc::pollfd { fd: 0, events: libc::POLLIN, revents: 0 };
     // SAFETY: one valid pollfd.

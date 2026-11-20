@@ -312,7 +312,7 @@ fn is_netfs(fstype: &str) -> bool {
 
 /// (total, used, avail) in KiB, like `df -kP`.
 fn statvfs(path: &Path) -> Option<(u64, u64, u64)> {
-    use std::os::unix::ffi::OsStrExt;
+    use crate::compat::ffi::OsStrExt;
     let c = CString::new(path.as_os_str().as_bytes()).ok()?;
     let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
     // SAFETY: `c` is a valid NUL-terminated path and `st` a writable statvfs.
@@ -454,7 +454,7 @@ mod tests {
 
     #[test]
     fn a_hanging_sensor_does_not_stall_sampling() {
-        use std::os::unix::ffi::OsStrExt;
+        use crate::compat::ffi::OsStrExt;
         let d = tempfile::tempdir().unwrap();
         write(d.path(), "proc/stat", "cpu  1 0 1 10 0 0 0 0 0 0\n");
         write(d.path(), "sys/class/hwmon/hwmon0/name", "nvme\n");

@@ -3,6 +3,7 @@
 //! i686 and, under qemu, on armv7, where `usize` and `c_ulong` are 32-bit.
 
 use nightgrid_node::cli;
+#[cfg(unix)]
 use nightgrid_node::metrics::collect::usage_kib;
 use nightgrid_node::metrics::parse::{parse_df, parse_diskstats, parse_netdev};
 use nightgrid_node::metrics::{parse, Collector, MountUsage};
@@ -32,9 +33,12 @@ fn disk_sizes_past_4_gib() {
     let (_, total, used, avail) = &df["/data"];
     assert_eq!((*total, *used, *avail), (11_718_885_376 * 1024, 5_859_442_688 * 1024, 5_859_442_688 * 1024));
     // statvfs block counts past 2^32 with 4 KiB blocks: 16 TiB+.
-    let (t, u, a) = usage_kib(FOUR_GIB + 10, 10, 10, 4096);
-    assert_eq!((t, u, a), ((FOUR_GIB + 10) * 4, FOUR_GIB * 4, 40));
-    assert!(cli::bytes(t * 1024).ends_with("TiB"), "{}", cli::bytes(t * 1024));
+    #[cfg(unix)]
+    {
+        let (t, u, a) = usage_kib(FOUR_GIB + 10, 10, 10, 4096);
+        assert_eq!((t, u, a), ((FOUR_GIB + 10) * 4, FOUR_GIB * 4, 40));
+        assert!(cli::bytes(t * 1024).ends_with("TiB"), "{}", cli::bytes(t * 1024));
+    }
 }
 
 #[test]

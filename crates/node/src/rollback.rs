@@ -8,8 +8,8 @@
 //! change made just before a crash or a reboot is still reverted when the
 //! node starts again.
 
+use crate::compat::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::io::Write;
-use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
 
 use nightgrid_node_proto::{
@@ -161,7 +161,7 @@ fn put_back(e: &Entry, data: &[u8]) -> std::io::Result<()> {
     let r = (|| {
         f.write_all(data)?;
         f.sync_all()?;
-        std::os::unix::fs::fchown(&f, Some(e.uid), Some(e.gid))?;
+        crate::compat::fs::fchown(&f, Some(e.uid), Some(e.gid))?;
         std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(e.mode))?;
         std::fs::rename(&tmp, path)
     })();
@@ -504,6 +504,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(windows, ignore = "Linux paths")]
     fn snapshot_restore_and_new_files() {
         let (d, c, store) = setup();
         let f = d.path().join("srv/compose.yml");
@@ -527,6 +528,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(windows, ignore = "Linux paths")]
     fn refuses_paths_root_did_not_list() {
         let (d, c, store) = setup();
         let id = "00000000000000aa";
@@ -541,11 +543,11 @@ mod tests {
             assert!(snapshot(&c, &store, id, std::slice::from_ref(&bad)).is_err(), "{bad}");
         }
         // A symlinked directory inside a listed path that points outside it.
-        std::os::unix::fs::symlink(d.path(), d.path().join("srv/escape")).unwrap();
+        crate::compat::fs::symlink(d.path(), d.path().join("srv/escape")).unwrap();
         let via = format!("{}/srv/escape/other.txt", d.path().display());
         assert!(snapshot(&c, &store, id, &[via]).unwrap_err().contains("not under"));
         // A symlink as the file itself.
-        std::os::unix::fs::symlink(&outside, d.path().join("srv/link")).unwrap();
+        crate::compat::fs::symlink(&outside, d.path().join("srv/link")).unwrap();
         let link = format!("{}/srv/link", d.path().display());
         assert!(snapshot(&c, &store, id, &[link]).unwrap_err().contains("not a regular file"));
         assert!(snapshot(&c, &store, "../x", &[]).is_err());
@@ -557,6 +559,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(windows, ignore = "Linux paths")]
     fn discard_is_idempotent() {
         let (d, c, store) = setup();
         let f = d.path().join("srv/a");
@@ -567,6 +570,7 @@ mod tests {
         assert_eq!(discard(&store, id).unwrap(), "no snapshot left");
     }
 
+    #[cfg(unix)]
     #[test]
     fn config_paths() {
         use crate::config::rollback_path_ok as ok;
@@ -577,6 +581,7 @@ mod tests {
     }
 
     /// A helper on a socket that does the real file work in a temp store.
+    #[cfg(unix)]
     fn fake_helper(sock: PathBuf, config: Config, store: PathBuf) -> std::sync::mpsc::Receiver<String> {
         use std::io::{BufRead, BufReader};
         struct Log(std::sync::mpsc::Sender<String>);
@@ -609,6 +614,7 @@ mod tests {
         rx
     }
 
+    #[cfg(unix)]
     #[test]
     fn dead_man_timer_reverts_and_confirm_keeps() {
         let (d, mut c, store) = setup();

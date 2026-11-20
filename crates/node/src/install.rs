@@ -12,7 +12,7 @@
 //! where `/usr/local` and `/etc` are writable) and Proxmox VE: it only needs
 //! systemd (with `systemd-sysusers`) and `usermod`.
 
-use std::os::unix::fs::PermissionsExt;
+use crate::compat::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -353,10 +353,20 @@ pub fn no_systemd(what: &str, init: Init) -> String {
     )
 }
 
-/// The `code` for a failed command's JSON error: `no_systemd`, `not_root` or `failed`.
+/// What a command that isn't on Windows yet says (docs/WINDOWS.md). JSON
+/// errors carry it as `not_on_windows`.
+pub fn not_on_windows(what: &str) -> String {
+    format!("{what} is not available on Windows yet (see docs/WINDOWS.md for what comes when)")
+}
+
+/// The `code` for a failed command's JSON error: `no_systemd`,
+/// `not_on_windows` (a command that comes in a later Windows milestone),
+/// `not_root` or `failed`.
 pub fn error_code(message: &str) -> &'static str {
     if message.contains(" needs systemd, and this host") {
         "no_systemd"
+    } else if message.contains(" is not available on Windows yet") {
+        "not_on_windows"
     } else if message.starts_with("run this as root") {
         "not_root"
     } else {
@@ -503,7 +513,7 @@ impl Sys for RealSys {
 
     fn run_starter(&mut self, prog: &str, args: &[&str]) -> Result<String, String> {
         // Output goes to an unlinked temp file, read back after the script exits.
-        use std::os::unix::fs::OpenOptionsExt;
+        use crate::compat::fs::OpenOptionsExt;
         let path = std::env::temp_dir().join(format!("nightgrid-node-start.{}", std::process::id()));
         let _ = std::fs::remove_file(&path);
         let mut f = std::fs::OpenOptions::new()
@@ -658,8 +668,7 @@ pub fn preflight_root(layout: &Layout) -> Result<(), String> {
     if !layout.is_system() {
         return Ok(());
     }
-    // SAFETY: geteuid has no preconditions.
-    if unsafe { libc::geteuid() } != 0 {
+    if !crate::compat::am_root() {
         return Err("run this as root (sudo nightgrid-node ...)".into());
     }
     Ok(())
@@ -840,7 +849,7 @@ fn enable_sysv(layout: &Layout, sys: &mut dyn Sys) -> Result<(), String> {
         if dir.is_dir() {
             let link = dir.join(format!("{name}{SERVICE}"));
             let _ = std::fs::remove_file(&link);
-            std::os::unix::fs::symlink("../init.d/nightgrid-node", &link)
+            crate::compat::fs::symlink("../init.d/nightgrid-node", &link)
                 .map_err(|e| format!("{}: {e}", link.display()))?;
         }
     }
@@ -1175,7 +1184,7 @@ pub fn serve(layout: &Layout, sys: &mut dyn Sys, name: &str, add: bool) -> Resul
 
 /// Group that owns `path`, by name.
 fn socket_group(sys: &mut dyn Sys, path: &Path, system: bool) -> Result<String, String> {
-    use std::os::unix::fs::MetadataExt;
+    use crate::compat::fs::MetadataExt;
     let md = std::fs::metadata(path)
         .map_err(|e| format!("{}: {e} (is the engine installed and running?)", path.display()))?;
     if md.gid() == 0 && system {
@@ -1475,6 +1484,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(windows, ignore = "the Linux installer")]
     fn allow_and_deny_netwatch() {
         let (_d, layout, exe) = setup();
         let mut sys = FakeSys::default();
@@ -1501,6 +1511,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(windows, ignore = "the Linux installer")]
     fn allow_and_deny_checks() {
         let (_d, layout, exe) = setup();
         let mut sys = FakeSys::default();
@@ -1529,6 +1540,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(windows, ignore = "the Linux installer")]
     fn allow_and_deny_peers() {
         let (_d, layout, exe) = setup();
         let mut sys = FakeSys::default();
@@ -1547,6 +1559,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(windows, ignore = "the Linux installer")]
     fn allow_and_deny_statuspage() {
         let (_d, layout, exe) = setup();
         let mut sys = FakeSys::default();
@@ -1560,7 +1573,7 @@ mod tests {
         let url = rep.url.clone().unwrap();
         assert!(url.starts_with("http://127.0.0.1:7420/") && url.len() == "http://127.0.0.1:7420/".len() + 64, "{url}");
         let token = layout.at(crate::statuspage::TOKEN_FILE);
-        use std::os::unix::fs::PermissionsExt;
+        use crate::compat::fs::PermissionsExt;
         assert_eq!(std::fs::metadata(&token).unwrap().permissions().mode() & 0o777, 0o640);
         // Again: same link.
         assert_eq!(allow(&layout, &mut sys, Grant::StatusPage, Path::new("/x"), false).unwrap().url.unwrap(), url);
@@ -1575,6 +1588,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(windows, ignore = "the Linux installer")]
     fn allow_and_deny_helper() {
         let (_d, layout, exe) = setup();
         let mut sys = FakeSys::default();
@@ -1650,6 +1664,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(windows, ignore = "the Linux installer")]
     fn serve_without_the_link_says_how_to_turn_it_on() {
         let (_d, layout, exe) = setup();
         let mut sys = FakeSys::default();
@@ -1665,6 +1680,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(windows, ignore = "the Linux installer")]
     fn install_opens_a_config_dir_the_umask_closed() {
         // 0.26.0 created /etc/nightgrid-node with the sudo shell's umask; under
         // 0077 the service account couldn't read its config. Reinstalling fixes it.
@@ -1682,6 +1698,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(windows, ignore = "the Linux installer")]
     fn install_then_reinstall_then_uninstall() {
         let (_d, layout, exe) = setup();
         let mut sys = FakeSys { users: vec!["alice"], ..Default::default() };
@@ -1768,6 +1785,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(windows, ignore = "the Linux installer")]
     fn openrc_host_gets_a_service_script() {
         let (_d, layout, exe) = setup();
         std::fs::create_dir_all(layout.path("/run/openrc")).unwrap();
@@ -1809,6 +1827,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(windows, ignore = "the Linux installer")]
     fn busybox_sysvinit_host_without_shadow_tools() {
         let (_d, layout, exe) = setup();
         for d in ["/etc/init.d", "/etc/rc2.d", "/etc/rc3.d", "/etc/rc0.d"] {
@@ -1839,6 +1858,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(windows, ignore = "the Linux installer")]
     fn old_systemd_gets_a_unit_it_understands() {
         let (_d, layout, exe) = setup();
         std::fs::create_dir_all(layout.path("/run/systemd/system")).unwrap();
@@ -1862,5 +1882,6 @@ mod tests {
         assert_eq!(error_code(&no_systemd("installing the service", Init::Other)), "no_systemd");
         assert_eq!(error_code("run this as root (sudo nightgrid-node ...)"), "not_root");
         assert_eq!(error_code("usermod: boom"), "failed");
+        assert_eq!(error_code(&not_on_windows("the fix menu")), "not_on_windows");
     }
 }

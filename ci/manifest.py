@@ -22,6 +22,10 @@ UNAME = {
 }
 
 
+# %PROCESSOR_ARCHITECTURE% to Windows release arch (docs/app-integration/0024).
+WINDOWS_ARCH = {"AMD64": "x86_64"}
+
+
 def main(out_dir, tag, proto_rs):
     src = open(proto_rs, encoding="utf-8").read()
     pmax = int(re.search(r"pub const PROTO_VERSION: u32 = (\d+);", src).group(1))
@@ -42,6 +46,22 @@ def main(out_dir, tag, proto_rs):
         }
     if not programs.get("nightgrid-node"):
         sys.exit("no binaries for " + tag)
+    # Windows Server builds (docs/WINDOWS.md), apart from `programs` so a
+    # client that maps `uname -m` into `programs` never picks an .exe.
+    windows = {}
+    wpat = re.compile(r"^(nightgrid-node|nightgrid-hub)-" + re.escape(tag) + r"-([a-z0-9_]+)-windows\.exe$")
+    for name in sorted(os.listdir(out_dir)):
+        m = wpat.match(name)
+        if not m:
+            continue
+        path = os.path.join(out_dir, name)
+        with open(path, "rb") as f:
+            digest = hashlib.sha256(f.read()).hexdigest()
+        windows.setdefault(m.group(1), {})[m.group(2)] = {
+            "file": name,
+            "size": os.path.getsize(path),
+            "sha256": digest,
+        }
     manifest = {
         "manifest": 1,
         "version": tag.lstrip("v"),
@@ -50,6 +70,9 @@ def main(out_dir, tag, proto_rs):
         "programs": programs,
         "uname": UNAME,
     }
+    if windows:
+        manifest["windows"] = windows
+        manifest["windowsArch"] = WINDOWS_ARCH
     json.dump(manifest, sys.stdout, indent=2, sort_keys=True)
     sys.stdout.write("\n")
 

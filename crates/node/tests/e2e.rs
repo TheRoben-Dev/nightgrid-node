@@ -1,6 +1,8 @@
 //! Runs the real binary as a service on a temporary socket and talks to it
 //! the way the app does: directly, and through `nightgrid-node bridge`.
 
+#![cfg(unix)]
+
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
@@ -689,7 +691,7 @@ fn full_history_syncs_stay_in_the_memory_budget() {
     );
     // The allocator may keep some freed memory (most on 32-bit musl, which
     // ends between 11 and 18 MB in a release build), but it has to level
-    // off. Before 0.28.1 a release build ended at 71 MB here. A debug build
+    // off. Before 0.29.1 a release build ended at 71 MB here. A debug build
     // (CI's plain `cargo test`) carries about 12 MB more code and slower
     // allocation patterns, so it gets twice the room.
     let budget = if cfg!(debug_assertions) { 48 } else { 24 };

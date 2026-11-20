@@ -1,12 +1,24 @@
 # Changelog
 
-## 0.28.1 · Memory: answers written straight to text (2026-11-20)
+## 0.29.1 · Memory: answers written straight to text (2026-11-20)
 
 - **Lower memory with a full history.** The node built every answer as an in-memory JSON tree before sending it, about eight times the size of the text: a 5 000-point `metrics.sync` page (1.6 MB) briefly took about 13 MB. The release builds' musl allocator keeps such freed memory fragmented, so RSS climbed with each big sync, to 37 to 55 MB on hosts in use and 59 MB in a test with 260 full syncs. It was not a leak (valgrind finds nothing lost, and RSS falls back between peaks). Answers are now written straight to text; the same test ends at about 12 MB with a 14.5 MB peak (11 to 18 MB on 32-bit).
 - **Hub:** `fleet.sync` and `fleet.events.sync` pass the stored rows through as text instead of parsing them into trees first.
 - **Wire:** the same fields and values. Two textual differences: keys come in declaration order instead of alphabetical, and 32-bit float values use their shortest form (`18.097475` instead of `18.097475051879883`). JSON parsers, including the app's, read both the same way. The frozen protocol test passes as it was.
 - **CI:** a new e2e test builds 14 days of history and 20 000 events, runs the app's full sync 31 times and fails if the peak RSS passes 24 MB (48 MB in debug builds) or RSS is still growing over the last 15 syncs. It runs natively and on the 32-bit musl targets.
 - **Docs:** the memory figures in DESIGN.md and HUB.md are measured again (5 to 8 MB fresh, 10 to 18 MB with a full history).
+
+## 0.29.0 · W0: Windows Server node (2026-11-20)
+
+Additive only: no frozen method, field, frame or link request changed (the frozen protocol test passes as it was). Plan and parity table: [docs/WINDOWS.md](docs/WINDOWS.md). App spec [0024](docs/app-integration/0024-windows-node.md). Decisions N-070 to N-074.
+
+- **`nightgrid-node-vX.Y.Z-x86_64-windows.exe`**: a static 64-bit build for Windows Server, tested in CI on 2022 and 2025 (2019 and Windows 10/11 use the same APIs), in `SHA256SUMS` and in `manifest.json` under the new top-level `windows` and `windowsArch` keys.
+- **Windows service** `nightgrid-node` as the virtual account `NT SERVICE\nightgrid-node`: write-restricted token, only `SeChangeNotifyPrivilege`, all network traffic blocked by a Windows Service Hardening rule, a 64 MB job-object memory cap, restart on failure, logs in a rotated file in the data folder.
+- **Named pipe** `\\.\pipe\nightgrid-node` instead of the socket: first instance only, remote clients rejected, readable by Administrators and the local group `Nightgrid Node Users`. Callers are identified by their token; clients check the pipe's owner. `bridge` works over Windows OpenSSH exactly as on Linux, including the `no_access` and `not_running` errors.
+- **Native collector**: CPU, cores, memory, page files, volumes, physical disks, network interfaces, thermal zones and NVIDIA GPUs from PDH raw counters and Win32 calls, in the same shape as the app's own Windows sampler. History, uptime with outages, disk usage and forecasts, alerts, events and `summary.daily` work as on Linux.
+- **Same commands**: `install [--user NAME] [--no-start] [--json]` (to `%ProgramFiles%\Nightgrid Node`, on the machine `PATH`, config and data under `%ProgramData%\Nightgrid Node`), `uninstall [--purge]`, `doctor`, `status`, `events`, `audit`, `query`, `watch`, `bridge`, `version`, `man` (plain text on Windows) and `completions`. Commands that come in later Windows milestones exit with a message, and `{"error":{"code":"not_on_windows"}}` under `--json`.
+- **`completions powershell`** on every platform.
+- CI builds, lints and tests on real Windows Server 2022 and 2025 runners and runs an end-to-end install, bridge, sandbox, outsider-refused, crash-restart, upgrade-in-place and uninstall test (`ci/windows-e2e.ps1`). The release workflow builds the exe on Windows.
 
 ## 0.28.0 · Old and 32-bit hosts, LAN links, hub doctor (2026-11-18)
 

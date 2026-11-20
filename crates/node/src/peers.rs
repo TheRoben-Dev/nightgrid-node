@@ -188,7 +188,7 @@ pub struct Identity {
 
 /// Loads the link's key and certificate from `dir`, making them on first use.
 pub fn identity(dir: &Path) -> Result<Identity, String> {
-    use std::os::unix::fs::OpenOptionsExt;
+    use crate::compat::fs::OpenOptionsExt;
     let (cert_p, key_p) = (dir.join("cert.der"), dir.join("key.pk8"));
     if !cert_p.exists() || !key_p.exists() {
         let kp = rcgen::KeyPair::generate_for(&rcgen::PKCS_ED25519).map_err(|e| e.to_string())?;
@@ -501,6 +501,19 @@ fn uptime() -> u64 {
 }
 
 /// This host's first address in 100.64.0.0/10 (Tailscale and Headscale).
+#[cfg(windows)]
+pub fn tailnet_address() -> Option<IpAddr> {
+    crate::win::net::ipv4_addresses()
+        .into_iter()
+        .find(|ip| {
+            let o = ip.octets();
+            o[0] == 100 && (64..128).contains(&o[1])
+        })
+        .map(IpAddr::V4)
+}
+
+/// This host's first address in 100.64.0.0/10 (Tailscale and Headscale).
+#[cfg(unix)]
 pub fn tailnet_address() -> Option<IpAddr> {
     let mut out = None;
     // SAFETY: getifaddrs fills a list we walk read-only and free once.

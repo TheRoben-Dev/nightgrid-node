@@ -11,6 +11,10 @@
 // core/src/metrics/history.rs at commit 8eedcf2, MIT License, (c) 2026 TheRoben.
 // Local changes are marked `NODE:`.
 
+#[cfg(unix)]
+pub mod collect;
+#[cfg(windows)]
+#[path = "../win/collect.rs"]
 pub mod collect;
 pub mod parse;
 
