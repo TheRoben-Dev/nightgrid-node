@@ -11,6 +11,7 @@ use nightgrid_node_proto::{
     method, Alert, AlertKind, CursorParams, ErrorCode, EventKind, Level, NodeIdentity, Peer, Severity, MAX_POINTS,
     MAX_ROWS,
 };
+use serde_json::value::RawValue;
 use serde_json::{json, Value};
 
 use crate::config::Config;
@@ -260,13 +261,54 @@ fn bad(m: impl Into<String>) -> (ErrorCode, String) {
     (ErrorCode::BadRequest, m.into())
 }
 
-fn parse_rows(rows: Vec<(i64, String)>) -> Vec<Value> {
-    rows.into_iter().filter_map(|(_, s)| serde_json::from_str(&s).ok()).collect()
+/// Stored rows are the member's own JSON; they are passed on as text, never
+/// parsed into `Value` trees (which take several times the memory).
+fn parse_rows(rows: Vec<(i64, String)>) -> Vec<Box<RawValue>> {
+    rows.into_iter().filter_map(|(_, s)| RawValue::from_string(s).ok()).collect()
+}
+
+/// One page of rows plus its cursor fields, as JSON text.
+#[derive(Debug)]
+pub struct Answer(Box<RawValue>);
+
+impl Answer {
+    fn page(items: (&str, Vec<Box<RawValue>>), fields: Value) -> Self {
+        let mut m: std::collections::BTreeMap<String, AnswerField> = std::collections::BTreeMap::new();
+        if let Value::Object(o) = fields {
+            for (k, v) in o {
+                m.insert(k, AnswerField::Value(v));
+            }
+        }
+        m.insert(items.0.to_owned(), AnswerField::Rows(items.1));
+        Self(serde_json::value::to_raw_value(&m).unwrap_or_else(|_| RawValue::from_string("null".into()).unwrap()))
+    }
+
+    fn value(v: &Value) -> Self {
+        Self(serde_json::value::to_raw_value(v).unwrap_or_else(|_| RawValue::from_string("null".into()).unwrap()))
+    }
+
+    /// The answer as a `Value` (tests and small answers).
+    pub fn to_value(&self) -> Value {
+        serde_json::from_str(self.0.get()).unwrap_or(Value::Null)
+    }
+}
+
+impl serde::Serialize for Answer {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        self.0.serialize(s)
+    }
+}
+
+#[derive(serde::Serialize)]
+#[serde(untagged)]
+enum AnswerField {
+    Value(Value),
+    Rows(Vec<Box<RawValue>>),
 }
 
 /// `fleet.sync`: one member's read method, from the hub's copy, in exactly
 /// the shape the node answers with.
-pub fn sync(hub: &Hub, p: &SyncParams) -> Result<Value, (ErrorCode, String)> {
+pub fn sync(hub: &Hub, p: &SyncParams) -> Result<Answer, (ErrorCode, String)> {
     let st = hub.store();
     let internal = |e: rusqlite::Error| (ErrorCode::Internal, e.to_string());
     if st.added(&p.node_id).map_err(internal)?.is_none() {
@@ -280,9 +322,13 @@ pub fn sync(hub: &Hub, p: &SyncParams) -> Result<Value, (ErrorCode, String)> {
     match p.method.as_str() {
         method::NODE_INFO => {
             let row = st.member_row(id).map_err(internal)?;
-            row.info.ok_or_else(|| (ErrorCode::Internal, "not pulled from that member yet".to_owned()))
+            row.info
+                .map(|v| Answer::value(&v))
+                .ok_or_else(|| (ErrorCode::Internal, "not pulled from that member yet".to_owned()))
         }
-        method::ALERTS_ACTIVE => Ok(st.member_row(id).map_err(internal)?.alerts.unwrap_or_else(|| json!([]))),
+        method::ALERTS_ACTIVE => {
+            Ok(Answer::value(&st.member_row(id).map_err(internal)?.alerts.unwrap_or_else(|| json!([]))))
+        }
         method::METRICS_SYNC => {
             let sp: nightgrid_node_proto::SyncParams =
                 serde_json::from_value(params).map_err(|e| bad(format!("params: {e}")))?;
@@ -295,7 +341,10 @@ pub fn sync(hub: &Hub, p: &SyncParams) -> Result<Value, (ErrorCode, String)> {
             rows.truncate(limit);
             let next = rows.last().map_or(sp.after, |r| r.0);
             let oldest = st.metrics_oldest(id, sp.res).map_err(internal)?;
-            Ok(json!({"res": sp.res, "points": parse_rows(rows), "next": next, "more": more, "oldest": oldest}))
+            Ok(Answer::page(
+                ("points", parse_rows(rows)),
+                json!({"res": sp.res, "next": next, "more": more, "oldest": oldest}),
+            ))
         }
         method::EVENTS_SYNC => {
             let c = cursor()?;
@@ -310,7 +359,7 @@ pub fn sync(hub: &Hub, p: &SyncParams) -> Result<Value, (ErrorCode, String)> {
                 next = st.events_newest(id).map_err(internal)?.unwrap_or(c.after).max(c.after);
             }
             let oldest = st.events_oldest(id).map_err(internal)?;
-            Ok(json!({"events": parse_rows(rows), "next": next, "more": more, "oldest": oldest}))
+            Ok(Answer::page(("events", parse_rows(rows)), json!({"next": next, "more": more, "oldest": oldest})))
         }
         method::UPTIME_SYNC => {
             let c = cursor()?;
@@ -319,7 +368,7 @@ pub fn sync(hub: &Hub, p: &SyncParams) -> Result<Value, (ErrorCode, String)> {
             let more = rows.len() > limit;
             rows.truncate(limit);
             let next = rows.last().map_or(c.after, |r| r.0);
-            Ok(json!({"hours": parse_rows(rows), "next": next, "more": more}))
+            Ok(Answer::page(("hours", parse_rows(rows)), json!({"next": next, "more": more})))
         }
         method::DISK_SYNC => {
             let c = cursor()?;
@@ -336,7 +385,7 @@ pub fn sync(hub: &Hub, p: &SyncParams) -> Result<Value, (ErrorCode, String)> {
                 }
             }
             let next = rows.last().map_or(c.after, |r| r.0);
-            Ok(json!({"rows": parse_rows(rows), "next": next, "more": more}))
+            Ok(Answer::page(("rows", parse_rows(rows)), json!({"next": next, "more": more})))
         }
         m => Err((
             ErrorCode::BadRequest,
@@ -346,7 +395,7 @@ pub fn sync(hub: &Hub, p: &SyncParams) -> Result<Value, (ErrorCode, String)> {
 }
 
 /// `fleet.events.sync`: the hub's own timeline, shaped like `events.sync`.
-pub fn hub_events(hub: &Hub, c: &CursorParams) -> Result<Value, String> {
+pub fn hub_events(hub: &Hub, c: &CursorParams) -> Result<Answer, String> {
     let st = hub.store();
     let limit = c.limit.unwrap_or(MAX_ROWS).clamp(1, MAX_ROWS);
     let mut rows = st.hub_events_after(c.after, limit + 1).map_err(|e| e.to_string())?;
@@ -354,7 +403,7 @@ pub fn hub_events(hub: &Hub, c: &CursorParams) -> Result<Value, String> {
     rows.truncate(limit);
     let next = rows.last().map_or(c.after, |r| r.0);
     let oldest = st.hub_events_oldest().map_err(|e| e.to_string())?;
-    Ok(json!({"events": parse_rows(rows), "next": next, "more": more, "oldest": oldest}))
+    Ok(Answer::page(("events", parse_rows(rows)), json!({"next": next, "more": more, "oldest": oldest})))
 }
 
 fn alert_id(id: &str) -> u32 {
@@ -460,7 +509,8 @@ mod tests {
         ingest(&h, batch, 200).unwrap();
         let got =
             sync(&h, &SyncParams { node_id: a.id.clone(), method: "events.sync".into(), params: json!({"after": 7}) })
-                .unwrap();
+                .unwrap()
+                .to_value();
         assert_eq!(got["events"].as_array().unwrap().len(), 1);
         assert_eq!((got["next"].as_i64(), got["oldest"].as_i64()), (Some(8), Some(7)));
         let r: nightgrid_node_proto::EventsResult = serde_json::from_value(got).unwrap();
@@ -475,6 +525,7 @@ mod tests {
                 },
             )
             .unwrap()
+            .to_value()
         };
         let got = only_boot(0);
         assert_eq!((got["events"][0]["seq"].as_i64(), got["next"].as_i64()), (Some(7), Some(8)), "{got}");
@@ -488,7 +539,8 @@ mod tests {
                 params: json!({"res": 60, "after": 0, "limit": 1}),
             },
         )
-        .unwrap();
+        .unwrap()
+        .to_value();
         assert_eq!((m["next"].as_i64(), m["more"].as_bool()), (Some(60), Some(true)));
         assert_eq!(plan(&h).unwrap().members[0].cursors["events"], 8);
         let o = overview(&h, 210).unwrap();
@@ -524,7 +576,7 @@ mod tests {
         ingest(&h, ok, 1310).unwrap();
         assert_eq!(check_offline(&h, 1320).unwrap(), vec!["host-a back online"]);
         let ev = hub_events(&h, &CursorParams { after: 0, limit: None, kinds: None }).unwrap();
-        let r: nightgrid_node_proto::EventsResult = serde_json::from_value(ev).unwrap();
+        let r: nightgrid_node_proto::EventsResult = serde_json::from_value(ev.to_value()).unwrap();
         assert_eq!(r.events.len(), 2);
         assert_eq!(r.events[0].alert.as_ref().unwrap().kind, AlertKind::HostOffline);
         assert!(r.events[1].alert.as_ref().unwrap().resolved.is_some());

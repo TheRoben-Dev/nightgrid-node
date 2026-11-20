@@ -190,7 +190,7 @@ mod tests {
         let r = call(&h, &mut s, hm::OVERVIEW, Value::Null);
         assert_eq!(r.error.unwrap().code, ErrorCode::HelloRequired);
         let w = call(&h, &mut s, method::HELLO, json!({"protoMin": 1, "protoMax": 2, "client": "test"}));
-        let w: Welcome = serde_json::from_value(w.result.unwrap()).unwrap();
+        let w: Welcome = serde_json::from_value(w.result_value().unwrap()).unwrap();
         assert_eq!((w.caps.get("fleet"), w.node.node_id.len()), (Some(&1), 32));
         assert!(call(&h, &mut s, hm::OVERVIEW, Value::Null).error.is_none());
         let r = call(&h, &mut s, hm::INGEST, json!({"fingerprint": "", "answers": []}));

@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/proto", "crates/node", "crates/hub"]
 
 [workspace.package]
-version = "0.29.0"
+version = "0.29.1"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/TheRoben-Dev/nightgrid-node"
@@ -11,7 +11,7 @@ rust-version = "1.89"
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["raw_value"] }
 
 [profile.release]
 opt-level = "s"

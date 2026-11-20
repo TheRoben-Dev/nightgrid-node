@@ -873,7 +873,7 @@ fn dispatch(shared: &Shared, session: &mut Session, req: &Request) -> Result<Res
                     }
                     let inner = Request { id: 0, method: r.method, params: r.params };
                     let out = dispatch(shared, session, &inner)?;
-                    let size = out.result.as_ref().map_or(0, |v| serde_json::to_vec(v).map_or(0, |b| b.len()));
+                    let size = out.result_len();
                     if size > nightgrid_node_proto::HUB_MAX_ANSWER {
                         return Err(Response::err(0, ErrorCode::TooLarge, "answer too large; ask for a smaller limit"));
                     }
@@ -1030,9 +1030,9 @@ mod tests {
         assert_eq!(code(&r), Some(ErrorCode::Forbidden), "no hub named yet");
         assert!(call(&s, &mut ses, 5, method::HUB_MEMBER_SET, json!({"hubId": hub})).error.is_none());
         let got = call(&s, &mut ses, 6, method::HUB_MEMBER_GET, Value::Null);
-        assert_eq!(got.result.unwrap()["hubId"], hub);
+        assert_eq!(got.result_value().unwrap()["hubId"], hub);
         let r = call(&s, &mut ses, 7, method::PEERS_INBOUND, sync(&hub, "events.sync"));
-        assert!(r.result.as_ref().is_some_and(|v| v["events"].is_array()), "{r:?}");
+        assert!(r.result_value().as_ref().is_some_and(|v| v["events"].is_array()), "{r:?}");
         let r = call(&s, &mut ses, 8, method::PEERS_INBOUND, sync(&hub, "metrics.sync"));
         assert_eq!(code(&r), Some(ErrorCode::BadRequest), "the inner method's own params are checked");
         for m in ["actions.run", "peers.set", "hub.member.set", "alerts.rules.set", "peers.inbound", "hello"] {
@@ -1108,7 +1108,7 @@ mod tests {
             codes.map(|c| serde_json::to_value(c).unwrap().as_str().unwrap().to_owned()).join(" ")
         );
         let mut fields = BTreeSet::new();
-        let mut hello = w.result.clone().unwrap();
+        let mut hello = w.result_value().unwrap();
         // Windows advertises a subset of the same capabilities (`advertised`);
         // the frozen shape is the full set.
         hello["caps"] = serde_json::to_value(caps()).unwrap();
@@ -1119,7 +1119,7 @@ mod tests {
         for m in methods.iter().filter(|m| m.as_str() != method::HELLO) {
             let r = call(&s, &mut ses, 2, m, json!({"after": 0, "hours": 24}));
             let mut fields = BTreeSet::new();
-            if let Some(v) = &r.result {
+            if let Some(v) = &r.result_value() {
                 shape(v, "", &mut fields);
             }
             let tag = match &r.error {
@@ -1191,12 +1191,12 @@ mod tests {
         assert_eq!(code(&r), Some(ErrorCode::UnsupportedProto));
         let r = call(&s, &mut ses, 3, "hello", json!({"protoMin": 1, "protoMax": 9, "client": "test"}));
         assert_eq!(r.id, 3);
-        let w: Welcome = serde_json::from_value(r.result.unwrap()).unwrap();
+        let w: Welcome = serde_json::from_value(r.result_value().unwrap()).unwrap();
         assert_eq!(w.proto, PROTO_VERSION);
         assert_eq!(w.caps.get("metrics.sync"), Some(&1));
         assert_eq!(w.node.node_id.len(), 32);
         let r = call(&s, &mut ses, 4, "node.info", Value::Null);
-        let info: NodeInfo = serde_json::from_value(r.result.unwrap()).unwrap();
+        let info: NodeInfo = serde_json::from_value(r.result_value().unwrap()).unwrap();
         assert_eq!(info.retention.hourly_days, 400);
         assert_eq!(info.coverage.len(), 3);
         assert_eq!(code(&call(&s, &mut ses, 5, "nope", Value::Null)), Some(ErrorCode::UnknownMethod));
@@ -1221,7 +1221,7 @@ mod tests {
         let mut got = Vec::new();
         loop {
             let r = call(&s, &mut ses, 2, "metrics.sync", json!({"res": MINUTE, "after": after, "limit": 50}));
-            let page: SyncResult = serde_json::from_value(r.result.unwrap()).unwrap();
+            let page: SyncResult = serde_json::from_value(r.result_value().unwrap()).unwrap();
             assert_eq!(page.oldest, Some(start));
             got.extend(page.points.iter().map(|p| p.ts as i64));
             after = page.next;
@@ -1232,12 +1232,12 @@ mod tests {
         assert_eq!(got, (0..120).map(|i| start + i * 60).collect::<Vec<_>>());
         // Rollups: 8 closed 15-minute buckets.
         let r = call(&s, &mut ses, 3, "metrics.sync", json!({"res": ROLLUP, "after": 0}));
-        let page: SyncResult = serde_json::from_value(r.result.unwrap()).unwrap();
+        let page: SyncResult = serde_json::from_value(r.result_value().unwrap()).unwrap();
         assert_eq!(page.points.len(), 8);
         assert_eq!(page.points[0].n, 15);
         // History picks the tier by range.
         let r = call(&s, &mut ses, 4, "metrics.history", json!({"from": start, "to": start + 3600}));
-        let h: HistoryResult = serde_json::from_value(r.result.unwrap()).unwrap();
+        let h: HistoryResult = serde_json::from_value(r.result_value().unwrap()).unwrap();
         assert_eq!((h.res, h.points.len(), h.truncated), (MINUTE, 61, false));
         let r = call(&s, &mut ses, 5, "metrics.sync", json!({"res": 61, "after": 0}));
         assert_eq!(code(&r), Some(ErrorCode::BadRequest));
@@ -1268,22 +1268,25 @@ mod tests {
         let mut ses = Session::default();
         call(&s, &mut ses, 1, "hello", json!({"protoMin": 1, "protoMax": 1}));
         let r: EventsResult = serde_json::from_value(
-            call(&s, &mut ses, 2, "events.sync", json!({"after": 0, "limit": 3})).result.unwrap(),
+            call(&s, &mut ses, 2, "events.sync", json!({"after": 0, "limit": 3})).result_value().unwrap(),
         )
         .unwrap();
         assert_eq!((r.events.len(), r.next, r.more, r.oldest), (3, 3, true, Some(1)));
         let r: EventsResult =
-            serde_json::from_value(call(&s, &mut ses, 3, "events.sync", json!({"after": 3})).result.unwrap()).unwrap();
+            serde_json::from_value(call(&s, &mut ses, 3, "events.sync", json!({"after": 3})).result_value().unwrap())
+                .unwrap();
         assert_eq!((r.events.len(), r.next, r.more), (2, 5, false));
 
         // Disk pages never split an hour: limit 3 gives one whole hour (2 rows).
-        let r: DiskResult =
-            serde_json::from_value(call(&s, &mut ses, 4, "disk.sync", json!({"after": 0, "limit": 3})).result.unwrap())
-                .unwrap();
+        let r: DiskResult = serde_json::from_value(
+            call(&s, &mut ses, 4, "disk.sync", json!({"after": 0, "limit": 3})).result_value().unwrap(),
+        )
+        .unwrap();
         assert_eq!((r.rows.len(), r.next, r.more), (2, 36000, true));
-        let r: DiskResult =
-            serde_json::from_value(call(&s, &mut ses, 5, "disk.sync", json!({"after": 0, "limit": 1})).result.unwrap())
-                .unwrap();
+        let r: DiskResult = serde_json::from_value(
+            call(&s, &mut ses, 5, "disk.sync", json!({"after": 0, "limit": 1})).result_value().unwrap(),
+        )
+        .unwrap();
         assert_eq!((r.rows.len(), r.next), (2, 36000));
 
         let r = call(&s, &mut ses, 6, "uptime.sync", json!({"after": 0}));
@@ -1294,10 +1297,10 @@ mod tests {
         let r = call(&s, &mut ses, 8, "alerts.rules.set", json!({"diskPercent": 80, "webhook": "ntfy"}));
         assert!(r.error.is_none());
         let r = call(&s, &mut ses, 9, "alerts.rules.get", Value::Null);
-        assert_eq!(r.result.unwrap()["diskPercent"], 80);
+        assert_eq!(r.result_value().unwrap()["diskPercent"], 80);
         assert_eq!(crate::engine::load_rules(&s.store.lock().unwrap()).disk_percent, 80);
-        assert_eq!(call(&s, &mut ses, 10, "alerts.active", Value::Null).result, Some(json!([])));
-        let r = call(&s, &mut ses, 11, "containers.list", Value::Null).result.unwrap();
+        assert_eq!(call(&s, &mut ses, 10, "alerts.active", Value::Null).result_value(), Some(json!([])));
+        let r = call(&s, &mut ses, 11, "containers.list", Value::Null).result_value().unwrap();
         // Windows has no container watcher yet (W3), so it reads as off.
         let access = if cfg!(windows) { "off" } else { "absent" };
         assert_eq!((r["access"].as_str(), r["containers"].as_array().map(Vec::len)), (Some(access), Some(0)));
@@ -1322,6 +1325,6 @@ mod tests {
         let mut ses = Session::default();
         call(&s, &mut ses, 1, "hello", json!({"protoMin": 1, "protoMax": 1}));
         let r = call(&s, &mut ses, 2, "metrics.latest", Value::Null);
-        assert_eq!(r.result, Some(Value::Null));
+        assert_eq!(r.result_value(), Some(Value::Null));
     }
 }
