@@ -21,7 +21,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use windows_sys::Win32::NetworkManagement::NetManagement::{
-    NetLocalGroupAdd, NetLocalGroupAddMembers, NetLocalGroupDel, LOCALGROUP_INFO_1, LOCALGROUP_MEMBERS_INFO_3,
+    NetLocalGroupAdd, NetLocalGroupAddMembers, NetLocalGroupDel, NetLocalGroupDelMembers, LOCALGROUP_INFO_1,
+    LOCALGROUP_MEMBERS_INFO_3,
 };
 use windows_sys::Win32::Security::Authorization::{SetNamedSecurityInfoW, SE_FILE_OBJECT};
 use windows_sys::Win32::Security::{
@@ -190,6 +191,15 @@ pub fn install(self_exe: &Path, opts: &InstallOptions) -> Result<Report, String>
     )?;
     drop(m);
     step(&mut rep, if created { "created the service" } else { "updated the service" });
+    let account = format!("NT SERVICE\\{SERVICE}");
+    match builtin_group(PERF_USERS).map(|g| (add_to_group(&g, &account), g)) {
+        Some((Ok(true), g)) => step(&mut rep, format!("added the service to {g:?} (to read performance counters)")),
+        Some((Ok(false), _)) => {}
+        Some((Err(e), _)) => rep.warnings.push(format!("{e}: CPU, disk and network figures will be missing")),
+        None => rep
+            .warnings
+            .push("no Performance Monitor Users group: CPU, disk and network figures will be missing".into()),
+    }
 
     // 4. Folders and their ACLs (the service SID exists now).
     let etc = super::etc_dir();
@@ -238,6 +248,11 @@ pub fn uninstall(purge: bool) -> Result<Report, String> {
     preflight()?;
     let mut rep = report("uninstall");
     scm::stop(SERVICE, Duration::from_secs(30))?;
+    if let Some(g) = builtin_group(PERF_USERS) {
+        if remove_from_group(&g, &format!("NT SERVICE\\{SERVICE}")) {
+            step(&mut rep, format!("removed the service from {g:?}"));
+        }
+    }
     if scm::delete(SERVICE)? {
         step(&mut rep, "removed the service");
     }
@@ -367,9 +382,45 @@ fn ensure_group() -> Result<bool, String> {
     }
 }
 
-/// Adds an account to the group. True when it was added.
+/// Adds an account to the node's group. True when it was added.
 fn add_member(user: &str) -> Result<bool, String> {
-    let g = wide(GROUP);
+    add_to_group(GROUP, user)
+}
+
+/// Builtin "Performance Monitor Users": a service isn't an interactive
+/// logon, so it may read performance counters only as a member.
+const PERF_USERS: &str = "S-1-5-32-558";
+
+/// The local name of a builtin group (the names are translated).
+fn builtin_group(sid: &str) -> Option<String> {
+    use windows_sys::Win32::Security::Authorization::ConvertStringSidToSidW;
+    let w = wide(sid);
+    let mut p: windows_sys::Win32::Security::PSID = std::ptr::null_mut();
+    // SAFETY: Windows allocates the SID; `Local` frees it.
+    if unsafe { ConvertStringSidToSidW(w.as_ptr(), &mut p) } == 0 {
+        return None;
+    }
+    let _free = super::Local(p);
+    // SAFETY: a valid SID from the call above.
+    let name = unsafe { acl::account_name(p) }?;
+    Some(name.rsplit('\\').next().unwrap_or(&name).to_owned())
+}
+
+/// Removes an account from a local group. True when it was a member.
+fn remove_from_group(group: &str, user: &str) -> bool {
+    let g = wide(group);
+    let mut u = wide(user);
+    let m = LOCALGROUP_MEMBERS_INFO_3 { lgrmi3_domainandname: u.as_mut_ptr() };
+    // SAFETY: one valid level-3 entry.
+    unsafe {
+        NetLocalGroupDelMembers(std::ptr::null(), g.as_ptr(), 3, (&m as *const LOCALGROUP_MEMBERS_INFO_3).cast(), 1)
+            == 0
+    }
+}
+
+/// Adds an account to a local group. True when it was added.
+fn add_to_group(group: &str, user: &str) -> Result<bool, String> {
+    let g = wide(group);
     let mut u = wide(user);
     let m = LOCALGROUP_MEMBERS_INFO_3 { lgrmi3_domainandname: u.as_mut_ptr() };
     // SAFETY: one valid level-3 entry.
@@ -380,7 +431,7 @@ fn add_member(user: &str) -> Result<bool, String> {
         0 => Ok(true),
         1378 => Ok(false), // ERROR_MEMBER_IN_ALIAS
         1332 => Err(format!("no account named {user}")),
-        e => Err(format!("add {user} to {GROUP:?}: {}", std::io::Error::from_raw_os_error(e as i32))),
+        e => Err(format!("add {user} to {group:?}: {}", std::io::Error::from_raw_os_error(e as i32))),
     }
 }
 

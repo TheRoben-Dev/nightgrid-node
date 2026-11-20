@@ -52,6 +52,8 @@ struct Pdh {
     disk_read: PDH_HCOUNTER,
     disk_write: PDH_HCOUNTER,
     thermal: PDH_HCOUNTER,
+    /// A failed collection is logged once.
+    warned: std::sync::atomic::AtomicBool,
 }
 
 // SAFETY: PDH handles may be used from any thread, one at a time; the
@@ -62,7 +64,9 @@ impl Pdh {
     fn open() -> Option<Self> {
         let mut query: PDH_HQUERY = std::ptr::null_mut();
         // SAFETY: a fresh query handle.
-        if unsafe { windows_sys::Win32::System::Performance::PdhOpenQueryW(std::ptr::null(), 0, &mut query) } != 0 {
+        let r = unsafe { windows_sys::Win32::System::Performance::PdhOpenQueryW(std::ptr::null(), 0, &mut query) };
+        if r != 0 {
+            crate::warn!("performance counters unavailable: PDH status {r:#010x}");
             return None;
         }
         let add = |path: &str| -> PDH_HCOUNTER {
@@ -70,7 +74,9 @@ impl Pdh {
             let mut c: PDH_HCOUNTER = std::ptr::null_mut();
             // SAFETY: valid query and path. A counter missing on this host
             // (no thermal zones, say) stays null and reads as nothing.
-            if unsafe { PdhAddEnglishCounterW(query, w.as_ptr(), 0, &mut c) } != 0 {
+            let r = unsafe { PdhAddEnglishCounterW(query, w.as_ptr(), 0, &mut c) };
+            if r != 0 {
+                crate::warn!("performance counter {path}: PDH status {r:#010x}");
                 return std::ptr::null_mut();
             }
             c
@@ -85,12 +91,17 @@ impl Pdh {
             disk_read: add(r"\PhysicalDisk(*)\Disk Read Bytes/sec"),
             disk_write: add(r"\PhysicalDisk(*)\Disk Write Bytes/sec"),
             thermal: add(r"\Thermal Zone Information(*)\Temperature"),
+            warned: Default::default(),
         })
     }
 
     fn collect(&self) -> bool {
         // SAFETY: valid query.
-        unsafe { PdhCollectQueryData(self.query) == 0 }
+        let r = unsafe { PdhCollectQueryData(self.query) };
+        if r != 0 && !self.warned.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            crate::warn!("reading performance counters failed: PDH status {r:#010x}");
+        }
+        r == 0
     }
 
     /// Instance name → raw first value.
