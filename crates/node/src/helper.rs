@@ -413,7 +413,8 @@ mod tests {
             !handle(&c, &LocalFixes::default(), &req("power.poweroff", None), Path::new("/nonexistent"), &mut f).ok
         );
         let r = handle(&c, &LocalFixes::default(), &req("power.reboot", None), Path::new("/nonexistent"), &mut f);
-        assert!(r.ok && r.detail.contains("shutdown -c"), "{r:?}");
+        let cancel = if cfg!(windows) { "shutdown /a" } else { "shutdown -c" };
+        assert!(r.ok && r.detail.contains(cancel), "{r:?}");
         #[cfg(unix)]
         assert_eq!(f.log, ["systemctl restart -- nginx.service", "shutdown -r +1 requested from Nightgrid Node"]);
         #[cfg(windows)]
