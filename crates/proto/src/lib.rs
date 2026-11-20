@@ -293,23 +293,63 @@ pub struct Request {
     pub params: Value,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct Response {
     pub id: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub result: Option<Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub error: Option<RpcError>,
+    /// `result` already written as JSON text (`Response::ok`), so a big
+    /// answer never exists as a `Value` tree, which takes about eight
+    /// times the memory of its text.
+    #[serde(skip)]
+    pub raw: Option<String>,
+}
+
+impl Serialize for Response {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut st = s.serialize_struct("Response", 2)?;
+        st.serialize_field("id", &self.id)?;
+        if let Some(raw) = &self.raw {
+            let v: &serde_json::value::RawValue = serde_json::from_str(raw).map_err(serde::ser::Error::custom)?;
+            st.serialize_field("result", v)?;
+        } else if let Some(r) = &self.result {
+            st.serialize_field("result", r)?;
+        }
+        if let Some(e) = &self.error {
+            st.serialize_field("error", e)?;
+        }
+        st.end()
+    }
 }
 
 impl Response {
     pub fn ok(id: u64, result: impl Serialize) -> Self {
-        let result = serde_json::to_value(result).unwrap_or(Value::Null);
-        Self { id, result: Some(result), error: None }
+        let raw = serde_json::to_string(&result).unwrap_or_else(|_| "null".into());
+        Self { id, result: None, error: None, raw: Some(raw) }
+    }
+
+    /// The result as a `Value`, whichever way it is held.
+    pub fn result_value(&self) -> Option<Value> {
+        match &self.raw {
+            Some(r) => serde_json::from_str(r).ok(),
+            None => self.result.clone(),
+        }
+    }
+
+    /// Length of the result as JSON text.
+    pub fn result_len(&self) -> usize {
+        match (&self.raw, &self.result) {
+            (Some(r), _) => r.len(),
+            (None, Some(v)) => serde_json::to_vec(v).map_or(0, |b| b.len()),
+            (None, None) => 0,
+        }
     }
 
     pub fn err(id: u64, code: ErrorCode, message: impl Into<String>) -> Self {
-        Self { id, result: None, error: Some(RpcError { code, message: message.into() }) }
+        Self { id, result: None, error: Some(RpcError { code, message: message.into() }), raw: None }
     }
 }
 

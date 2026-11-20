@@ -13,6 +13,13 @@ Additive only: no frozen method, field, frame or link request changed (the froze
 - **Usage on Windows**: CPU, working set and I/O per service and for the busiest process names, read from the system process list without opening any process. Services that share a process are named together.
 - **Watched files on Windows**: the defaults are the OpenSSH server's config, administrators' keys and the hosts file. The baseline adds start-up folders, Group Policy scripts, the machine PowerShell profiles, scheduled tasks and users' `authorized_keys`.
 - The Windows CI end-to-end test now also checks failed network logons becoming login events, ports with processes, the gateway, usage per service, and a hosts-file change becoming a file event.
+## 0.29.1 · Memory: answers written straight to text (2026-11-20)
+
+- **Lower memory with a full history.** The node built every answer as an in-memory JSON tree before sending it, about eight times the size of the text: a 5 000-point `metrics.sync` page (1.6 MB) briefly took about 13 MB. The release builds' musl allocator keeps such freed memory fragmented, so RSS climbed with each big sync, to 37 to 55 MB on hosts in use and 59 MB in a test with 260 full syncs. It was not a leak (valgrind finds nothing lost, and RSS falls back between peaks). Answers are now written straight to text; the same test ends at about 12 MB with a 14.5 MB peak (11 to 18 MB on 32-bit).
+- **Hub:** `fleet.sync` and `fleet.events.sync` pass the stored rows through as text instead of parsing them into trees first.
+- **Wire:** the same fields and values. Two textual differences: keys come in declaration order instead of alphabetical, and 32-bit float values use their shortest form (`18.097475` instead of `18.097475051879883`). JSON parsers, including the app's, read both the same way. The frozen protocol test passes as it was.
+- **CI:** a new e2e test builds 14 days of history and 20 000 events, runs the app's full sync 31 times and fails if the peak RSS passes 24 MB (48 MB in debug builds) or RSS grows by more than 10 MB after the first sync. It runs natively and on the 32-bit musl targets.
+- **Docs:** the memory figures in DESIGN.md and HUB.md are measured again (5 to 8 MB fresh, 10 to 18 MB with a full history).
 
 ## 0.29.0 · W0: Windows Server node (2026-11-20)
 
