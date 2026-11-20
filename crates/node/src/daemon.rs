@@ -353,7 +353,7 @@ pub fn run(config: Config, paths: Paths) -> Result<(), String> {
         None
     };
     let healer = crate::heal::Healer::start(shared.clone()).map_err(|e| format!("self-healing: {e}"))?;
-    let usage = if cfg!(unix) && config.usage.enabled {
+    let usage = if config.usage.enabled {
         Some(
             crate::usage::UsageWatcher::start(shared.clone(), crate::usage::UsageReader::system())
                 .map_err(|e| format!("usage watcher: {e}"))?,

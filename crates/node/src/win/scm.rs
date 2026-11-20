@@ -21,7 +21,7 @@ const ERROR_SERVICE_NOT_ACTIVE: i32 = 1062;
 const ERROR_SERVICE_ALREADY_RUNNING: i32 = 1056;
 const SERVICE_SID_TYPE_RESTRICTED: u32 = 3;
 
-pub struct Sc(SC_HANDLE);
+pub struct Sc(pub(super) SC_HANDLE);
 
 impl Drop for Sc {
     fn drop(&mut self) {
@@ -41,6 +41,19 @@ pub fn manager(write: bool) -> Result<Sc, String> {
     let access = if write { SC_MANAGER_ALL_ACCESS } else { SC_MANAGER_CONNECT };
     // SAFETY: local machine, default database.
     let h = unsafe { OpenSCManagerW(std::ptr::null(), std::ptr::null(), access) };
+    if h.is_null() {
+        return Err(err("open the Service Control Manager"));
+    }
+    Ok(Sc(h))
+}
+
+/// The SCM, for listing services.
+pub fn manager_enumerate() -> Result<Sc, String> {
+    use windows_sys::Win32::System::Services::SC_MANAGER_ENUMERATE_SERVICE;
+    // SAFETY: local machine, default database.
+    let h = unsafe {
+        OpenSCManagerW(std::ptr::null(), std::ptr::null(), SC_MANAGER_CONNECT | SC_MANAGER_ENUMERATE_SERVICE)
+    };
     if h.is_null() {
         return Err(err("open the Service Control Manager"));
     }

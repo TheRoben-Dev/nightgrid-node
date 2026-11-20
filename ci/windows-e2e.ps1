@@ -131,6 +131,21 @@ Write-Host "listeners $(@($ports.listeners).Count), 135 is $($rpc[0].process)"
 if ($null -eq $net -or $net.at -eq 0 -or -not $net.gateway) { Fail "net.devices: $($r[2])" }
 Write-Host "gateway $($net.gateway), devices $(@($net.devices).Count)"
 
+Step 'usage per service and per process'
+$deadline = (Get-Date).AddSeconds(60)
+do {
+    Start-Sleep -Seconds 5
+    $r = @(Bridge @($hello, '{"id":2,"method":"usage.latest"}'))
+    $u = ($r[1] | ConvertFrom-Json).result
+    $svc = @($u.items | Where-Object { $_.kind -eq 'service' })
+} while ($svc.Count -lt 5 -and (Get-Date) -lt $deadline)
+if ($svc.Count -lt 5 -or -not $u.cgroups) { Fail "usage.latest: $($r[1])" }
+$me = @($svc | Where-Object { $_.name -eq 'nightgrid-node' })
+if ($me.Count -ne 1 -or $me[0].mem -le 0) { Fail "the node's own service is missing from usage: $($r[1])" }
+$procs = @($u.items | Where-Object { $_.kind -eq 'process' })
+if ($procs.Count -lt 5) { Fail "usage processes: $($r[1])" }
+Write-Host "services $($svc.Count), top process $($procs[0].name) $($procs[0].cpu)%, node $([math]::Round($me[0].mem / 1MB, 1)) MB"
+
 Step 'allow eventlog: failed network logons become login events'
 $j = & $bin allow eventlog --json
 Write-Host $j

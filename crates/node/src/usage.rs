@@ -136,6 +136,16 @@ fn rapl_zones(root: &Path) -> Result<Vec<(String, u64, u64, bool)>, &'static str
     Ok(out)
 }
 
+/// The item name of services that share one process: up to three names
+/// joined with `+`, or two and how many more.
+pub fn service_group_name(names: &[String]) -> String {
+    if names.len() <= 3 {
+        names.join("+")
+    } else {
+        format!("{}+{} more", names[..2].join("+"), names.len() - 2)
+    }
+}
+
 /// Turns two samples of a monotonically growing counter into a rate.
 fn rate(new: u64, old: u64, secs: f64) -> f64 {
     if secs <= 0.0 {
@@ -154,6 +164,12 @@ pub struct UsageReader {
     prev_groups: HashMap<(String, String), Counters>,
     prev_procs: HashMap<u32, u64>,
     prev_rapl: HashMap<String, u64>,
+    /// Windows: CPU time per (pid, start time).
+    #[cfg(windows)]
+    prev_win_procs: HashMap<(u32, i64), u64>,
+    /// Windows: counters per service, with the pid they were read from.
+    #[cfg(windows)]
+    prev_win_services: HashMap<String, (u32, Counters)>,
 }
 
 impl UsageReader {
@@ -183,6 +199,10 @@ impl UsageReader {
             prev_groups: HashMap::new(),
             prev_procs: HashMap::new(),
             prev_rapl: HashMap::new(),
+            #[cfg(windows)]
+            prev_win_procs: HashMap::new(),
+            #[cfg(windows)]
+            prev_win_services: HashMap::new(),
         }
     }
 
@@ -282,9 +302,12 @@ impl UsageReader {
         }
         self.prev_groups = groups;
         items.extend(self.processes(secs, first));
+        #[cfg(windows)]
+        items.extend(self.windows(secs, first));
         let power = self.power(secs);
         self.prev_at = Some(now);
-        UsageSample { ts: now_millis(), items, power, cgroups }
+        // Windows measures every service (by its process), like cgroup v2.
+        UsageSample { ts: now_millis(), items, power, cgroups: cgroups || cfg!(windows) }
     }
 
     fn processes(&mut self, secs: f64, first: bool) -> Vec<UsageItem> {
@@ -322,6 +345,80 @@ impl UsageReader {
         v.sort_by(|a, b| b.cpu.total_cmp(&a.cpu).then(b.mem.cmp(&a.mem)));
         v.truncate(TOP_PROCESSES);
         v
+    }
+
+    /// Windows: one item per running service (the process it runs in;
+    /// services sharing a process are named together) and the busiest
+    /// process names. I/O is what the processes read and wrote through
+    /// any handle, network and devices included.
+    #[cfg(windows)]
+    fn windows(&mut self, secs: f64, first: bool) -> Vec<UsageItem> {
+        let procs = crate::win::usage::processes();
+        let by_pid: HashMap<u32, &crate::win::usage::Proc> = procs.iter().map(|p| (p.pid, p)).collect();
+        let cpu_pct = |used_100ns: f64| {
+            if first || secs <= 0.0 {
+                0.0
+            } else {
+                (used_100ns / 1e7 / secs / self.cores * 100.0).clamp(0.0, 100.0) as f32
+            }
+        };
+        let mut hosts: BTreeMap<u32, Vec<String>> = BTreeMap::new();
+        for (name, pid) in crate::win::usage::services() {
+            hosts.entry(pid).or_default().push(name);
+        }
+        let mut items = Vec::new();
+        let mut services = HashMap::new();
+        for (pid, mut names) in hosts {
+            let Some(p) = by_pid.get(&pid) else { continue };
+            names.sort_by_key(|n| n.to_ascii_lowercase());
+            let name = service_group_name(&names);
+            let c = Counters { cpu_usec: p.cpu / 10, io_read: p.read, io_write: p.write, net_rx: None, net_tx: None };
+            let prev = self.prev_win_services.get(&name).filter(|(old, _)| *old == pid).map(|(_, c)| *c);
+            let r = |new: u64, old: Option<u64>| (!first).then(|| rate(new, old.unwrap_or(new), secs));
+            items.push(UsageItem {
+                kind: "service".into(),
+                name: name.clone(),
+                cpu: prev.map_or(0.0, |o| cpu_pct(c.cpu_usec.saturating_sub(o.cpu_usec) as f64 * 10.0)),
+                mem: p.mem,
+                io_read: r(c.io_read, prev.map(|o| o.io_read)),
+                io_write: r(c.io_write, prev.map(|o| o.io_write)),
+                net_rx: None,
+                net_tx: None,
+                count: None,
+            });
+            services.insert(name, (pid, c));
+        }
+        self.prev_win_services = services;
+        let mut by_name: BTreeMap<String, (f64, u64, u32)> = BTreeMap::new();
+        let mut seen = HashMap::new();
+        for p in &procs {
+            let key = (p.pid, p.created);
+            let used = self.prev_win_procs.get(&key).map_or(0, |old| p.cpu.saturating_sub(*old));
+            seen.insert(key, p.cpu);
+            let e = by_name.entry(p.name.clone()).or_default();
+            e.0 += used as f64;
+            e.1 += p.mem;
+            e.2 += 1;
+        }
+        self.prev_win_procs = seen;
+        let mut v: Vec<UsageItem> = by_name
+            .into_iter()
+            .map(|(name, (used, mem, n))| UsageItem {
+                kind: "process".into(),
+                name,
+                cpu: cpu_pct(used),
+                mem,
+                io_read: None,
+                io_write: None,
+                net_rx: None,
+                net_tx: None,
+                count: Some(n),
+            })
+            .collect();
+        v.sort_by(|a, b| b.cpu.total_cmp(&a.cpu).then(b.mem.cmp(&a.mem)));
+        v.truncate(TOP_PROCESSES);
+        items.extend(v);
+        items
     }
 
     fn power(&mut self, secs: f64) -> PowerReading {
@@ -644,5 +741,13 @@ mod tests {
         assert_eq!((a.2.cpu, a.2.mem, a.2.io_read), (Some(20.0), Some(100), Some(10.0)));
         let w = points.iter().find(|p| p.0 == "power" && p.1 == "total").unwrap();
         assert_eq!(w.2.watts, Some(30.0));
+    }
+
+    #[test]
+    fn names_services_sharing_a_process() {
+        let n = |v: &[&str]| service_group_name(&v.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        assert_eq!(n(&["W32Time"]), "W32Time");
+        assert_eq!(n(&["a", "b", "c"]), "a+b+c");
+        assert_eq!(n(&["a", "b", "c", "d"]), "a+b+2 more");
     }
 }
