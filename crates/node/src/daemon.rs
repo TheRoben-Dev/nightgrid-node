@@ -371,7 +371,7 @@ pub fn run(config: Config, paths: Paths) -> Result<(), String> {
     } else {
         None
     };
-    let ports = if cfg!(unix) && config.ports.enabled {
+    let ports = if config.ports.enabled {
         Some(
             crate::ports::PortWatcher::start(shared.clone(), PathBuf::from("/"))
                 .map_err(|e| format!("port watcher: {e}"))?,
