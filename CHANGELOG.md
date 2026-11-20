@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.30.0 · W1: Windows logins, logs, ports, LAN, usage and files (2026-11-20)
+
+Additive only: no frozen method, field, frame or link request changed (the frozen protocol test passes as it was). A Windows node now also advertises `logins`, `logs`, `security`, `net`, `usage` and `files`. App spec [0025](docs/app-integration/0025-windows-node-w1.md). Decisions N-075 to N-079.
+
+- **Event Log reader** (`wevtapi`): channels are polled by record id, with one cursor per channel kept in the store, so nothing is missed while the service is stopped.
+- **`allow eventlog`** (alias `allow journal`) and `deny eventlog`: add the service to Event Log Readers, or take it out, and restart the service. `doctor` has an `eventlog` finding, and `node.info` access `journal` reads `ok` or `denied`.
+- **Logins on Windows**: SSH logins and failures from `OpenSSH/Operational`, Remote Desktop logons (method `rdp`), and failed network logons from other addresses (RDP and SMB guessing) from the Security log. All of them feed the same burst alerts as on Linux.
+- **Logs on Windows**: the System and Application logs stand in for the journal. Providers are the identifiers, messages are formatted by the provider, and levels map to journal priorities. Service crashes and unexpected shutdowns show up as errors there.
+- **Ports on Windows**: TCP and UDP listeners for v4 and v6, each with its owning process's name. Ephemeral UDP is skipped from 49152 up.
+- **LAN devices on Windows**: the neighbour table and the default gateway from IP Helper, with interfaces named by their alias. The wire watch (rogue DHCP) stays off, because it would need Npcap.
+- **Usage on Windows**: CPU, working set and I/O per service and for the busiest process names, read from the system process list without opening any process. Services that share a process are named together.
+- **Watched files on Windows**: the defaults are the OpenSSH server's config, administrators' keys and the hosts file. The baseline adds start-up folders, Group Policy scripts, the machine PowerShell profiles, scheduled tasks and users' `authorized_keys`.
+- The Windows CI end-to-end test now also checks failed network logons becoming login events, ports with processes, the gateway, usage per service, and a hosts-file change becoming a file event.
+
 ## 0.29.0 · W0: Windows Server node (2026-11-20)
 
 Additive only: no frozen method, field, frame or link request changed (the frozen protocol test passes as it was). Plan and parity table: [docs/WINDOWS.md](docs/WINDOWS.md). App spec [0024](docs/app-integration/0024-windows-node.md). Decisions N-070 to N-074.

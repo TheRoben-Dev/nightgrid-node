@@ -65,14 +65,14 @@ Supported: Windows Server 2016, 2019, 2022 and 2025 (and Windows 10/11, which us
 | `disk` (usage trend, forecasts), `alerts` | Direct | | W0 |
 | `install`, `uninstall [--purge]`, `--user`, `--no-start`, `--json` | Direct | SCM, ACLs, service hardening rules, local group | W0 |
 | `doctor` | Direct | Service state, pipe, config, memory, each access | W0 |
-| `logins` (SSH logins and failures, bursts) | Direct | Event Log: OpenSSH/Operational (sshd) and Security 4624/4625 | W1, after `allow eventlog` |
-| `logs` (error bursts, new patterns, saved searches) | Direct | Event Log, level Error and Critical, per provider | W1, after `allow eventlog` |
-| Boots, crashes, unexpected shutdowns, service failures as events | Direct | System log: 6005/6006/6008, Kernel-Power 41, Service Control Manager 7031/7034 | W1 |
-| `files` (watched files) | Direct | Same poller; owner and mode become the owner SID and a hash of the DACL | W1 |
-| `security`: listening ports | Direct | `GetExtendedTcpTable`/`GetExtendedUdpTable` with owning process | W1 |
-| `usage` per process and per service | Substitute | Per process from the process list, per service by mapping service PIDs (no cgroups) | W1 |
-| `usage` power draw | Substitute | PDH `Power Meter` counters where the platform has them; otherwise absent (no RAPL from user mode) | W1 |
-| `net` (LAN devices, IP conflicts) | Direct | `GetIpNetTable2` (the neighbour table; no raw sockets needed) | W1 |
+| `logins` (SSH logins and failures, bursts) | Direct | Event Log: OpenSSH/Operational (sshd's lines, parsed like the journal's) and Security 4624/4625 (Remote Desktop logons; failed network logons, so RDP and SMB guessing count too) | W1 (0.30.0), after `allow eventlog` |
+| `logs` (error bursts, new patterns, saved searches) | Direct | System and Application logs, levels mapped to journal priorities, per provider, with the provider's formatted message | W1 (0.30.0) |
+| Boots, crashes, unexpected shutdowns, service failures as events | Direct | Boots and outages (down or asleep) from the node's own heartbeats as on Linux; service crashes (7031/7034) and unexpected shutdowns (6008, Kernel-Power 41) are System log errors, so `logs` reports them | W0 / W1 |
+| `files` (watched files) | Direct | Same poller. Defaults: OpenSSH config and keys, hosts; the baseline adds start-up folders, Group Policy scripts, machine PowerShell profiles, scheduled tasks and users' `authorized_keys`. Owners aren't compared; mode is the read-only attribute | W1 (0.30.0) |
+| `security`: listening ports | Direct | `GetExtendedTcpTable`/`GetExtendedUdpTable` with the owning process's name (every process, not only the node's) | W1 (0.30.0) |
+| `usage` per process and per service | Substitute | `NtQuerySystemInformation` process list (no process handles needed), per service through the SCM's service PIDs; I/O counts every read and write, not only block I/O | W1 (0.30.0) |
+| `usage` power draw | Later | PDH `Power Meter` counters where the platform has them (no RAPL from user mode); `absent` for now | — |
+| `net` (LAN devices, IP conflicts) | Direct | `GetIpNetTable2` (the neighbour table; no raw sockets needed), gateway from `GetIpForwardTable2`, interfaces by alias | W1 (0.30.0) |
 | `net.dhcp` (rogue DHCP) | None | Needs packet capture (Npcap); no built-in way to listen on UDP 67/68 next to the DHCP client | — |
 | `actions`, `heal`, fix menu (`fix`, `fix auto`) | Direct | Windows services instead of units: `restart`, `start`, `stop`; `reboot`, `poweroff`; containers as on Linux | W2, after `allow helper` |
 | `fix journal` / `fix logs` / `fix packages` / `fix ssh` | Substitute | Event logs over their size, large log files, the Windows Update download cache, and the OpenSSH `authorized_keys` and `administrators_authorized_keys` ACLs (the usual Windows key-login failure) | W2 |
@@ -97,7 +97,7 @@ Supported: Windows Server 2016, 2019, 2022 and 2025 (and Windows 10/11, which us
 ## 4. Milestones
 
 - **W0 (0.29.0):** the crate builds for `x86_64-pc-windows-msvc`. Named-pipe transport, the Windows service and its hardening, the native collector, history, uptime, disk usage and alerts, `install`/`uninstall`/`doctor`/`status`/`bridge` and the rest of the read-only CLI. CI builds and tests on a real Windows Server runner, installs the service, talks to it through `bridge` and uninstalls it. Release assets `nightgrid-node-vX.Y.Z-x86_64-windows.exe` in `SHA256SUMS` and `manifest.json`. App spec [0024](app-integration/0024-windows-node.md).
-- **W1:** Event Log sources (`allow eventlog`): logins, logs, boots and service failures; watched files; ports; usage; LAN devices.
+- **W1 (0.30.0):** the Event Log reader and `allow eventlog`: SSH and RDP logins and failures, log errors from System and Application; watched files; ports with processes; usage per service and process; LAN devices. App spec [0025](app-integration/0025-windows-node-w1.md).
 - **W2:** the helper service and `allow helper`/`allow health`: actions, self-healing, the fix menu, rollbacks, blocking, disks, pools, updates, UPS and the shutdown guard, `upgrade`.
 - **W3:** containers, the check runner, the link, the status page, jobs and backups.
 
@@ -109,4 +109,4 @@ The binary, subcommands and flags are the same. Differences:
 - `--config` defaults to `%ProgramData%\Nightgrid Node\config.toml`, `--socket` takes a pipe name (`\\.\pipe\nightgrid-node`).
 - `allow journal` is accepted as an alias of `allow eventlog`.
 - `nightgrid-node man` prints the manual as text (there is no `man` on Windows); `completions powershell` prints a completer for `$PROFILE` (on every platform).
-- Commands that aren't on Windows yet (for example `allow netwatch` or `fix`) say so and exit 1 instead of being unknown; with `--json` they print `{"error":{"code":"not_on_windows","message":…}}`.
+- Commands that aren't on Windows (for example `allow netwatch`) or not yet (`fix`) say so and exit 1 instead of being unknown; with `--json` they print `{"error":{"code":"not_on_windows","message":…}}`.
