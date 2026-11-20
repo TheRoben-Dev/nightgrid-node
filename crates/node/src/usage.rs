@@ -710,7 +710,8 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let mut r = UsageReader::at(d.path());
         assert_eq!(r.read(&HashMap::new()).power.access, "absent");
-        assert!(!r.read(&HashMap::new()).cgroups);
+        // No cgroup tree under the root; Windows always measures services.
+        assert_eq!(r.read(&HashMap::new()).cgroups, cfg!(windows));
     }
 
     #[test]
