@@ -366,7 +366,7 @@ pub fn run(config: Config, paths: Paths) -> Result<(), String> {
     } else {
         None
     };
-    let health = if cfg!(unix) && config.health.enabled {
+    let health = if config.health.enabled {
         Some(crate::health::watch::HealthWatcher::start(shared.clone()).map_err(|e| format!("health watcher: {e}"))?)
     } else {
         None

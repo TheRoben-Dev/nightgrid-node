@@ -411,6 +411,7 @@ pub const WINDOWS_CAPS: &[&str] = &[
     cap::ALERTS,
     cap::SUMMARY,
     cap::ACTIONS,
+    cap::HEALTH,
     cap::LOGINS,
     cap::LOGS,
     cap::SECURITY,

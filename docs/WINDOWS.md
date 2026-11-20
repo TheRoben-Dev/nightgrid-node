@@ -75,14 +75,14 @@ Supported: Windows Server 2016, 2019, 2022 and 2025 (and Windows 10/11, which us
 | `net` (LAN devices, IP conflicts) | Direct | `GetIpNetTable2` (the neighbour table; no raw sockets needed), gateway from `GetIpForwardTable2`, interfaces by alias | W1 (0.30.0) |
 | `net.dhcp` (rogue DHCP) | None | Needs packet capture (Npcap); no built-in way to listen on UDP 67/68 next to the DHCP client | — |
 | `actions` | Direct | Windows services instead of units: `restart`, `start`, `stop` of services listed in `[actions] units` (`W32Time`, not `w32time.service`); `reboot`, `poweroff` with `shutdown.exe` a minute ahead | **W2a (0.31.0)**, after `allow helper` |
-| `heal`, fix menu (`fix`, `fix auto`) | Direct | As on Linux, with the substitutes below | W2c |
-| `fix journal` / `fix logs` / `fix packages` / `fix ssh` | Substitute | Event logs over their size, large log files, the Windows Update download cache, and the OpenSSH `authorized_keys` and `administrators_authorized_keys` ACLs (the usual Windows key-login failure) | W2c |
-| `changes` (snapshot and rollback with dead-man timer) | Direct | Same paths model; the helper copies files and restores ACLs | W2c |
-| `block` (block addresses, auto-block after failed logins) | Direct | Windows Firewall rules in the node's own group, each with an expiry the helper enforces | W2c |
-| `health`: disks | Substitute | `MSFT_PhysicalDisk` health and `MSFT_StorageReliabilityCounter` (temperature, wear, errors) instead of SMART attributes | W2c, after `allow health` |
-| `health`: pools | Substitute | Storage Spaces pools and virtual disks instead of ZFS/mdraid/btrfs | W2c |
-| `health`: updates | Substitute | Windows Update search (COM), pending reboot from the usual registry keys | W2c |
-| `health`: UPS, `ups` shutdown guard | Substitute | A USB HID UPS shows up as a battery (`Win32_Battery`): charge, on battery, runtime. A NUT server on the LAN is read like on Linux (`upsc` protocol over the check runner) | W2c |
+| `heal`, fix menu (`fix`, `fix auto`) | Direct | As on Linux, with the substitutes below | W2d |
+| `fix journal` / `fix logs` / `fix packages` / `fix ssh` | Substitute | Event logs over their size, large log files, the Windows Update download cache, and the OpenSSH `authorized_keys` and `administrators_authorized_keys` ACLs (the usual Windows key-login failure) | W2d |
+| `changes` (snapshot and rollback with dead-man timer) | Direct | Same paths model; the helper copies files and restores ACLs | W2d |
+| `block` (block addresses, auto-block after failed logins) | Direct | Windows Firewall rules in the node's own group, each with an expiry the helper enforces | W2d |
+| `health`: disks | Substitute | `MSFT_PhysicalDisk` health and `MSFT_StorageReliabilityCounter` (temperature, wear, errors) instead of SMART attributes, read by the health helper `nightgrid-node-health` | **W2c (0.33.0)**, after `allow health` |
+| `health`: pools | Substitute | Storage Spaces pools and virtual disks instead of ZFS/mdraid/btrfs | **W2c (0.33.0)** |
+| `health`: updates | Substitute | Windows Update search (COM), pending reboot from the usual registry keys; hidden updates are left out | **W2c (0.33.0)** |
+| `health`: UPS, `ups` shutdown guard | Substitute | A USB HID UPS shows up as a battery (`Win32_Battery`): charge, on battery, runtime. A NUT server on the LAN is read like on Linux (`upsc` protocol over the check runner) | W2d |
 | `containers` | Direct | Docker Engine on `\\.\pipe\docker_engine`, after `allow docker` (adds the service to `docker-users`, root-equivalent like on Linux) | W3 |
 | `checks` (service checks from the LAN) | Direct | Separate service `nightgrid-node-checker`, outbound only to `[checks] networks` by a service hardening rule | W3 |
 | `peers`, `serve`, `hub.member` (node-to-node link) | Direct | Separate service `nightgrid-node-peer`, inbound only on the tailnet or LAN address and port | W3 |
@@ -101,7 +101,8 @@ Supported: Windows Server 2016, 2019, 2022 and 2025 (and Windows 10/11, which us
 - **W1 (0.30.0):** the Event Log reader and `allow eventlog`: SSH and RDP logins and failures, log errors from System and Application; watched files; ports with processes; usage per service and process; LAN devices. App spec [0025](app-integration/0025-windows-node-w1.md).
 - **W2a (0.31.0):** the admin helper service and `allow helper`/`deny helper`; service and power actions. App spec [0026](app-integration/0026-windows-node-w2a.md).
 - **W2b (0.32.0):** `upgrade FILE --sha256`. App spec [0027](app-integration/0027-windows-node-upgrade.md).
-- **W2c:** `allow health`, self-healing, the fix menu, rollbacks, blocking, disks, pools, updates, UPS and the shutdown guard.
+- **W2c (0.33.0):** `allow health` and the read-only health helper: disks, Storage Spaces pools, Windows Update. App spec [0028](app-integration/0028-windows-node-health.md).
+- **W2d:** self-healing, the fix menu, rollbacks, blocking, UPS and the shutdown guard.
 - **W3:** containers, the check runner, the link, the status page, jobs and backups.
 
 ## 5. Same commands

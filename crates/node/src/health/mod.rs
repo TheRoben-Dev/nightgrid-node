@@ -15,6 +15,7 @@ pub mod pools;
 pub mod smart;
 pub mod ups;
 pub mod watch;
+pub mod windows;
 
 /// Separates the parts of a scan's output (same marker as the app's).
 pub const SECTION: &str = "@@NIGHTGRID@@";

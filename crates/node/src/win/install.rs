@@ -143,7 +143,7 @@ pub fn install(self_exe: &Path, opts: &InstallOptions) -> Result<Report, String>
     }
     if !same {
         // The helper runs the same exe; it starts again when next needed.
-        scm::stop(super::helper::SERVICE, Duration::from_secs(30))?;
+        super::helper::stop_all()?;
     }
     if same {
         step(&mut rep, format!("{} already in place", bin.display()));
