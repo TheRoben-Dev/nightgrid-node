@@ -549,3 +549,148 @@ fn a_node_answers_while_it_pings() {
     let v = latest(&a, |v| v["readings"][0]["at"].is_number());
     assert_eq!(v["readings"][0]["ok"], true, "{v}");
 }
+
+/// Resident and peak kB of a process, from `/proc/PID/status`. Under
+/// qemu-user (CI's armv7 job) those count the emulator too, so only the
+/// guest's own pages are summed (a 32-bit guest lives below 4 GiB, qemu
+/// above it) and there is no peak (`None`).
+fn rss_kb(pid: u32) -> (u64, Option<u64>) {
+    let maps = std::fs::read_to_string(format!("/proc/{pid}/maps")).unwrap_or_default();
+    if maps.contains("qemu") {
+        let smaps = std::fs::read_to_string(format!("/proc/{pid}/smaps")).unwrap();
+        let (mut low, mut sum) = (false, 0);
+        for l in smaps.lines() {
+            if let Some(rest) = l.strip_prefix("Rss:") {
+                if low {
+                    sum += rest.split_whitespace().next().and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
+                }
+            } else if l.split_whitespace().next().is_some_and(|r| r.contains('-') && !r.contains(':')) {
+                low = l.split('-').next().is_some_and(|a| a.len() <= 8);
+            }
+        }
+        return (sum, None);
+    }
+    let s = std::fs::read_to_string(format!("/proc/{pid}/status")).unwrap();
+    let kb = |key: &str| {
+        s.lines()
+            .find(|l| l.starts_with(key))
+            .and_then(|l| l.split_whitespace().nth(1))
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0)
+    };
+    (kb("VmRSS:"), Some(kb("VmHWM:")))
+}
+
+/// A node with a full history (14 days of minutes and their rollups, 20 000
+/// events) answers the app's first sync again and again and stays in its
+/// memory budget. Answers used to be built as `Value` trees first, about
+/// eight times the size of their text, and the musl allocator kept the
+/// freed memory: 260 full syncs took a release node from 9 to 59 MB.
+#[test]
+fn full_history_syncs_stay_in_the_memory_budget() {
+    use nightgrid_node::events::NewEvent;
+    use nightgrid_node_proto::{EventKind, Level, Point};
+
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("data");
+    std::fs::create_dir_all(&data).unwrap();
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64 / 60 * 60;
+    {
+        let mut st = nightgrid_node::store::Store::open(&data.join("node.db")).unwrap();
+        let first = now - 14 * 86_400;
+        for (i, ts) in (first..now - 3600).step_by(60).enumerate() {
+            let f = (i % 97) as f32;
+            st.insert_minute(&Point {
+                ts: ts as f64,
+                n: 6,
+                cpu: Some(f * 0.731),
+                mem: Some(40.0 + f * 0.17),
+                swap: Some(1.25),
+                load1: Some(f * 0.013),
+                disk: Some(62.5),
+                net_rx: Some(f64::from(f) * 1234.567),
+                net_tx: Some(f64::from(f) * 765.432),
+                disk_read: Some(f64::from(f) * 4096.5),
+                disk_write: Some(f64::from(f) * 8192.25),
+                temp: Some(45.0 + f * 0.1),
+                ..Default::default()
+            })
+            .unwrap();
+        }
+        for i in 0..20_000_i64 {
+            let kind = [EventKind::Login, EventKind::Port, EventKind::Network, EventKind::Container][i as usize % 4];
+            st.event_add(&NewEvent::new(
+                first + i * 60,
+                kind,
+                Level::Info,
+                format!("event {i}"),
+                "a detail line of about the usual length for a node event",
+            ))
+            .unwrap();
+        }
+    }
+    let socket = dir.path().join("run/node.sock");
+    let config = dir.path().join("config.toml");
+    std::fs::write(&config, "[metrics]\ninterval_secs = 10\n[docker]\nenabled = false\n").unwrap();
+    let child = Command::new(BIN)
+        .args(["run", "--config"])
+        .arg(&config)
+        .arg("--socket")
+        .arg(&socket)
+        .arg("--data-dir")
+        .arg(&data)
+        .stdin(Stdio::null())
+        .spawn()
+        .unwrap();
+    let pid = child.id();
+    wait_for(&socket);
+    let svc = Service { child, _dir: dir, socket };
+
+    let mut c = Client::connect(&svc.socket, "e2e").unwrap();
+    let full_sync = |c: &mut Client| {
+        let mut bytes = 0;
+        for res in [60, 900, 3600] {
+            let mut after = 0;
+            loop {
+                let r = c.call("metrics.sync", json!({"res": res, "after": after})).unwrap();
+                bytes += r.to_string().len();
+                let next = r["next"].as_i64().unwrap();
+                if !r["more"].as_bool().unwrap() || next <= after {
+                    break;
+                }
+                after = next;
+            }
+        }
+        let mut after = 0;
+        loop {
+            let r = c.call("events.sync", json!({"after": after})).unwrap();
+            bytes += r.to_string().len();
+            let next = r["next"].as_i64().unwrap();
+            if !r["more"].as_bool().unwrap() || next <= after {
+                break;
+            }
+            after = next;
+        }
+        bytes
+    };
+    let bytes = full_sync(&mut c);
+    assert!(bytes > 8_000_000, "the history is big enough to matter ({bytes} bytes)");
+    let (after_one, _) = rss_kb(pid);
+    for _ in 0..15 {
+        full_sync(&mut c);
+    }
+    let (mid, _) = rss_kb(pid);
+    for _ in 0..15 {
+        full_sync(&mut c);
+    }
+    let (rss, peak) = rss_kb(pid);
+    eprintln!(
+        "full history: {bytes} bytes per sync; RSS {after_one} kB after 1, {mid} kB after 16, {rss} kB after 31, peak {peak:?} kB"
+    );
+    // The allocator may keep some freed memory (most on 32-bit musl, which
+    // ends between 11 and 18 MB here), but it has to level off. Before
+    // 0.28.1 this test ended at 71 MB.
+    let peak = peak.unwrap_or(rss);
+    assert!(peak < 24 * 1024, "peak RSS {peak} kB is over 24 MB");
+    assert!(rss < mid + 3 * 1024, "RSS still growing: {mid} kB after 16 syncs, {rss} kB after 31");
+}

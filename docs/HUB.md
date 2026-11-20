@@ -29,7 +29,7 @@ The rules that make this safe:
 | Where | Every Linux host that wants it | One always-on host per network (recommended) |
 | Binary | `nightgrid-node`, ~4.7 MB static | `nightgrid-hub`, separate static binary from the same workspace and release |
 | Account | `nightgrid-node` | `nightgrid-hub` (own account, own state directory) |
-| Memory | ~2.5 MB RSS, `MemoryMax=64M` on the main unit | 100 to 200 MB target for the core, hard caps per unit (section 4) |
+| Memory | 5 to 18 MB RSS (20 MB budget), `MemoryMax=64M` on the main unit | 100 to 200 MB target for the core, hard caps per unit (section 4) |
 | Network | None on the main service; opt-in units for checks, link, status page | Tailnet egress to its Lite nodes; the notifier may reach the internet when a channel needs it |
 | Watches | Its own host | The network: its nodes, and later services and devices that can't run Node |
 | Acts | Typed, root-allowed actions on its own host | Nothing on other hosts. Only "hold" signals (section 7.3) |

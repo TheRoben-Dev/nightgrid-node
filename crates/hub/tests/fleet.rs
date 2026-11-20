@@ -161,7 +161,8 @@ fn pulls_25_members_within_budget_and_serves_their_cursors() {
         &hub,
         &SyncParams { node_id: members[0].id.clone(), method: "metrics.sync".into(), params: p.clone() },
     )
-    .unwrap();
+    .unwrap()
+    .to_value();
     let direct = answer("metrics.sync", &p);
     assert_eq!(via_hub["points"], direct["points"]);
     assert_eq!((via_hub["next"].clone(), via_hub["more"].clone()), (direct["next"].clone(), direct["more"].clone()));
@@ -170,7 +171,8 @@ fn pulls_25_members_within_budget_and_serves_their_cursors() {
         &hub,
         &SyncParams { node_id: members[0].id.clone(), method: "events.sync".into(), params: e.clone() },
     )
-    .unwrap();
+    .unwrap()
+    .to_value();
     assert_eq!(via_hub["events"], answer("events.sync", &e)["events"]);
 
     // A second round asks only for what's new.
