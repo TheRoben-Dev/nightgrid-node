@@ -799,6 +799,63 @@ Set-Content -Path $cfg -Value $cfgBefore -NoNewline
 Restart-Service nightgrid-node
 Start-Sleep -Seconds 3
 
+Step 'allow statuspage: the page answers its secret link on loopback, inbound only'
+$cfgBefore = Get-Content $cfg -Raw
+$at = $cfgBefore.IndexOf('[statuspage]')
+if ($at -lt 0) { Fail 'no [statuspage] in the config' }
+$tail = $cfgBefore.Substring($at) -replace '(?m)^listen = "tailnet"\r?$', 'listen = "127.0.0.1:17420"'
+$tail = $tail -replace '(?m)^networks = \["100\.64\.0\.0/10", "fd7a:115c:a1e0::/48"\]\r?$', 'networks = ["127.0.0.0/8"]'
+Set-Content -Path $cfg -Value ($cfgBefore.Substring(0, $at) + $tail) -NoNewline
+if ((Get-Content $cfg -Raw) -notmatch 'listen = "127\.0\.0\.1:17420"') { Fail "could not set [statuspage]: $(Get-Content $cfg -Raw)" }
+Restart-Service nightgrid-node
+Start-Sleep -Seconds 3
+$j = (& $bin allow statuspage --json) -join ''
+Write-Host $j
+if ($LASTEXITCODE -ne 0) { Fail "allow statuspage: $j" }
+if ($j -notmatch 'secret link') { Fail "no statuspage warning: $j" }
+$url = ($j | ConvertFrom-Json).url
+if ($url -notmatch '^http://127\.0\.0\.1:17420/[0-9a-f]{64}$') { Fail "bad status page link: $url" }
+$ss = Get-CimInstance Win32_Service -Filter "Name='nightgrid-node-status-page'"
+if ($null -eq $ss -or $ss.StartName -ne 'NT SERVICE\nightgrid-node-status-page') { Fail "status page service: $($ss | Out-String)" }
+if ((sc.exe qsidtype nightgrid-node-status-page) -join ' ' -notmatch 'RESTRICTED') { Fail 'status page SID type' }
+$fw = New-Object -ComObject HNetCfg.FwPolicy2
+if (-not $fw.ServiceRestriction.ServiceRestricted('nightgrid-node-status-page', $bin)) { Fail 'no hardening rule for the status page' }
+$wsh = @($fw.ServiceRestriction.Rules | Where-Object { $_.ServiceName -eq 'nightgrid-node-status-page' -and $_.Action -eq 1 })
+Write-Host "status page rules: $(@($wsh | ForEach-Object { "$($_.Direction) $($_.LocalPorts) $($_.RemoteAddresses)" }) -join '; ')"
+if ($wsh.Count -ne 1 -or $wsh[0].Direction -ne 1 -or $wsh[0].LocalPorts -ne '17420') { Fail 'expected one inbound status page rule and nothing outbound' }
+$page = $null
+$deadline = (Get-Date).AddSeconds(60)
+do {
+    Start-Sleep -Seconds 2
+    try { $page = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 10 } catch { $page = $null }
+} while ($null -eq $page -and (Get-Date) -lt $deadline)
+if ($null -eq $page -or $page.StatusCode -ne 200) { Fail "the status page never answered: $(Get-Content (Join-Path $etc 'data\log\status-page\status-page.log') -Raw -ErrorAction SilentlyContinue)" }
+if ($page.Content -notmatch [regex]::Escape($env:COMPUTERNAME) -and $page.Content -notmatch [regex]::Escape($info.node.hostname)) { Fail "page without the host name: $($page.Content.Substring(0, [Math]::Min(400, $page.Content.Length)))" }
+if ($page.Headers['Content-Security-Policy'] -notmatch "default-src 'none'") { Fail 'page without its CSP' }
+$code = 0
+try { Invoke-WebRequest -Uri 'http://127.0.0.1:17420/nope' -UseBasicParsing -TimeoutSec 10 | Out-Null } catch { $code = [int]$_.Exception.Response.StatusCode }
+if ($code -ne 404) { Fail "a wrong path got $code, not 404" }
+$tok = Join-Path $etc 'data\status-page\status-token'
+if (-not (Test-Path $tok)) { Fail "no token at $tok" }
+$who = @((Get-Acl (Split-Path $tok)).Access | ForEach-Object { $_.IdentityReference.Value })
+Write-Host "token folder ACL: $($who -join ', ')"
+if ($who -match '\\nightgrid-node$' -or $who -match 'Users|Everyone') { Fail "the status page's token is readable by others: $($who -join ', ')" }
+$j2 = (& $bin allow statuspage --json) -join ''
+if (($j2 | ConvertFrom-Json).url -ne $url) { Fail "allow again changed the link: $j2" }
+$doc = (& $bin doctor --json) -join ''
+if ($doc -notmatch '"check":"statuspage","level":"ok"') { Fail "doctor after allow statuspage: $doc" }
+$j = (& $bin deny statuspage --json) -join ''
+if ($LASTEXITCODE -ne 0) { Fail "deny statuspage: $j" }
+if (Get-Service nightgrid-node-status-page -ErrorAction SilentlyContinue) { Fail 'status page service left after deny' }
+if (@(Get-NetFirewallRule -Group 'Nightgrid Node status page' -ErrorAction SilentlyContinue).Count -ne 0) { Fail 'status page rules left after deny' }
+if (Test-Path $tok) { Fail 'the link survived deny' }
+$gone = $false
+try { Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 5 | Out-Null } catch { $gone = $true }
+if (-not $gone) { Fail 'the page still answers after deny' }
+Set-Content -Path $cfg -Value $cfgBefore -NoNewline
+Restart-Service nightgrid-node
+Start-Sleep -Seconds 3
+
 Step 'an account outside the group is refused'
 $pw = 'Ng-' + [guid]::NewGuid().ToString('N').Substring(0, 16) + '!a1'
 $sec = ConvertTo-SecureString $pw -AsPlainText -Force

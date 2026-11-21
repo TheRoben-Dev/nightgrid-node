@@ -124,6 +124,18 @@ networks = ["100.64.0.0/10", "fd7a:115c:a1e0::/48"]
 serve = ["ping"]
 # Seconds between probes of each peer (30-3600).
 interval_secs = 60
+
+[statuspage]
+# A read-only status page about this host, off until an administrator runs
+#   nightgrid-node allow statuspage
+# which prints its address with a secret link. A separate service serves it
+# as plain HTTP, so it listens only on the tailnet address (WireGuard
+# encrypts it) or loopback, answers only `networks` and opens no
+# connections. `deny statuspage` removes it and the link.
+listen = "tailnet"
+port = 7420
+# Who may open it (run `allow statuspage` again after changing them).
+networks = ["100.64.0.0/10", "fd7a:115c:a1e0::/48"]
 "#;
 
 pub(crate) fn report(action: &'static str) -> Report {
@@ -152,7 +164,7 @@ pub fn facts() -> crate::host::HostFacts {
 
 /// What the Windows node doesn't do yet (docs/WINDOWS.md), one sentence each.
 pub fn limits() -> Vec<String> {
-    ["No status page yet.", "No rogue DHCP watch: Windows can't listen for DHCP without a packet capture driver."]
+    ["No rogue DHCP watch: Windows can't listen for DHCP without a packet capture driver."]
         .iter()
         .map(|s| (*s).to_owned())
         .collect()

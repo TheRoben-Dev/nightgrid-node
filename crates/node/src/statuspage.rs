@@ -11,6 +11,11 @@
 //!   a plain 404. `deny statuspage` removes the token, so the link dies.
 //! - **What:** `GET` only, no scripts, no forms, nothing that changes the
 //!   host. It reads the node's socket as the service account, like the app.
+//!
+//! On Windows (decision N-094) the unit is the service
+//! `nightgrid-node-status-page`, its own virtual account, inbound only on
+//! the page's port from `[statuspage] networks` (see `win::unit::STATUS`),
+//! and the token lives in its private folder `data\status-page`.
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -30,12 +35,37 @@ const TIMEOUT: Duration = Duration::from_secs(5);
 const FRESH: Duration = Duration::from_secs(10);
 const MAX_CONNECTIONS: usize = 8;
 
-/// A new token: 32 random bytes as hex.
+/// A new token: 32 random bytes as hex (the OS's generator, through ring).
 pub fn new_token() -> std::io::Result<String> {
     let mut b = [0u8; 32];
-    std::io::Read::read_exact(&mut std::fs::File::open("/dev/urandom")?, &mut b)?;
+    rustls::crypto::ring::default_provider()
+        .secure_random
+        .fill(&mut b)
+        .map_err(|_| std::io::Error::other("no random numbers"))?;
     Ok(b.iter().map(|x| format!("{x:02x}")).collect())
 }
+
+/// Where the token is: `NIGHTGRID_STATUS_TOKEN`, else [`TOKEN_FILE`]
+/// (Windows: `data\status-page\status-token`).
+pub fn token_path() -> PathBuf {
+    if let Some(p) = std::env::var_os("NIGHTGRID_STATUS_TOKEN") {
+        return PathBuf::from(p);
+    }
+    #[cfg(windows)]
+    {
+        crate::win::unit::STATUS.state_dir().join("status-token")
+    }
+    #[cfg(not(windows))]
+    {
+        PathBuf::from(TOKEN_FILE)
+    }
+}
+
+const ALLOW_HINT: &str = if cfg!(windows) {
+    "run `nightgrid-node allow statuspage` from an elevated prompt"
+} else {
+    "run `sudo nightgrid-node allow statuspage`"
+};
 
 pub fn token_ok(t: &str) -> bool {
     t.len() == 64 && t.bytes().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
@@ -399,40 +429,50 @@ async fn serve_one(mut tcp: tokio::net::TcpStream, token: Arc<String>, socket: A
 
 /// `nightgrid-node status-page`: the unit's loop.
 pub fn serve(config_path: &Path) -> Result<(), String> {
+    serve_until(config_path, &|| false)
+}
+
+/// The loop, until `stop` says so (checked about once a second).
+pub fn serve_until(config_path: &Path, stop: &dyn Fn() -> bool) -> Result<(), String> {
     let cfg = Config::load(config_path).map_err(|e| format!("config: {e}"))?;
-    let token_path =
-        std::env::var_os("NIGHTGRID_STATUS_TOKEN").map_or_else(|| PathBuf::from(TOKEN_FILE), PathBuf::from);
+    let token_path = token_path();
     let token = std::fs::read_to_string(&token_path)
-        .map_err(|e| format!("{}: {e} (run `sudo nightgrid-node allow statuspage`)", token_path.display()))?
+        .map_err(|e| format!("{}: {e} ({ALLOW_HINT})", token_path.display()))?
         .trim()
         .to_owned();
     if !token_ok(&token) {
-        return Err(format!(
-            "{} doesn't hold a token; run `sudo nightgrid-node allow statuspage` again",
-            token_path.display()
-        ));
+        return Err(format!("{} doesn't hold a token; {ALLOW_HINT} again", token_path.display()));
     }
     let token = Arc::new(token);
     let socket = Arc::new(cfg.server.socket.clone());
     let cache = Arc::new(Mutex::new(Cache { at: None, snap: Snapshot::default() }));
     let slots = Arc::new(tokio::sync::Semaphore::new(MAX_CONNECTIONS));
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| e.to_string())?;
+    let tick = Duration::from_secs(1);
     rt.block_on(async {
+        let mut waited = 30;
         let listener = loop {
-            match listen_addr(&cfg) {
-                Some(addr) => match tokio::net::TcpListener::bind(addr).await {
-                    Ok(l) => {
-                        crate::info!("status page on http://{addr}/ (secret path)");
-                        break l;
-                    }
-                    Err(e) => crate::warn!("can't listen on {addr}: {e}"),
-                },
-                None => crate::debug!("no tailnet address yet"),
+            if stop() {
+                return Ok(());
             }
-            tokio::time::sleep(Duration::from_secs(30)).await;
+            if waited >= 30 {
+                waited = 0;
+                match listen_addr(&cfg) {
+                    Some(addr) => match tokio::net::TcpListener::bind(addr).await {
+                        Ok(l) => {
+                            crate::info!("status page on http://{addr}/ (secret path)");
+                            break l;
+                        }
+                        Err(e) => crate::warn!("can't listen on {addr}: {e}"),
+                    },
+                    None => crate::debug!("no tailnet address yet"),
+                }
+            }
+            tokio::time::sleep(tick).await;
+            waited += 1;
         };
-        loop {
-            let Ok((tcp, _)) = listener.accept().await else { continue };
+        while !stop() {
+            let Ok(Ok((tcp, _))) = tokio::time::timeout(tick, listener.accept()).await else { continue };
             let Ok(permit) = slots.clone().try_acquire_owned() else {
                 drop(tcp);
                 continue;
@@ -443,6 +483,7 @@ pub fn serve(config_path: &Path) -> Result<(), String> {
                 drop(permit);
             });
         }
+        Ok(())
     })
 }
 

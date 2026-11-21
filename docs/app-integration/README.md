@@ -38,6 +38,10 @@ The Nightgrid app repository is developed elsewhere and is read-only from here. 
 | [0032 · Windows node W2g: the fix menu](0032-windows-node-fixes.md) | 0.37.0 (W2g) | proposed |
 | [0033 · Windows node W2h: rollbacks](0033-windows-node-rollback.md) | 0.38.0 (W2h) | proposed |
 | [0034 · Windows node W3a: containers](0034-windows-node-containers.md) | 0.39.0 (W3a) | proposed |
+| [0035 · Windows node W3b: service checks](0035-windows-node-checks.md) | 0.40.0 (W3b) | proposed |
+| [0036 · Windows node W3c: NUT servers](0036-windows-node-nut.md) | 0.41.0 (W3c) | proposed |
+| [0037 · Windows node W3d: node-to-node link](0037-windows-node-link.md) | 0.42.0 (W3d) | proposed |
+| [0038 · Windows node W3e: status page](0038-windows-node-status-page.md) | 0.43.0 (W3e) | proposed |
 
 Rules every spec follows:
 

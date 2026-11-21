@@ -336,7 +336,8 @@ fn windows_command(a: &Args) -> Option<Result<(), String>> {
         "health-helper" => win::helper::serve(&win::helper::HEALTH, &a.config),
         "checker" => win::unit::serve(&win::unit::CHECKER, &a.config),
         "peer" => win::unit::serve(&win::unit::PEER, &a.config),
-        "status-page" | "netwatch" => Err(not_on_windows(&a.cmd)),
+        "status-page" => win::unit::serve(&win::unit::STATUS, &a.config),
+        "netwatch" => Err(not_on_windows(&a.cmd)),
         _ => return None,
     })
 }
