@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.42.0 · W3d: node-to-node link on Windows (2026-11-21)
+
+Additive only: no frozen method, field, frame or link request changed. A Windows node now also advertises `peers` and `hub.member`. App spec [0037](docs/app-integration/0037-windows-node-link.md). Decision N-093.
+
+- **The node-to-node link on Windows**: `allow peers` installs the service `nightgrid-node-peer`, which runs the same link as on Linux (mutual TLS with pinned fingerprints, `ping`, `ups` and `sync` as `[peers] serve` allows) as its own virtual account. Windows Service Hardening lets it talk only with `[peers] networks`: out, and in on its listen port. Its TLS key is in `%ProgramData%\Nightgrid Node\data\peer`, which only the link, SYSTEM and Administrators can read. `deny peers` removes the service and its rules and keeps the key, as on Linux.
+- Windows nodes can be paired with Linux nodes and follow each other's UPS shutdowns, and can be members of a hub.
+- The check runner and the link share one implementation (`win::unit`); `install` and `upgrade` stop and restart both around the exe swap, `uninstall` removes both, and `doctor` reports both.
+- The Windows config template has a `[peers]` section.
+- The Windows CI end-to-end test pairs the node with itself over loopback, checks the link's account, rules and key folder, refuses a wrong pin with a certificate error, refuses `peers.report` from an administrator, and checks that `deny peers` leaves no service or rules.
+
 ## 0.41.0 · W3c: NUT servers on Windows (2026-11-21)
 
 Additive only: no frozen method, field, frame or link request changed. One new internal method, `ups.report`, which only the Windows check runner calls. App spec [0036](docs/app-integration/0036-windows-node-nut.md). Decision N-092.
