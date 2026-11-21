@@ -432,12 +432,14 @@ fn run(shared: &Shared, rx: &mpsc::Receiver<String>) {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
     #[derive(Default)]
     struct Fake {
         log: Vec<String>,
         fail: bool,
     }
 
+    #[cfg(unix)]
     impl Runner for Fake {
         fn run(&mut self, prog: &str, args: &[&str]) -> Result<(), String> {
             self.log.push(format!("{prog} {}", args.join(" ")));
