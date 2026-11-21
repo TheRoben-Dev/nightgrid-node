@@ -480,6 +480,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)] // Windows takes the firewall-rule path (tested below).
     fn helper_runs_fixed_nft_commands() {
         let cfg = BlockConfig { minutes: 30, ..Default::default() };
         let mut f = Fake::default();
