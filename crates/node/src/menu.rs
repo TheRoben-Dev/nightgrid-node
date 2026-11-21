@@ -900,7 +900,13 @@ fn explain(pol: &Policy, key: &str, a: &str, target: Option<&str>) {
     line("how", &how);
     line(
         "via",
-        if fixes::needs_helper(a) { "the node, then the root helper" } else { "the node, through the engine socket" },
+        if !fixes::needs_helper(a) {
+            "the node, through the engine socket"
+        } else if cfg!(windows) {
+            "the node, then the admin helper service"
+        } else {
+            "the node, then the root helper"
+        },
     );
     line("logged", &format!("{a} in the audit log (nightgrid-node audit)"));
     println!();

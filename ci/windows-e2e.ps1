@@ -359,6 +359,13 @@ if (-not $hadKeys) {
     Write-Host "key file ACL: $who (protected: $($acl.AreAccessRulesProtected))"
     if (-not $acl.AreAccessRulesProtected -or $who -ne 'S-1-5-18 S-1-5-32-544') { Fail "key file ACL after the fix: $who" }
 }
+# A file in the download cache that the fix must remove; Windows Update's
+# start type stays what the image set (the runner images disable it).
+$wuStart = (Get-Service wuauserv).StartType
+$dl = Join-Path $env:SystemRoot 'SoftwareDistribution\Download'
+if (-not (Test-Path $dl)) { New-Item -ItemType Directory -Path $dl | Out-Null }
+$junk = Join-Path $dl 'nightgrid-ci.bin'
+[IO.File]::WriteAllBytes($junk, (New-Object byte[] 1048576))
 $r = @(Bridge @($hello,
     '{"id":2,"method":"actions.run","params":{"action":"fix.package-cache"}}',
     '{"id":3,"method":"actions.run","params":{"action":"fix.ssh-permissions","target":"o''brien"}}',
@@ -368,7 +375,8 @@ $a = ($r[1] | ConvertFrom-Json).result
 if ($a.outcome -ne 'ok' -or $a.detail -notmatch 'cleaned the Windows Update download cache') { Fail "fix.package-cache: $($r[1])" }
 if ($null -ne ($r[2] | ConvertFrom-Json).result -and ($r[2] | ConvertFrom-Json).result.outcome -eq 'ok') { Fail "a quoted account name ran: $($r[2])" }
 if ($null -ne ($r[3] | ConvertFrom-Json).result -and ($r[3] | ConvertFrom-Json).result.outcome -eq 'ok') { Fail "journal-vacuum ran on Windows: $($r[3])" }
-if ((Get-Service wuauserv).StartType -eq 'Disabled') { Fail 'the cache fix changed wuauserv' }
+if ($a.detail -match '\(0 B freed\)' -or (Test-Path $junk)) { Fail "the cache file was not removed: $($a.detail)" }
+if ((Get-Service wuauserv).StartType -ne $wuStart) { Fail "the cache fix changed wuauserv's start type to $((Get-Service wuauserv).StartType)" }
 if (-not $hadKeys) { Remove-Item $keys -Force }
 if ($madeSshDir) { Remove-Item $sshDir -Recurse -Force }
 Remove-Item $fixes
