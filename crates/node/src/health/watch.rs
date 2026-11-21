@@ -36,9 +36,9 @@ const MAX_OUTPUT: u64 = 4 << 20;
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ReadRequest {
-    /// `smart`, `pools`, `updates`, `ups` or `files`.
+    /// `smart`, `pools`, `updates`, `ups`, `files` or (Windows) `tasks`.
     pub read: String,
-    /// The UPS, for `ups`.
+    /// The UPS, for `ups`; the task paths, one per line, for `tasks`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub target: Option<String>,
 }
@@ -132,6 +132,18 @@ pub fn handle(config: &Config, req: &ReadRequest) -> ReadReply {
             }
         }
         "files" => crate::files::helper_snapshot(&config.files),
+        // NODE: the jobs watcher's Task Scheduler read (decision N-095):
+        // tasks registered by an administrator can't be read by the node's
+        // own account. Read-only; every path is checked first.
+        "tasks" => {
+            let list: Vec<String> =
+                req.target.as_deref().unwrap_or("").lines().filter(|l| !l.is_empty()).map(str::to_owned).collect();
+            match list.iter().find(|t| !crate::wintasks::valid_task(t)) {
+                Some(bad) => Err(format!("{bad:?} is not a scheduled task path")),
+                None if list.len() > 64 => Err("at most 64 tasks".into()),
+                None => powershell(&crate::wintasks::script(&list), 60),
+            }
+        }
         other => Err(format!("unknown read {other:?}")),
     };
     #[cfg(unix)]

@@ -373,7 +373,19 @@ fn round(shared: &Shared, cache: &mut Cache, first: bool) -> (JobsLatest, Vec<Ne
     let up = uptime();
     let mut events = Vec::new();
     let tasks: Vec<String> = list.iter().filter(|j| j.source == BackupSource::Unit).map(|j| j.target.clone()).collect();
-    let read = crate::health::watch::powershell(&wintasks::script(&tasks), 60).and_then(|o| wintasks::parse(&o));
+    // Tasks an administrator registered can be read only by an
+    // administrator: through the health helper (LocalSystem, write-
+    // restricted) when it is allowed, else as the node, which sees only
+    // the tasks it may read.
+    let req = crate::health::watch::ReadRequest { read: "tasks".into(), target: Some(tasks.join("\n")) };
+    let read = match crate::health::watch::call(&shared.health_socket, &req) {
+        Ok(o) => Ok(o),
+        Err(e) => {
+            crate::debug!("jobs: health helper: {e}; reading as the node");
+            crate::health::watch::powershell(&wintasks::script(&tasks), 60)
+        }
+    }
+    .and_then(|o| wintasks::parse(&o));
     let doc = match read {
         Ok(d) => {
             cache.error = None;

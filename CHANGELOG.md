@@ -6,7 +6,7 @@ Additive only: no frozen method, field, frame or link request changed. A Windows
 
 - **Backup jobs on Windows**: a "unit" backup job names a scheduled task (`\Backups\Nightly`, or Windows Server Backup's own task), read with the app's status rules. Path jobs read the newest file and size in Rust, as on Linux. Failed and stale backups raise the same alerts with the app closed.
 - **Scheduled jobs on Windows**: the tasks in Task Scheduler's `\Nightgrid\` folder are listed in `jobs.latest` with their last result and exit code, and each finished run becomes a `job` event.
-- One PowerShell read per `[jobs] interval_secs` as the node's own account; a failed read keeps the last answer.
+- One PowerShell read per `[jobs] interval_secs`, run by the health helper (`allow health`), since tasks an administrator registered are readable only by administrators; without it the node reads what its own account may see. A failed read keeps the last answer. The node's 64 MiB job now lets these PowerShell reads leave it.
 - `jobs.set` on Windows takes task paths and drive or UNC paths, and refuses POSIX paths and unit names.
 - The Windows config template has a `[jobs]` section.
 - The Windows CI end-to-end test registers a backup task and a failing `\Nightgrid\` task, runs both, and checks the statuses, the exit code, both events, a path job's size, a missing task's error and a refused POSIX path.

@@ -133,6 +133,7 @@ interval_secs = 60
 # it runs nothing. A folder on another host (\\nas\share) can't be read,
 # because the node has no network.
 enabled = true
+# Task reads need `allow health` (only administrators may read most tasks).
 # Seconds between reads (30-3600). Each read starts PowerShell once.
 interval_secs = 60
 

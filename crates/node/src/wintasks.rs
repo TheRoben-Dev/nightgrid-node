@@ -130,7 +130,7 @@ pub fn run_key(t: &Task) -> Option<String> {
 pub fn task_status(id: i32, t: Option<&Task>) -> BackupStatus {
     let mut st = crate::backups::empty(id);
     let Some(t) = t.filter(|t| t.found) else {
-        st.error = Some("The scheduled task wasn't found on this host, or this node may not read it.".into());
+        st.error = Some("The scheduled task wasn't found on this host, or this node may not read it (an administrator can run: nightgrid-node allow health).".into());
         return st;
     };
     let code = t.result.unwrap_or(NOT_YET);
