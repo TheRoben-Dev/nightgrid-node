@@ -107,7 +107,7 @@ pub fn facts() -> crate::host::HostFacts {
 pub fn limits() -> Vec<String> {
     [
         "UPS readings only from a UPS on USB.",
-        "No containers, service checks, node-to-node link or status page yet.",
+        "No service checks, node-to-node link or status page yet.",
         "No rogue DHCP watch: Windows can't listen for DHCP without a packet capture driver.",
     ]
     .iter()
@@ -344,6 +344,100 @@ pub fn eventlog(on: bool, no_start: bool) -> Result<Report, String> {
         scm::start(SERVICE, Duration::from_secs(30))?;
         wait_answering(Duration::from_secs(20))?;
         step(&mut rep, "restarted the service");
+    }
+    Ok(rep)
+}
+
+/// Docker Engine's settings file, where `group` decides who besides
+/// SYSTEM and Administrators may use its pipe.
+pub fn docker_config() -> PathBuf {
+    super::program_data().join(r"docker\config\daemon.json")
+}
+
+/// The `group` value that lets the node's service in: its own service SID,
+/// because the service's write-restricted token can only write to a pipe
+/// whose DACL names that SID (membership in a group such as docker-users
+/// passes only half of the access check).
+pub fn docker_group() -> String {
+    format!("NT SERVICE\\{SERVICE}")
+}
+
+/// `daemon.json` with `group` set to the service (`on`) or that setting
+/// taken out again. `Ok(None)`: nothing to change. An existing `group` for
+/// someone else is left alone and reported.
+pub fn docker_settings(text: Option<&str>, on: bool) -> Result<Option<String>, String> {
+    let mut v: serde_json::Value = match text.map(str::trim) {
+        None | Some("") => serde_json::json!({}),
+        Some(t) => serde_json::from_str(t).map_err(|e| format!("daemon.json isn't valid JSON: {e}"))?,
+    };
+    let obj = v.as_object_mut().ok_or("daemon.json isn't a JSON object")?;
+    let ours = docker_group();
+    let current = obj.get("group").and_then(|g| g.as_str()).map(str::to_owned);
+    match (on, current) {
+        (true, Some(g)) if g.eq_ignore_ascii_case(&ours) => Ok(None),
+        (true, Some(g)) => Err(format!(
+            "daemon.json already gives Docker's pipe to {g:?}. The node's restricted token needs its own SID \
+             there: change it to \"group\": {ours:?} (members of {g:?} then need Administrators to use docker), \
+             or leave container monitoring off"
+        )),
+        (true, None) => {
+            obj.insert("group".into(), serde_json::Value::String(ours));
+            Ok(Some(serde_json::to_string_pretty(&v).unwrap_or_default() + "\n"))
+        }
+        (false, Some(g)) if g.eq_ignore_ascii_case(&ours) => {
+            obj.remove("group");
+            Ok(Some(serde_json::to_string_pretty(&v).unwrap_or_default() + "\n"))
+        }
+        (false, _) => Ok(None),
+    }
+}
+
+/// `allow docker` / `deny docker`: names the service as Docker Engine's
+/// pipe group in `daemon.json` (or takes it out). Docker reads it when it
+/// starts, so nothing changes until Docker is restarted, which restarts
+/// its containers too; the node never does that itself.
+pub fn docker(on: bool) -> Result<Report, String> {
+    preflight()?;
+    let mut rep = Report { host: None, ..report(if on { "allow" } else { "deny" }) };
+    let path = docker_config();
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => Some(t),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => return Err(format!("{}: {e}", path.display())),
+    };
+    if on && text.is_none() && scm::status("docker").ok().flatten().is_none() {
+        rep.warnings.push("Docker Engine (the docker service) isn't installed; the setting waits for it".into());
+    }
+    match docker_settings(text.as_deref(), on)? {
+        None if on => step(&mut rep, format!("{} already lets the service use Docker's pipe", path.display())),
+        None => step(&mut rep, "docker was not allowed"),
+        Some(new) => {
+            if let Some(dir) = path.parent() {
+                std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+            }
+            std::fs::write(&path, new).map_err(|e| format!("{}: {e}", path.display()))?;
+            step(
+                &mut rep,
+                if on {
+                    format!("set \"group\": {:?} in {}", docker_group(), path.display())
+                } else {
+                    format!("removed \"group\" from {}", path.display())
+                },
+            );
+            rep.warnings.push(
+                "Docker applies this when it restarts (Restart-Service docker), which restarts its containers \
+                 too; the node doesn't restart Docker for you"
+                    .into(),
+            );
+        }
+    }
+    if on {
+        rep.warnings.push(
+            "whoever can use Docker's pipe controls the engine, which is Administrator-equivalent. The node only \
+             reads containers and events and runs the container actions an administrator allowed, but a flaw in it \
+             could be used for more."
+                .into(),
+        );
     }
     Ok(rep)
 }
@@ -733,6 +827,24 @@ fn wait_answering(timeout: Duration) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn docker_settings_add_and_remove_only_our_group() {
+        let ours = docker_group();
+        let on = docker_settings(None, true).unwrap().unwrap();
+        assert!(on.contains(&format!("\"group\": {}", serde_json::to_string(&ours).unwrap())), "{on}");
+        assert_eq!(docker_settings(Some(&on), true).unwrap(), None);
+        let kept = docker_settings(Some(r#"{"hosts": ["npipe://"], "debug": true}"#), true).unwrap().unwrap();
+        let v: serde_json::Value = serde_json::from_str(&kept).unwrap();
+        assert_eq!((v["debug"].as_bool(), v["group"].as_str()), (Some(true), Some(ours.as_str())));
+        let off = docker_settings(Some(&kept), false).unwrap().unwrap();
+        let v: serde_json::Value = serde_json::from_str(&off).unwrap();
+        assert!(v.get("group").is_none() && v["debug"] == true);
+        assert_eq!(docker_settings(Some(r#"{"group": "docker-users"}"#), false).unwrap(), None);
+        assert!(docker_settings(Some(r#"{"group": "docker-users"}"#), true).unwrap_err().contains("docker-users"));
+        assert!(docker_settings(Some("{nope"), true).is_err() && docker_settings(Some("[]"), true).is_err());
+        assert_eq!(docker_settings(None, false).unwrap(), None);
+    }
 
     #[test]
     fn accounts_and_acls() {

@@ -38,7 +38,8 @@ COMMANDS:
         --purge             Also remove history, config and the service account
         --json              Print a machine-readable report
     allow docker            Let the service read containers through the engine
-                            socket's group (root; root-equivalent access)
+                            socket's group (root; root-equivalent access). Windows:
+                            names the service as Docker's pipe group in daemon.json
     allow journal           Let the service read the journal for SSH logins (root)
     allow eventlog          Windows: the same through the Event Log (Event Log Readers;
                             SSH and Remote Desktop logins, log errors) (Administrator)
@@ -287,6 +288,9 @@ fn windows_command(a: &Args) -> Option<Result<(), String>> {
         }
         "allow" | "deny" if matches!(a.rest.first().map(String::as_str), Some("eventlog" | "journal")) => {
             win::install::eventlog(a.cmd == "allow", a.no_start).map(|r| print_report(&r, a.json))
+        }
+        "allow" | "deny" if a.rest.first().map(String::as_str) == Some("docker") => {
+            win::install::docker(a.cmd == "allow").map(|r| print_report(&r, a.json))
         }
         "allow" | "deny" if a.rest.first().map(String::as_str) == Some("helper") => {
             win::helper::allow(&win::helper::ADMIN, a.cmd == "allow").map(|r| print_report(&r, a.json))

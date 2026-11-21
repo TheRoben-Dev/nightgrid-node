@@ -89,7 +89,7 @@ impl Shared {
         let dhcp = crate::dhcp::Dhcp::load(&store, &config.network.dhcp_servers);
         let heal = crate::heal::Heal::load(&store);
         let logs = crate::logs::LogsState::load(&store);
-        let docker_access = if cfg!(unix) && config.docker.enabled {
+        let docker_access = if config.docker.enabled {
             nightgrid_node_proto::ContainerAccess::Absent
         } else {
             nightgrid_node_proto::ContainerAccess::Off
@@ -386,7 +386,7 @@ pub fn run(config: Config, paths: Paths) -> Result<(), String> {
     } else {
         None
     };
-    let watcher = if cfg!(unix) && config.docker.enabled {
+    let watcher = if config.docker.enabled {
         Some(crate::containers::Watcher::start(shared.clone()).map_err(|e| format!("container watcher: {e}"))?)
     } else {
         None

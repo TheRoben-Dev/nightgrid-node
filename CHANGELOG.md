@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.39.0 · W3a: containers on Windows (2026-11-21)
+
+Additive only: no frozen method, field, frame or link request changed. A Windows node now also advertises `containers`. App spec [0034](docs/app-integration/0034-windows-node-containers.md). Decision N-090.
+
+- **Containers on Windows** through Docker Engine's pipe (`\\.\pipe\docker_engine`): `containers.list`, container events (stopped, exited, restarted, out of memory, unhealthy), stop alerts, logs and the `container.*` and `images.prune` actions, as on Linux.
+- **`allow docker` on Windows** sets `"group": "NT SERVICE\\nightgrid-node"` in `%ProgramData%\docker\config\daemon.json`, keeping its other settings; `deny docker` takes it out. The service's write-restricted token can only use a pipe that names its own SID, so a group such as `docker-users` isn't enough. An existing `group` for someone else is left alone and reported. Docker applies the setting when it restarts; the node never restarts Docker.
+- **Fix menu on Windows**: `fix start` and `fix prune`, and the `containers`, `stopped` and `images` presets in `fix auto`.
+- The Windows CI end-to-end test runs `allow docker`, restarts Docker, starts a Nano Server container, sees it listed, restarts it with `container.restart`, sees its stop as an event, and checks that `deny docker` restores `daemon.json`.
+
 ## 0.38.0 · W2h: rollbacks on Windows (2026-11-21)
 
 Additive only: no frozen method, field, frame or link request changed. A Windows node now also advertises `changes`. App spec [0033](docs/app-integration/0033-windows-node-rollback.md). Decision N-089.

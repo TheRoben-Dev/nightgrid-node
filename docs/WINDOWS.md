@@ -80,14 +80,14 @@ Supported: Windows Server 2016, 2019, 2022 and 2025 (and Windows 10/11, which us
 | `fix restart` / `fix reboot` / `fix run` | Direct | A listed service; `shutdown.exe /r` a minute ahead; a `fixes.toml` runbook (`C:\...` program, no shell, time limit) | **W2g (0.37.0)** |
 | `fix packages` / `fix ssh` | Substitute | The Windows Update download cache (`SoftwareDistribution\Download`, links skipped); the ACLs of `administrators_authorized_keys` and the user's `.ssh\authorized_keys` reset to SYSTEM, Administrators and the user (the usual Windows key-login failure) | **W2g (0.37.0)** |
 | `fix journal` / `fix logs` / `fix reset` | None | No systemd journal, logrotate or failed state; Windows rotates its event logs by size | — |
-| `fix start` / `fix prune` | Later | Come with containers | W3 |
+| `fix start` / `fix prune` | Direct | Through Docker's pipe; `fix auto` adds the container and image presets | **W3a (0.39.0)** |
 | `changes` (snapshot and rollback with dead-man timer) | Direct | Same `[rollback] paths` model (`D:\srv\app`); the admin helper keeps snapshots in `%ProgramData%\Nightgrid Node Rollback` (SYSTEM and Administrators only) and puts back contents, the DACL and the read-only bit (the owner where it may set it), replacing a file in place | **W2h (0.38.0)**, after `allow helper` |
 | `block` (block addresses, auto-block after failed logins) | Direct | Inbound Windows Firewall rules in the group `Nightgrid Node blocks`, each with its end time; the helper removes expired ones whenever it touches the group and the node asks it to once a minute after one is due | **W2e (0.35.0)**, after `allow helper` |
 | `health`: disks | Substitute | `MSFT_PhysicalDisk` health and `MSFT_StorageReliabilityCounter` (temperature, wear, errors) instead of SMART attributes, read by the health helper `nightgrid-node-health` | **W2c (0.33.0)**, after `allow health` |
 | `health`: pools | Substitute | Storage Spaces pools and virtual disks instead of ZFS/mdraid/btrfs | **W2c (0.33.0)** |
 | `health`: updates | Substitute | Windows Update search (COM), pending reboot from the usual registry keys; hidden updates are left out | **W2c (0.33.0)** |
 | `health`: UPS, `ups` shutdown guard | Substitute | `[health] ups = ["battery"]`: a USB HID UPS shows up as a battery (`Win32_Battery`): charge, on battery, low battery, runtime, read by the health helper and turned into the same reading as `upsc`, so alerts and `[ups] shutdown` work unchanged. A NUT server on the LAN comes with the check runner | **W2d (0.34.0)**; NUT servers W3 |
-| `containers` | Direct | Docker Engine on `\\.\pipe\docker_engine`, after `allow docker` (adds the service to `docker-users`, root-equivalent like on Linux) | W3 |
+| `containers` (list, events, `container.*` actions, logs) | Direct | Docker Engine on `\\.\pipe\docker_engine`, after `allow docker`, which sets `"group": "NT SERVICE\\nightgrid-node"` in `%ProgramData%\docker\config\daemon.json` (Administrator-equivalent, like the docker group on Linux); Docker applies it at its next restart | **W3a (0.39.0)** |
 | `checks` (service checks from the LAN) | Direct | Separate service `nightgrid-node-checker`, outbound only to `[checks] networks` by a service hardening rule | W3 |
 | `peers`, `serve`, `hub.member` (node-to-node link) | Direct | Separate service `nightgrid-node-peer`, inbound only on the tailnet or LAN address and port | W3 |
 | Status page | Direct | Separate service, tailnet address only | W3 |
@@ -111,7 +111,8 @@ Supported: Windows Server 2016, 2019, 2022 and 2025 (and Windows 10/11, which us
 - **W2f (0.36.0):** self-healing: the app's rules and `fixes.toml` autofix rules, with failed services. App spec [0031](app-integration/0031-windows-node-heal.md).
 - **W2g (0.37.0):** the fix menu (`fix`, `fix auto`) with the same names, Windows Update cache and OpenSSH key ACL substitutes, and runbooks. App spec [0032](app-integration/0032-windows-node-fixes.md).
 - **W2h (0.38.0):** rollbacks (`changes.begin`, `confirm`, `revert`, the dead-man timer). App spec [0033](app-integration/0033-windows-node-rollback.md).
-- **W3:** containers, the check runner, the link, the status page, jobs and backups.
+- **W3a (0.39.0):** containers through Docker Engine and `allow docker`. App spec [0034](app-integration/0034-windows-node-containers.md).
+- **W3b and later:** the check runner, the link, the status page, jobs and backups.
 
 ## 5. Same commands
 
