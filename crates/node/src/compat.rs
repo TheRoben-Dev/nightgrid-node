@@ -191,6 +191,84 @@ pub fn is_self(id: &str) -> bool {
     }
 }
 
+/// True when a caller id is the node's own `unit` (`"checker"`, …): on
+/// Linux the units run as the service's account, so that is [`is_self`];
+/// on Windows each is its own service with its own virtual account
+/// (`NT SERVICE\nightgrid-node-<unit>`), whose SID is fixed by its name.
+pub fn is_unit(id: &str, unit: &str) -> bool {
+    if is_self(id) {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        !id.is_empty() && id == service_sid(&format!("nightgrid-node-{unit}"))
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = unit;
+        false
+    }
+}
+
+/// The SID Windows gives a service (`NT SERVICE\<name>`): `S-1-5-80-`
+/// and the SHA-1 of the upper-cased name in UTF-16LE as five 32-bit
+/// little-endian numbers. Known without the service existing, so the
+/// pipe and folder ACLs can name a unit before it is installed.
+pub fn service_sid(name: &str) -> String {
+    let bytes: Vec<u8> = name.to_uppercase().encode_utf16().flat_map(u16::to_le_bytes).collect();
+    let h = sha1(&bytes);
+    let mut s = String::from("S-1-5-80");
+    for c in h.chunks(4) {
+        s.push_str(&format!("-{}", u32::from_le_bytes([c[0], c[1], c[2], c[3]])));
+    }
+    s
+}
+
+/// SHA-1 (FIPS 180-4), only for [`service_sid`]: the name is public, so
+/// SHA-1's weakness doesn't matter here.
+fn sha1(data: &[u8]) -> [u8; 20] {
+    let mut h: [u32; 5] = [0x6745_2301, 0xEFCD_AB89, 0x98BA_DCFE, 0x1032_5476, 0xC3D2_E1F0];
+    let mut msg = data.to_vec();
+    let bits = (data.len() as u64).wrapping_mul(8);
+    msg.push(0x80);
+    while msg.len() % 64 != 56 {
+        msg.push(0);
+    }
+    msg.extend_from_slice(&bits.to_be_bytes());
+    for block in msg.chunks(64) {
+        let mut w = [0u32; 80];
+        for (i, c) in block.chunks(4).enumerate() {
+            w[i] = u32::from_be_bytes([c[0], c[1], c[2], c[3]]);
+        }
+        for i in 16..80 {
+            w[i] = (w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16]).rotate_left(1);
+        }
+        let [mut a, mut b, mut c, mut d, mut e] = h;
+        for (i, wi) in w.iter().enumerate() {
+            let (f, k) = match i {
+                0..=19 => ((b & c) | (!b & d), 0x5A82_7999),
+                20..=39 => (b ^ c ^ d, 0x6ED9_EBA1),
+                40..=59 => ((b & c) | (b & d) | (c & d), 0x8F1B_BCDC),
+                _ => (b ^ c ^ d, 0xCA62_C1D6),
+            };
+            let t = a.rotate_left(5).wrapping_add(f).wrapping_add(e).wrapping_add(k).wrapping_add(*wi);
+            e = d;
+            d = c;
+            c = b.rotate_left(30);
+            b = a;
+            a = t;
+        }
+        for (x, y) in h.iter_mut().zip([a, b, c, d, e]) {
+            *x = x.wrapping_add(y);
+        }
+    }
+    let mut out = [0u8; 20];
+    for (i, x) in h.iter().enumerate() {
+        out[i * 4..i * 4 + 4].copy_from_slice(&x.to_be_bytes());
+    }
+    out
+}
+
 /// True when this process runs as root (Windows: elevated administrator).
 pub fn am_root() -> bool {
     #[cfg(unix)]
@@ -314,5 +392,23 @@ impl std::io::Write for LocalStream {
     }
     fn flush(&mut self) -> std::io::Result<()> {
         self.0.flush()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn service_sids_match_windows() {
+        assert_eq!(hex(&sha1(b"abc")), "a9993e364706816aba3e25717850c26c9cd0d89d");
+        assert_eq!(hex(&sha1(&[b'a'; 1000])), "291e9a6c66994949b57ba5e650361e98fc36b1ba");
+        // `sc showsid TrustedInstaller`
+        assert_eq!(service_sid("TrustedInstaller"), "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464");
+        assert_eq!(service_sid("trustedinstaller"), service_sid("TrustedInstaller"));
+    }
+
+    fn hex(b: &[u8]) -> String {
+        b.iter().map(|x| format!("{x:02x}")).collect()
     }
 }

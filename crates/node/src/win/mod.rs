@@ -2,6 +2,7 @@
 //! of `/proc`, systemd and the unix socket.
 
 pub mod acl;
+pub mod checker;
 pub mod doctor;
 pub mod eventlog;
 pub mod files;

@@ -17,6 +17,8 @@ function Fail($m) {
     Write-Host "FAIL: $m"
     $log = Join-Path $etc 'data\log\node.log'
     if (Test-Path $log) { Write-Host '--- node.log ---'; Get-Content $log -Tail 80 }
+    $clog = Join-Path $etc 'data\log\checker\checker.log'
+    if (Test-Path $clog) { Write-Host '--- checker.log ---'; Get-Content $clog -Tail 40 }
     exit 1
 }
 
@@ -92,7 +94,7 @@ if ($r.Count -lt 2) { Fail "bridge answers: $r" }
 $w = $r[0] | ConvertFrom-Json
 if ($w.result.proto -ne 2 -or -not $w.result.caps.'metrics.sync') { Fail "hello: $($r[0])" }
 if (-not $w.result.caps.containers) { Fail 'does not advertise containers' }
-if ($w.result.caps.PSObject.Properties.Name -contains 'checks') { Fail 'advertises checks, which Windows lacks so far' }
+if (-not $w.result.caps.checks) { Fail 'does not advertise checks' }
 if (-not $w.result.caps.health) { Fail 'does not advertise health' }
 $info = ($r[1] | ConvertFrom-Json).result
 if ($info.node.hostname -eq '' -or $info.rssBytes -le 0) { Fail "node.info: $($r[1])" }
@@ -524,6 +526,107 @@ if ($LASTEXITCODE -ne 0) { Fail "deny docker: $j" }
 if ((Get-Content $dj -Raw | ConvertFrom-Json).group) { Fail "group left in daemon.json: $(Get-Content $dj -Raw)" }
 if ($null -eq $djOld) { Remove-Item $dj } else { Set-Content -Path $dj -Value $djOld -NoNewline }
 if ($docker) { Restart-Service docker }
+
+Step 'allow checks: a runner service with its own account checks HTTP and TCP, outbound only to [checks] networks'
+$r = @(Bridge @($hello, '{"id":2,"method":"node.info"}'))
+if ($r[1] -notmatch '"checks":"denied"') { Fail "checks should be denied before allow: $($r[1])" }
+$cfgBefore = Get-Content $cfg -Raw
+if ($cfgBefore -notmatch '(?m)^interval_secs = 60$') { Fail "no [checks] interval in the template: $cfgBefore" }
+Set-Content -Path $cfg -Value ($cfgBefore -replace '(?m)^interval_secs = 60$', 'interval_secs = 30') -NoNewline
+Restart-Service nightgrid-node
+Start-Sleep -Seconds 3
+$lan = (Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.IPAddress -match '^(10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.)' } | Select-Object -First 1).IPAddress
+if (-not $lan) { $lan = '127.0.0.1' }
+Write-Host "LAN address: $lan"
+$srv = Start-Job {
+    $t = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Any, 18767)
+    $t.Start()
+    $l = [System.Net.HttpListener]::new()
+    $l.Prefixes.Add('http://127.0.0.1:18766/')
+    $l.Start()
+    while ($true) { $c = $l.GetContext(); $c.Response.StatusCode = 204; $c.Response.Close() }
+}
+Start-Sleep -Seconds 3
+$list = @(
+    @{ id = 'web'; name = 'web'; url = 'http://127.0.0.1:18766/' },
+    @{ id = 'lan'; name = 'lan'; url = "tcp://${lan}:18767" },
+    @{ id = 'gone'; name = 'gone'; url = 'tcp://127.0.0.1:1' },
+    @{ id = 'out'; name = 'out'; url = 'http://1.1.1.1/' }
+)
+$r = @(Bridge @($hello, (Rpc 2 'checks.set' @{ checks = $list })))
+if ($r[1] -notmatch '"id":"web"') { Fail "checks.set: $($r[1])" }
+$r = @(Bridge @($hello, (Rpc 2 'checks.set' @{ checks = @(@{ id = 'x'; name = 'x'; url = "http://a/`r`nX: y" }) })))
+if ($r[1] -notmatch 'bad characters') { Fail "a header injection URL was accepted: $($r[1])" }
+$r = @(Bridge @($hello, (Rpc 2 'checks.set' @{ checks = $list })))
+$j = (& $bin allow checks --json) -join ''
+Write-Host $j
+if ($LASTEXITCODE -ne 0) { Fail "allow checks: $j" }
+if ($j -notmatch 'own service account') { Fail "no checks warning: $j" }
+$cs = Get-CimInstance Win32_Service -Filter "Name='nightgrid-node-checker'"
+if ($null -eq $cs -or $cs.StartName -ne 'NT SERVICE\nightgrid-node-checker' -or $cs.StartMode -ne 'Auto') { Fail "runner service: $($cs | Out-String)" }
+$sidType = (sc.exe qsidtype nightgrid-node-checker) -join ' '
+if ($sidType -notmatch 'RESTRICTED') { Fail "runner SID type: $sidType" }
+$privs = (sc.exe qprivs nightgrid-node-checker) -join ' '
+if ($privs -match 'SeShutdown|SeDebug|SeTcb|SeBackup|SeImpersonate|SeAssignPrimary') { Fail "runner privileges: $privs" }
+$fw = New-Object -ComObject HNetCfg.FwPolicy2
+if (-not $fw.ServiceRestriction.ServiceRestricted('nightgrid-node-checker', $bin)) { Fail 'no hardening rule for the runner' }
+$wsh = @($fw.ServiceRestriction.Rules | Where-Object { $_.ServiceName -eq 'nightgrid-node-checker' -and $_.Action -eq 1 })
+if ($wsh.Count -ne 1 -or $wsh[0].RemoteAddresses -notmatch '192\.168\.0\.0') { Fail "runner allow rule: $($wsh | Format-List Name,RemoteAddresses,Direction | Out-String)" }
+Write-Host "runner may reach: $($wsh[0].RemoteAddresses)"
+if (@(Get-NetFirewallRule -Group 'Nightgrid Node check runner' -ErrorAction SilentlyContinue).Count -ne 2) { Fail 'expected 2 visible runner rules' }
+$deadline = (Get-Date).AddSeconds(90)
+do {
+    Start-Sleep -Seconds 3
+    $r = @(Bridge @($hello, '{"id":2,"method":"checks.latest"}'))
+    $cl = ($r[1] | ConvertFrom-Json).result
+} while (($cl.access -ne 'ok' -or @($cl.readings).Count -lt 4) -and (Get-Date) -lt $deadline)
+Write-Host $r[1]
+if ($cl.access -ne 'ok') { Fail "runner never reported: $($r[1])" }
+$by = @{}; foreach ($x in $cl.readings) { $by[$x.id] = $x.result }
+if (-not $by.web.up -or $by.web.status -ne 204) { Fail "web: $($by.web | ConvertTo-Json -Compress)" }
+if (-not $by.lan.up) { Fail "lan: $($by.lan | ConvertTo-Json -Compress)" }
+if ($by.gone.up) { Fail 'a closed port counted as up' }
+if ($by.out.error -notmatch 'outside \[checks\] networks') { Fail "out: $($by.out | ConvertTo-Json -Compress)" }
+$r = @(Bridge @($hello, '{"id":2,"method":"checks.report","params":{"readings":[]}}'))
+if ($r[1] -notmatch 'only the check runner') { Fail "an administrator could report checks: $($r[1])" }
+$doc = (& $bin doctor --json) -join ''
+if ($doc -notmatch '"check":"checks","level":"ok"') { Fail "doctor after allow checks: $doc" }
+
+# The firewall, not only the runner's own filter: an address added to the
+# config without allow checks again is let through by the runner, and
+# Windows still blocks it.
+$net = Test-NetConnection 1.1.1.1 -Port 443 -WarningAction SilentlyContinue
+if ($net.TcpTestSucceeded) {
+    $c = Get-Content $cfg -Raw
+    Set-Content -Path $cfg -Value ($c -replace '(?m)^  "fe80::/10",$', "  `"fe80::/10`",`n  `"1.1.1.1/32`",") -NoNewline
+    if ((Get-Content $cfg -Raw) -notmatch '1\.1\.1\.1/32') { Fail 'could not add 1.1.1.1 to [checks] networks' }
+    $r = @(Bridge @($hello, (Rpc 2 'checks.set' @{ checks = @(@{ id = 'fw'; name = 'fw'; url = 'tcp://1.1.1.1:443' }) })))
+    Restart-Service nightgrid-node-checker
+    $deadline = (Get-Date).AddSeconds(90)
+    do {
+        Start-Sleep -Seconds 3
+        $r = @(Bridge @($hello, '{"id":2,"method":"checks.latest"}'))
+        $fwr = @(($r[1] | ConvertFrom-Json).result.readings | Where-Object { $_.id -eq 'fw' })
+    } while ($fwr.Count -eq 0 -and (Get-Date) -lt $deadline)
+    Write-Host $r[1]
+    if ($fwr.Count -eq 0) { Fail "no reading for fw: $($r[1])" }
+    if ($fwr[0].result.up) { Fail 'the runner reached an address outside the firewall rule' }
+    if ($fwr[0].result.error -match 'outside \[checks\] networks') { Fail "the runner refused fw itself, so the firewall was not tested: $($r[1])" }
+} else {
+    Write-Host 'no internet on this runner: firewall check skipped'
+}
+
+$j = (& $bin deny checks --json) -join ''
+Write-Host $j
+if ($LASTEXITCODE -ne 0) { Fail "deny checks: $j" }
+if (Get-Service nightgrid-node-checker -ErrorAction SilentlyContinue) { Fail 'runner service left after deny' }
+if (@(Get-NetFirewallRule -Group 'Nightgrid Node check runner' -ErrorAction SilentlyContinue).Count -ne 0) { Fail 'runner rules left after deny' }
+$fw = New-Object -ComObject HNetCfg.FwPolicy2
+if (@($fw.ServiceRestriction.Rules | Where-Object { $_.ServiceName -eq 'nightgrid-node-checker' }).Count -ne 0) { Fail 'runner hardening rules left after deny' }
+Stop-Job $srv; Remove-Job $srv -Force
+Set-Content -Path $cfg -Value $cfgBefore -NoNewline
+Restart-Service nightgrid-node
+Start-Sleep -Seconds 3
 
 Step 'allow health: disks and Storage Spaces through the read-only health helper'
 $j = (& $bin allow health --json) -join ''

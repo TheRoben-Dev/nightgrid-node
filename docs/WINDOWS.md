@@ -88,7 +88,7 @@ Supported: Windows Server 2016, 2019, 2022 and 2025 (and Windows 10/11, which us
 | `health`: updates | Substitute | Windows Update search (COM), pending reboot from the usual registry keys; hidden updates are left out | **W2c (0.33.0)** |
 | `health`: UPS, `ups` shutdown guard | Substitute | `[health] ups = ["battery"]`: a USB HID UPS shows up as a battery (`Win32_Battery`): charge, on battery, low battery, runtime, read by the health helper and turned into the same reading as `upsc`, so alerts and `[ups] shutdown` work unchanged. A NUT server on the LAN comes with the check runner | **W2d (0.34.0)**; NUT servers W3 |
 | `containers` (list, events, `container.*` actions, logs) | Direct | Docker Engine on `\\.\pipe\docker_engine`, after `allow docker`, which sets `"group": "NT SERVICE\\nightgrid-node"` in `%ProgramData%\docker\config\daemon.json` (Administrator-equivalent, like the docker group on Linux); Docker applies it at its next restart | **W3a (0.39.0)** |
-| `checks` (service checks from the LAN) | Direct | Separate service `nightgrid-node-checker`, outbound only to `[checks] networks` by a service hardening rule | W3 |
+| `checks` (service checks from the LAN) | Direct | Separate service `nightgrid-node-checker` as its own virtual account (no administrator, write-restricted SID), outbound TCP only to `[checks] networks` by a Windows Service Hardening rule; it may read the config and write only `data\log\checker` | **W3b (0.40.0)**, after `allow checks` |
 | `peers`, `serve`, `hub.member` (node-to-node link) | Direct | Separate service `nightgrid-node-peer`, inbound only on the tailnet or LAN address and port | W3 |
 | Status page | Direct | Separate service, tailnet address only | W3 |
 | `jobs` (scheduled jobs) | Substitute | Task Scheduler tasks under `\Nightgrid\` (what the app creates on Windows) instead of systemd timers | W3 |
@@ -112,7 +112,8 @@ Supported: Windows Server 2016, 2019, 2022 and 2025 (and Windows 10/11, which us
 - **W2g (0.37.0):** the fix menu (`fix`, `fix auto`) with the same names, Windows Update cache and OpenSSH key ACL substitutes, and runbooks. App spec [0032](app-integration/0032-windows-node-fixes.md).
 - **W2h (0.38.0):** rollbacks (`changes.begin`, `confirm`, `revert`, the dead-man timer). App spec [0033](app-integration/0033-windows-node-rollback.md).
 - **W3a (0.39.0):** containers through Docker Engine and `allow docker`. App spec [0034](app-integration/0034-windows-node-containers.md).
-- **W3b and later:** the check runner, the link, the status page, jobs and backups.
+- **W3b (0.40.0):** the check runner service and `allow checks`/`deny checks`. App spec [0035](app-integration/0035-windows-node-checks.md).
+- **W3c and later:** NUT servers on the LAN, the link, the status page, jobs and backups.
 
 ## 5. Same commands
 

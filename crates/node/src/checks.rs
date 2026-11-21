@@ -541,6 +541,11 @@ pub fn save(store: &crate::store::Store, list: &[ServiceCheck]) -> crate::store:
 /// `nightgrid-node checker`: the runner unit's loop. Reads the list from
 /// the node, runs it, reports, sleeps `[checks] interval_secs`.
 pub fn checker(config_path: &Path) -> Result<(), String> {
+    checker_until(config_path, &|| false)
+}
+
+/// [`checker`] until `stop` says so (the Windows service's stop request).
+pub fn checker_until(config_path: &Path, stop: &dyn Fn() -> bool) -> Result<(), String> {
     let config = crate::config::Config::load(config_path).map_err(|e| format!("config: {e}"))?;
     if !config.checks.enabled {
         return Err("[checks] is off".into());
@@ -553,7 +558,16 @@ pub fn checker(config_path: &Path) -> Result<(), String> {
             Ok(n) => crate::debug!("checked {n} services"),
             Err(e) => crate::warn!("check round: {e}"),
         }
-        std::thread::sleep(interval.saturating_sub(started.elapsed()).max(Duration::from_secs(5)));
+        let until = (started + interval).max(Instant::now() + Duration::from_secs(5));
+        while Instant::now() < until {
+            if stop() {
+                return Ok(());
+            }
+            std::thread::sleep(Duration::from_millis(500).min(until.saturating_duration_since(Instant::now())));
+        }
+        if stop() {
+            return Ok(());
+        }
     }
 }
 

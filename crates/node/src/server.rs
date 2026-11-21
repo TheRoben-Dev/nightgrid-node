@@ -423,6 +423,7 @@ pub const WINDOWS_CAPS: &[&str] = &[
     cap::HEAL,
     cap::CHANGES,
     cap::CONTAINERS,
+    cap::CHECKS,
 ];
 
 /// What `hello` advertises on this platform: [`caps`] on Linux, the part
@@ -474,7 +475,7 @@ fn dispatch(shared: &Shared, session: &mut Session, req: &Request) -> Result<Res
         let client: String = h.client.chars().filter(|c| !c.is_control()).take(80).collect();
         session.client = client.clone();
         // The node's own units (link, check runner, helpers) connect often.
-        if crate::compat::is_self(&session.uid) && client.starts_with("nightgrid-node") {
+        if crate::compat::is_unit(&session.uid, "checker") && client.starts_with("nightgrid-node") {
             crate::debug!("hello from {client:?} as uid {} (protocol {v})", session.uid);
         } else {
             crate::info!("hello from {client:?} as uid {} (protocol {v})", session.uid);
@@ -711,8 +712,9 @@ fn dispatch(shared: &Shared, session: &mut Session, req: &Request) -> Result<Res
             ))
         }
         method::CHECKS_REPORT => {
-            // Only the check runner, which runs as the service's own account.
-            if !crate::compat::is_self(&session.uid) {
+            // Only the check runner (the service's own account; on Windows
+            // its own service, `NT SERVICE\nightgrid-node-checker`).
+            if !crate::compat::is_unit(&session.uid, "checker") {
                 return Err(Response::err(0, ErrorCode::Forbidden, "only the check runner may report"));
             }
             let r: nightgrid_node_proto::ChecksReport = params(&req.params)?;
