@@ -201,6 +201,11 @@ The same flow as N-042: the new exe is copied next to the installed one, the cop
 ### N-084 · Windows health runs in its own read-only helper service with a write-restricted token
 Reading disk reliability counters, Storage Spaces and the Windows Update search needs more than the node's virtual account has, but nothing that writes. So `allow health` installs a second demand-start service, `nightgrid-node-health`, beside the admin helper and built from the same code: LocalSystem, only `SeChangeNotifyPrivilege`, a write-restricted service SID (it can write only where its own SID is allowed, which is its log), and a Service Hardening rule that blocks all network traffic. Its pipe and service DACLs follow N-080 and N-081. It answers the same `smart`, `pools`, `updates` and `files` requests as the Linux health socket, so the watcher, the store, the alerts and the protocol are unchanged. The disk, pool and update scripts are the app's own Windows scripts, vendored with `NODE:` notes, so the app and the node read the same fields the same way. UPS readings wait for W2d.
 
+## Windows Server · W2d (2026-11-20)
+
+### N-085 · On Windows a UPS on USB is the `[health] ups` target `"battery"`, read as if it were `upsc`
+Windows has a HID UPS driver built in and shows the UPS as a battery, so no NUT install is needed for the common case. The health helper reads `Win32_Battery` and writes the same `key: value` lines `upsc` prints (`ups.status` OL/OB/LB/CHRG/RB, `battery.charge`, `battery.runtime`, `device.model`). The reading, its alerts, `ups.guard` and `[ups] shutdown` then work exactly as on Linux, and the protocol is unchanged. Windows' "unknown" runtime (on AC) is left out rather than shown as 136 years. A NUT server on the LAN isn't read yet, because the health helper has no network. That comes with the check runner (W3). The power-off is the W2a `power.poweroff`, so a Windows host goes down one minute after the countdown ends.
+
 ## N11 · Fix menu (2026-11-18)
 
 ### N-060 · Fixes are node-local actions on the existing action path, outside the frozen protocol

@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.34.0 · W2d: UPS on USB and the UPS shutdown guard on Windows (2026-11-20)
+
+Additive only: no frozen method, field, frame or link request changed. A Windows node now also advertises `ups`. App spec [0029](docs/app-integration/0029-windows-node-ups.md). Decision N-085.
+
+- **`[health] ups = ["battery"]` on Windows** reads a UPS on the host's USB port (Windows shows it as a battery) through the health helper: on battery, low battery, replace battery, charge, runtime and model, in the same reading as NUT's.
+- **`[ups] shutdown` on Windows**: the guard follows that reading and powers the host off through the admin helper, like on Linux.
+- A NUT target on Windows says it isn't read yet; NUT servers come with the check runner.
+- The Windows config template has a `[health]` section with `ups = []`.
+- `deny` and `uninstall` now mark a Windows helper for deletion before stopping it, so a running node can't start it again in between, and a helper asked to stop during a long read (a Windows Update search can take minutes) ends that read at once.
+- The Windows CI end-to-end test now reads `"battery"` and checks `ups.guard`.
+
 ## 0.33.0 · W2c: Windows health (disks, Storage Spaces, Windows Update) (2026-11-20)
 
 Additive only: no frozen method, field, frame or link request changed. A Windows node now also advertises `health`. App spec [0028](docs/app-integration/0028-windows-node-health.md). Decision N-084.

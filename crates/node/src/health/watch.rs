@@ -77,6 +77,12 @@ pub(crate) fn run_capped(prog: &str, args: &[&str], limit: Duration) -> Result<S
                 let _ = child.wait();
                 return Err(format!("{prog} took longer than {} s", limit.as_secs()));
             }
+            #[cfg(windows)]
+            Ok(None) if crate::win::helper::stopping() => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("the health helper is stopping".into());
+            }
             Ok(None) => std::thread::sleep(Duration::from_millis(50)),
             Err(e) => return Err(e.to_string()),
         }
@@ -96,7 +102,19 @@ pub fn handle(config: &Config, req: &ReadRequest) -> ReadReply {
         "smart" => powershell(super::windows::DISKS, 240),
         "pools" => powershell(super::windows::POOLS, 60),
         "updates" => powershell(super::windows::CHECK, 300),
-        "ups" => Err("UPS readings on Windows come in a later node release".into()),
+        "ups" => {
+            let t = req.target.as_deref().unwrap_or("");
+            if !config.health.ups.iter().any(|u| u == t) {
+                Err(format!("{t:?} is not in [health] ups"))
+            } else if t == super::windows::BATTERY_TARGET {
+                powershell(super::windows::BATTERY, 30).and_then(|j| super::windows::battery_text(&j))
+            } else {
+                // NODE: no upsc on Windows; a NUT server comes with the check runner.
+                Ok(format!(
+                    "Error: {t} is a NUT server; on Windows the node reads only \"battery\" (a UPS on USB) for now\n"
+                ))
+            }
+        }
         "files" => crate::files::helper_snapshot(&config.files),
         other => Err(format!("unknown read {other:?}")),
     };

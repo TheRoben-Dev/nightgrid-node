@@ -61,6 +61,14 @@ minute_retention_days = 14
 # clients are rejected and nothing listens on the network.
 socket = '\\.\pipe\nightgrid-node'
 max_connections = 8
+
+[health]
+# Disks, Storage Spaces and Windows Update, after an administrator runs
+#   nightgrid-node allow health
+enabled = true
+# UPS to read: "battery" is a UPS on this host's USB port (Windows shows it
+# as a battery). [ups] shutdown can then power this host off on battery.
+ups = []
 "#;
 
 pub(crate) fn report(action: &'static str) -> Report {
@@ -90,7 +98,7 @@ pub fn facts() -> crate::host::HostFacts {
 /// What the Windows node doesn't do yet (docs/WINDOWS.md), one sentence each.
 pub fn limits() -> Vec<String> {
     [
-        "No helper service yet: actions, fixes, disk health, updates and the UPS guard come in a later release.",
+        "No fix menu, self-healing, address blocking or rollbacks yet; UPS readings only from a UPS on USB.",
         "No containers, service checks, node-to-node link or status page yet.",
         "No rogue DHCP watch: Windows can't listen for DHCP without a packet capture driver.",
     ]

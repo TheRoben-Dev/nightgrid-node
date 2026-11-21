@@ -23,7 +23,7 @@ nightgrid-node allow health     # elevated prompt; deny health takes it away
 - `smart.report`: one disk per physical disk. `health` comes from the Storage module's health status and operational status. Temperature, wear, power-on hours and read/write errors come from `MSFT_StorageReliabilityCounter` where the disk reports them. There are no SMART attribute tables.
 - `pools.report`: Storage Spaces pools with `kind: "storageSpaces"`, their virtual disks and their health. The app already has this value.
 - `updates.report`: `manager: "windowsUpdate"`. Security updates have "security" in `repo`. `rebootRequired` and `rebootReasons` come from the usual registry keys. Hidden updates are left out, and there are no held packages. The app already has this value.
-- UPS readings aren't available yet. `ups.report` stays absent until W2d.
+- UPS readings come in 0.34.0 ([0029](0029-windows-node-ups.md)).
 - Watched files (`files`) now also go through this helper, so files the node's account can't read are still hashed.
 
 ## What to change in the app

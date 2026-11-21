@@ -186,6 +186,11 @@ static CONFIG: Mutex<Option<PathBuf>> = Mutex::new(None);
 static KIND: OnceLock<&'static Kind> = OnceLock::new();
 static RESULT: Mutex<Option<Result<(), String>>> = Mutex::new(None);
 
+/// True once the SCM asked this helper to stop: long reads give up.
+pub fn stopping() -> bool {
+    STOP.load(Ordering::SeqCst)
+}
+
 fn stop_notify() -> &'static tokio::sync::Notify {
     STOP_NOTIFY.get_or_init(tokio::sync::Notify::new)
 }
@@ -217,8 +222,19 @@ unsafe extern "system" fn handler(
 ) -> u32 {
     match control {
         SERVICE_CONTROL_STOP | SERVICE_CONTROL_SHUTDOWN => {
-            set(SERVICE_STOP_PENDING, NO_ERROR, 10_000);
-            STOP.store(true, Ordering::SeqCst);
+            set(SERVICE_STOP_PENDING, NO_ERROR, 20_000);
+            if !STOP.swap(true, Ordering::SeqCst) {
+                // A read in progress (a Windows Update search can take
+                // minutes) kills its child when it sees STOP; anything else
+                // still running after 15 s is cut short, so a stop or an
+                // uninstall never waits on a request.
+                let _ = std::thread::Builder::new().name("stop".into()).spawn(|| {
+                    std::thread::sleep(Duration::from_secs(15));
+                    crate::warn!("helper: a request was still running at stop; exiting");
+                    set(SERVICE_STOPPED, NO_ERROR, 0);
+                    std::process::exit(0);
+                });
+            }
             stop_notify().notify_waiters();
             NO_ERROR
         }
@@ -433,14 +449,8 @@ pub fn allow(k: &Kind, on: bool) -> Result<Report, String> {
     let mut rep = Report { host: None, ..super::install::report(if on { "allow" } else { "deny" }) };
     let bin = super::installed_binary();
     if !on {
-        let had = installed(k);
-        scm::stop(k.service, Duration::from_secs(30))?;
-        if had {
-            if let Err(e) = firewall(k, false, &bin) {
-                rep.warnings.push(format!("firewall rule: {e}"));
-            }
-        }
-        if scm::delete(k.service)? {
+        if installed(k) {
+            retire(k, &bin, &mut rep)?;
             step(&mut rep, format!("removed the {} service", k.label));
         } else {
             step(&mut rep, format!("{} was not allowed", k.grant));
@@ -516,21 +526,26 @@ fn firewall(k: &Kind, on: bool, bin: &Path) -> Result<(), String> {
     super::install::powershell(&script).map(|_| ())
 }
 
+/// Takes a helper away: its hardening rule while Windows can still resolve
+/// its SID, then marks it for deletion *before* stopping it, because a
+/// running node starts its helper again as soon as a stop completes (a
+/// marked service can't be started), and it is gone once it has stopped.
+fn retire(k: &Kind, bin: &Path, rep: &mut Report) -> Result<(), String> {
+    if let Err(e) = firewall(k, false, bin) {
+        rep.warnings.push(format!("{} firewall rule: {e}", k.label));
+    }
+    scm::delete(k.service)?;
+    scm::stop(k.service, Duration::from_secs(30))
+}
+
 /// Removes both helpers on uninstall.
 pub fn remove(rep: &mut Report) {
     for k in [&ADMIN, &HEALTH] {
         if !installed(k) {
             continue;
         }
-        if let Err(e) = scm::stop(k.service, Duration::from_secs(30)) {
-            rep.warnings.push(e);
-        }
-        if let Err(e) = firewall(k, false, &super::installed_binary()) {
-            rep.warnings.push(format!("{} firewall rule: {e}", k.label));
-        }
-        match scm::delete(k.service) {
-            Ok(true) => step(rep, format!("removed the {} service", k.label)),
-            Ok(false) => {}
+        match retire(k, &super::installed_binary(), rep) {
+            Ok(()) => step(rep, format!("removed the {} service", k.label)),
             Err(e) => rep.warnings.push(e),
         }
     }
