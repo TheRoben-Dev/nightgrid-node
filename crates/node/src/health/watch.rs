@@ -36,9 +36,9 @@ const MAX_OUTPUT: u64 = 4 << 20;
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ReadRequest {
-    /// `smart`, `pools`, `updates`, `ups` or `files`.
+    /// `smart`, `pools`, `updates`, `ups`, `files` or (Windows) `tasks`.
     pub read: String,
-    /// The UPS, for `ups`.
+    /// The UPS, for `ups`; the task paths, one per line, for `tasks`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub target: Option<String>,
 }
@@ -53,15 +53,33 @@ pub struct ReadReply {
 
 /// Runs `prog args` with a time limit; stdout (capped), or why not.
 pub(crate) fn run_capped(prog: &str, args: &[&str], limit: Duration) -> Result<String, String> {
-    let mut child = Command::new(prog)
-        .args(args)
-        .env("LANG", "C")
-        .env("SYSTEMD_PAGER", "")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|e| format!("{prog}: {e}"))?;
+    let command = || {
+        let mut c = Command::new(prog);
+        c.args(args)
+            .env("LANG", "C")
+            .env("SYSTEMD_PAGER", "")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        c
+    };
+    // On Windows the node's service sits in a job with a 64 MiB cap per
+    // process (win::service::cap_memory), which PowerShell doesn't fit in:
+    // its reads leave the job (the job allows that). Outside such a job,
+    // or in one that doesn't allow it, the plain spawn is used.
+    #[cfg(windows)]
+    let spawned = {
+        use std::os::windows::process::CommandExt;
+        const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command()
+            .creation_flags(CREATE_BREAKAWAY_FROM_JOB | CREATE_NO_WINDOW)
+            .spawn()
+            .or_else(|_| command().creation_flags(CREATE_NO_WINDOW).spawn())
+    };
+    #[cfg(not(windows))]
+    let spawned = command().spawn();
+    let mut child = spawned.map_err(|e| format!("{prog}: {e}"))?;
     let mut out = child.stdout.take().ok_or("no stdout")?;
     let reader = std::thread::spawn(move || {
         let mut buf = Vec::new();
@@ -114,6 +132,18 @@ pub fn handle(config: &Config, req: &ReadRequest) -> ReadReply {
             }
         }
         "files" => crate::files::helper_snapshot(&config.files),
+        // NODE: the jobs watcher's Task Scheduler read (decision N-095):
+        // tasks registered by an administrator can't be read by the node's
+        // own account. Read-only; every path is checked first.
+        "tasks" => {
+            let list: Vec<String> =
+                req.target.as_deref().unwrap_or("").lines().filter(|l| !l.is_empty()).map(str::to_owned).collect();
+            match list.iter().find(|t| !crate::wintasks::valid_task(t)) {
+                Some(bad) => Err(format!("{bad:?} is not a scheduled task path")),
+                None if list.len() > 64 => Err("at most 64 tasks".into()),
+                None => powershell(&crate::wintasks::script(&list), 60),
+            }
+        }
         other => Err(format!("unknown read {other:?}")),
     };
     #[cfg(unix)]
@@ -148,7 +178,7 @@ pub fn handle(config: &Config, req: &ReadRequest) -> ReadReply {
 /// Runs one of the vendored PowerShell reads with a time limit. A script
 /// that throws answers `@error <message>` instead of its JSON.
 #[cfg(windows)]
-fn powershell(script: &str, secs: u64) -> Result<String, String> {
+pub(crate) fn powershell(script: &str, secs: u64) -> Result<String, String> {
     let wrapped = format!(
         "$ProgressPreference='SilentlyContinue'\ntry {{ & {{\n{script}\n}} }} catch {{ [Console]::Out.Write('@error ' + $_.Exception.Message) }}"
     );
