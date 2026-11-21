@@ -381,6 +381,76 @@ if (-not $hadKeys) { Remove-Item $keys -Force }
 if ($madeSshDir) { Remove-Item $sshDir -Recurse -Force }
 Remove-Item $fixes
 
+Step 'rollbacks: a change is put back (contents and ACL) on revert and by the timer, kept on confirm'
+$rb = 'C:\ngn-rollback-ci'
+New-Item -ItemType Directory -Path $rb -Force | Out-Null
+$app = Join-Path $rb 'app.conf'
+$new = Join-Path $rb 'new.conf'
+Set-Content -Path $app -Value 'v1' -NoNewline
+& icacls.exe $app /inheritance:r /grant:r '*S-1-5-18:F' '*S-1-5-32-544:F' '*S-1-1-0:R' | Out-Null
+function AclOf($f) {
+    $a = Get-Acl $f
+    "protected=$($a.AreAccessRulesProtected) " + (@($a.Access | ForEach-Object { "$($_.IdentityReference)|$($_.FileSystemRights)|$($_.AccessControlType)|$($_.IsInherited)" } | Sort-Object) -join '; ')
+}
+$dacl0 = AclOf $app
+Write-Host "app.conf DACL: $dacl0"
+$c = Get-Content $cfg -Raw
+$c = $c -replace '(?m)^allow = \[', 'allow = ["files.rollback", '
+$c = $c -replace '(?m)^paths = \[\]', "paths = ['$rb']"
+Set-Content -Path $cfg -Value $c -NoNewline
+Restart-Service nightgrid-node
+Start-Sleep -Seconds 3
+function Rpc($id, $method, $params) { @{ id = $id; method = $method; params = $params } | ConvertTo-Json -Compress -Depth 6 }
+$r = @(Bridge @($hello,
+    (Rpc 2 'changes.begin' @{ paths = @($app, $new); confirmWithinSecs = 60; note = 'ci revert' }),
+    (Rpc 3 'changes.begin' @{ paths = @('C:\ProgramData\Nightgrid Node\config.toml'); confirmWithinSecs = 60 }),
+    (Rpc 4 'changes.begin' @{ paths = @('C:\Windows\win.ini'); confirmWithinSecs = 60 })))
+Write-Host ($r -join "`n")
+$ch = ($r[1] | ConvertFrom-Json).result
+if ($null -eq $ch -or $ch.state -ne 'pending' -or $ch.detail -notmatch 'saved 2 files \(1 new') { Fail "changes.begin: $($r[1])" }
+if ($null -ne ($r[2] | ConvertFrom-Json).result) { Fail "a change to the node's own config was accepted: $($r[2])" }
+if ($null -ne ($r[3] | ConvertFrom-Json).result) { Fail "a path outside [rollback] paths was accepted: $($r[3])" }
+$snaps = Join-Path $env:ProgramData 'Nightgrid Node Rollback'
+$sa = Get-Acl $snaps
+$who = @($sa.Access | ForEach-Object { $_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value } | Sort-Object -Unique) -join ' '
+Write-Host "snapshot folder ACL: $who (protected: $($sa.AreAccessRulesProtected))"
+if (-not $sa.AreAccessRulesProtected -or $who -ne 'S-1-5-18 S-1-5-32-544') { Fail "snapshot folder ACL: $who" }
+if (-not (Test-Path (Join-Path $snaps "$($ch.id)\manifest.json"))) { Fail 'no snapshot manifest' }
+# The change: new contents, a looser ACL, a new file.
+Set-Content -Path $app -Value 'v2 broken' -NoNewline
+& icacls.exe $app /grant '*S-1-1-0:F' | Out-Null
+Set-Content -Path $new -Value 'x'
+$r = @(Bridge @($hello, (Rpc 2 'changes.revert' @{ id = $ch.id })))
+Write-Host $r[1]
+$rv = ($r[1] | ConvertFrom-Json).result
+if ($rv.state -ne 'reverted') { Fail "changes.revert: $($r[1])" }
+$dacl1 = AclOf $app
+if ((Get-Content $app -Raw) -ne 'v1') { Fail "contents not put back: $(Get-Content $app -Raw)" }
+if ($dacl1 -ne $dacl0) { Fail "ACL not put back: $dacl1 (was $dacl0)" }
+if (Test-Path $new) { Fail 'the new file is still there after the revert' }
+if (Test-Path (Join-Path $snaps $ch.id)) { Fail 'snapshot kept after a clean revert' }
+# Confirm keeps the change and drops the snapshot.
+$r = @(Bridge @($hello, (Rpc 2 'changes.begin' @{ paths = @($app); confirmWithinSecs = 60; note = 'ci confirm' })))
+$ch = ($r[1] | ConvertFrom-Json).result
+Set-Content -Path $app -Value 'v3' -NoNewline
+$r = @(Bridge @($hello, (Rpc 2 'changes.confirm' @{ id = $ch.id })))
+Write-Host $r[1]
+if (($r[1] | ConvertFrom-Json).result.state -ne 'confirmed' -or (Get-Content $app -Raw) -ne 'v3') { Fail "changes.confirm: $($r[1])" }
+if (Test-Path (Join-Path $snaps $ch.id)) { Fail 'snapshot kept after confirm' }
+# The dead-man timer: nobody confirms, so it reverts by itself.
+$r = @(Bridge @($hello, (Rpc 2 'changes.begin' @{ paths = @($app); confirmWithinSecs = 30; note = 'ci timer' })))
+$ch = ($r[1] | ConvertFrom-Json).result
+if ($null -eq $ch) { Fail "changes.begin (timer): $($r[1])" }
+Set-Content -Path $app -Value 'v4 never confirmed' -NoNewline
+$deadline = (Get-Date).AddSeconds(90)
+do { Start-Sleep -Seconds 5 } while ((Get-Content $app -Raw) -ne 'v3' -and (Get-Date) -lt $deadline)
+$r = @(Bridge @($hello, (Rpc 2 'changes.list' @{})))
+Write-Host $r[1]
+if ((Get-Content $app -Raw) -ne 'v3') { Fail "the timer did not revert: $(Get-Content $app -Raw)" }
+$last = @(($r[1] | ConvertFrom-Json).result.changes | Where-Object { $_.id -eq $ch.id })
+if ($last.Count -ne 1 -or $last[0].state -ne 'reverted') { Fail "changes.list after the timer: $($r[1])" }
+Remove-Item $rb -Recurse -Force
+
 Step 'allow health: disks and Storage Spaces through the read-only health helper'
 $j = (& $bin allow health --json) -join ''
 Write-Host $j
@@ -513,6 +583,7 @@ Write-Host $pu
 if ($LASTEXITCODE -ne 0) { Fail 'uninstall --purge' }
 if ($pu -match '"warnings":\["') { Fail "uninstall --purge warned: $pu" }
 if (Test-Path $etc) { Fail "$etc still there" }
+if (Test-Path (Join-Path $env:ProgramData 'Nightgrid Node Rollback')) { Fail 'rollback snapshots left after --purge' }
 if (@(Get-NetFirewallRule -Group 'Nightgrid Node' -ErrorAction SilentlyContinue).Count -ne 0) { Fail 'firewall rules left' }
 if (Get-LocalGroup -Name 'Nightgrid Node Users' -ErrorAction SilentlyContinue) { Fail 'group left' }
 $readers = @(Get-LocalGroupMember -SID 'S-1-5-32-573' -ErrorAction SilentlyContinue | Where-Object { $_.Name -match 'nightgrid-node' })
