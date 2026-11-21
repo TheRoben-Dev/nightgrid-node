@@ -7,6 +7,7 @@ Additive only: no frozen method, field, frame or link request changed. A Windows
 - **Self-healing on Windows**: the app's rules (`heal.rules.set`) and `fixes.toml` autofix rules run as on Linux, through `[actions] allow` and the action log.
 - **`unit-failed` on Windows** matches a listed service that stopped with an error (a non-zero exit), or one set to start automatically that isn't running (a crash), and restarts it with `unit.restart`.
 - `fixes.toml` rules name Windows services (`W32Time`) and volume roots (`D:\`) on Windows.
+- A health read that gets no answer at all (the helper was just starting or stopping) is asked once more instead of leaving that reading empty until the next round.
 - The Windows CI end-to-end test kills a listed service (where it has its own process) and checks that an autofix rule brings it back.
 
 ## 0.35.0 · W2e: blocking addresses on Windows (2026-11-20)

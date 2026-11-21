@@ -332,7 +332,7 @@ do {
     Start-Sleep -Seconds 5
     $r = @(Bridge @($hello, '{"id":2,"method":"health.latest"}'))
     $hl = ($r[1] | ConvertFrom-Json).result
-} while (($null -eq $hl -or $null -eq $hl.smart -or $null -eq $hl.pools) -and (Get-Date) -lt $deadline)
+} while (($null -eq $hl -or $null -eq $hl.smart.report -or $null -eq $hl.pools.report) -and (Get-Date) -lt $deadline)
 Write-Host $r[1]
 if ($hl.access -ne 'ok') { Fail "health access: $($r[1])" }
 if ($null -eq $hl.smart.report -or @($hl.smart.report.disks).Count -lt 1) { Fail "no disks from the health helper: $($r[1])" }
