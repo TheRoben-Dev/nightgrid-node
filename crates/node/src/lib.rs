@@ -56,3 +56,4 @@ pub mod uptime;
 pub mod usage;
 #[cfg(windows)]
 pub mod win;
+pub mod wintasks;

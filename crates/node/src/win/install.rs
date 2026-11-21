@@ -125,6 +125,17 @@ serve = ["ping"]
 # Seconds between probes of each peer (30-3600).
 interval_secs = 60
 
+[jobs]
+# Watch the backup jobs the app defines (a scheduled task such as
+# \Backups\Nightly or Windows Server Backup's own task, or a folder) and
+# the tasks in Task Scheduler's \Nightgrid\ folder: failed and stale backups
+# alert, and each finished run is recorded with the app closed. Read-only;
+# it runs nothing. A folder on another host (\\nas\share) can't be read,
+# because the node has no network.
+enabled = true
+# Seconds between reads (30-3600). Each read starts PowerShell once.
+interval_secs = 60
+
 [statuspage]
 # A read-only status page about this host, off until an administrator runs
 #   nightgrid-node allow statuspage

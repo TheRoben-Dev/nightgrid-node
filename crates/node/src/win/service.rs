@@ -130,12 +130,12 @@ unsafe extern "system" fn service_main(_argc: u32, _argv: *mut windows_sys::core
     set(SERVICE_STOPPED, exit, 0);
 }
 
-/// Puts this process in a job with a memory cap. Failure is only logged:
+/// Puts this process in a job with a memory cap (children may leave it). Failure is only logged:
 /// the cap is a guard rail, not a requirement for running.
 pub fn cap_memory(bytes: usize) {
     use windows_sys::Win32::System::JobObjects::{
         AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation, SetInformationJobObject,
-        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_PROCESS_MEMORY,
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_BREAKAWAY_OK, JOB_OBJECT_LIMIT_PROCESS_MEMORY,
     };
     use windows_sys::Win32::System::Threading::GetCurrentProcess;
     // SAFETY: plain Win32 calls with owned handles and a sized struct.
@@ -146,7 +146,9 @@ pub fn cap_memory(bytes: usize) {
             return;
         }
         let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
-        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_PROCESS_MEMORY;
+        // Breakaway: the jobs watcher's PowerShell reads need more than the
+        // cap and leave the job (health::watch::run_capped).
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_PROCESS_MEMORY | JOB_OBJECT_LIMIT_BREAKAWAY_OK;
         info.ProcessMemoryLimit = bytes;
         let size = std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32;
         if SetInformationJobObject(

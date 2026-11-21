@@ -91,8 +91,8 @@ Supported: Windows Server 2016, 2019, 2022 and 2025 (and Windows 10/11, which us
 | `checks` (service checks from the LAN) | Direct | Separate service `nightgrid-node-checker` as its own virtual account (no administrator, write-restricted SID), outbound TCP only to `[checks] networks` by a Windows Service Hardening rule; it may read the config and write only `data\log\checker`. Windows Firewall won't take `::1/128` in a rule, so `allow checks` says so and checks of `localhost` should use `127.0.0.1` | **W3b (0.40.0)**, after `allow checks` |
 | `peers`, `serve`, `hub.member` (node-to-node link) | Direct | Separate service `nightgrid-node-peer` as its own virtual account, inbound only on its listen port and outbound only with `[peers] networks` (Windows Service Hardening); its TLS key in `data\peer`, which the node's own service can't read | **W3d (0.42.0)**, after `allow peers` |
 | `allow statuspage` (status page) | Direct | Separate service `nightgrid-node-status-page` as its own virtual account, inbound only on its port from `[statuspage] networks` and nothing outbound (Windows Service Hardening); listens on the tailnet address or loopback only; its secret link in `data\status-page`, which the node's own service can't read | **W3e (0.43.0)**, after `allow statuspage` |
-| `jobs` (scheduled jobs) | Substitute | Task Scheduler tasks under `\Nightgrid\` (what the app creates on Windows) instead of systemd timers | W3 |
-| `jobs` backups | Substitute | Path jobs as on Linux; Windows Server Backup results from its event log instead of restic/borg units | W3 |
+| `jobs` (scheduled jobs) | Substitute | Task Scheduler tasks in `\Nightgrid\` instead of `nightgrid-job-*` timers: each finished run, its result and exit code, read with `Get-ScheduledTaskInfo` | **W3f (0.44.0)** |
+| `jobs` backups | Substitute | A "unit" job is a scheduled task path (`\Backups\Nightly`, Windows Server Backup's own task), with the app's status rules; path jobs as on Linux (drive paths; a UNC path can't be read, the node has no network) | **W3f (0.44.0)** |
 | `summary.daily` | Direct | Built from the same events | W0 (whatever is collected) |
 | `upgrade FILE --sha256` | Direct | The running exe is renamed aside, the new one put in place and the service restarted; reverts by itself | **W2b (0.32.0)** |
 | `allow power` | None | Not needed: the power counters (where they exist) need no grant | — |
@@ -116,7 +116,7 @@ Supported: Windows Server 2016, 2019, 2022 and 2025 (and Windows 10/11, which us
 - **W3c (0.41.0):** NUT servers on the LAN for UPS readings and the shutdown guard, through the check runner. App spec [0036](app-integration/0036-windows-node-nut.md).
 - **W3d (0.42.0):** the node-to-node link service and `allow peers`/`deny peers`; `hub.member`. App spec [0037](app-integration/0037-windows-node-link.md).
 - **W3e (0.43.0):** the status page service and `allow statuspage`/`deny statuspage`. App spec [0038](app-integration/0038-windows-node-status-page.md).
-- **W3f and later:** jobs and backups.
+- **W3f (0.44.0):** jobs and backups through Task Scheduler and path reads. App spec [0039](app-integration/0039-windows-node-jobs.md).
 
 ## 5. Same commands
 

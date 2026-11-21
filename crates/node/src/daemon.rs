@@ -385,7 +385,7 @@ pub fn run(config: Config, paths: Paths) -> Result<(), String> {
     } else {
         None
     };
-    let jobs = if cfg!(unix) && config.jobs.enabled {
+    let jobs = if config.jobs.enabled {
         Some(crate::jobs::JobsWatcher::start(shared.clone()).map_err(|e| format!("jobs watcher: {e}"))?)
     } else {
         None

@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.44.0 · W3f: jobs and backups on Windows (2026-11-21)
+
+Additive only: no frozen method, field, frame or link request changed. A Windows node now also advertises `jobs`. App spec [0039](docs/app-integration/0039-windows-node-jobs.md). Decision N-095.
+
+- **Backup jobs on Windows**: a "unit" backup job names a scheduled task (`\Backups\Nightly`, or Windows Server Backup's own task), read with the app's status rules. Path jobs read the newest file and size in Rust, as on Linux. Failed and stale backups raise the same alerts with the app closed.
+- **Scheduled jobs on Windows**: the tasks in Task Scheduler's `\Nightgrid\` folder are listed in `jobs.latest` with their last result and exit code, and each finished run becomes a `job` event.
+- One PowerShell read per `[jobs] interval_secs` as the node's own account; a failed read keeps the last answer.
+- `jobs.set` on Windows takes task paths and drive or UNC paths, and refuses POSIX paths and unit names.
+- The Windows config template has a `[jobs]` section.
+- The Windows CI end-to-end test registers a backup task and a failing `\Nightgrid\` task, runs both, and checks the statuses, the exit code, both events, a path job's size, a missing task's error and a refused POSIX path.
+
 ## 0.43.0 · W3e: status page on Windows (2026-11-21)
 
 Additive only: no frozen method, field, frame or link request changed. App spec [0038](docs/app-integration/0038-windows-node-status-page.md). Decision N-094.
