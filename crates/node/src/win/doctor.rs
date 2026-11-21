@@ -137,6 +137,7 @@ pub fn run(config_path: &Path, socket: Option<&Path>) -> Report {
     for u in super::unit::ALL {
         let off = match u.grant {
             "checks" => "service checks from this host are off",
+            "statuspage" => "the status page is off",
             _ => "the node-to-node link is off",
         };
         match super::scm::status(u.service) {

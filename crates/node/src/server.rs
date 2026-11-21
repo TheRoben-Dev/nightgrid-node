@@ -477,7 +477,7 @@ fn dispatch(shared: &Shared, session: &mut Session, req: &Request) -> Result<Res
         let client: String = h.client.chars().filter(|c| !c.is_control()).take(80).collect();
         session.client = client.clone();
         // The node's own units (link, check runner, helpers) connect often.
-        let own = crate::compat::is_unit(&session.uid, "checker") || crate::compat::is_unit(&session.uid, "peer");
+        let own = ["checker", "peer", "status-page"].iter().any(|u| crate::compat::is_unit(&session.uid, u));
         if own && client.starts_with("nightgrid-node") {
             crate::debug!("hello from {client:?} as uid {} (protocol {v})", session.uid);
         } else {

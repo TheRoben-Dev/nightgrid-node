@@ -6,6 +6,10 @@
 //! - `allow peers` installs the node-to-node link, `nightgrid-node-peer`
 //!   ([`PEER`]): inbound on its listen port and outbound, both only with
 //!   `[peers] networks`; its TLS key in a folder only it can read.
+//! - `allow statuspage` installs the status page,
+//!   `nightgrid-node-status-page` ([`STATUS`]): inbound only, on its port
+//!   from `[statuspage] networks`; its secret link in a folder only it can
+//!   read.
 //!
 //! Each runs the same exe as its own virtual account
 //! (`NT SERVICE\nightgrid-node-<key>`): no administrator, only
@@ -53,6 +57,11 @@ pub struct Unit {
     pub warning: &'static str,
     /// It keeps a private folder `data\<key>` (the link's TLS key).
     pub state: bool,
+    /// `deny` keeps that folder (the link's pairings survive; the status
+    /// page's link must die).
+    pub keep_state: bool,
+    /// It may open connections (the status page only answers).
+    pub outbound: bool,
     /// The networks it may talk to.
     pub networks: fn(&Config) -> Vec<String>,
     /// The TCP port it listens on, if any.
@@ -61,6 +70,12 @@ pub struct Unit {
     pub check: fn(&Config) -> Result<(), String>,
     /// The loop, until the stop flag says so.
     pub run: fn(&Path, &dyn Fn() -> bool) -> Result<(), String>,
+    /// Extra `allow` work once its private folder exists.
+    pub prepare: fn(&Unit, &Config, &mut Report) -> Result<(), String>,
+}
+
+fn nothing(_: &Unit, _: &Config, _: &mut Report) -> Result<(), String> {
+    Ok(())
 }
 
 pub static CHECKER: Unit = Unit {
@@ -76,10 +91,13 @@ pub static CHECKER: Unit = Unit {
               rights; the main service still has no network access. Run allow checks again after changing the \
               networks.",
     state: false,
+    keep_state: true,
+    outbound: true,
     networks: |c| c.checks.networks.clone(),
     listen_port: |_| None,
     check: |c| if c.checks.enabled { Ok(()) } else { Err("[checks] enabled is false".into()) },
     run: crate::checks::checker_until,
+    prepare: nothing,
 };
 
 pub static PEER: Unit = Unit {
@@ -96,13 +114,68 @@ pub static PEER: Unit = Unit {
               [peers] serve allows; the main service still has no network access. Run allow peers again \
               after changing the networks or the port.",
     state: true,
+    keep_state: true,
+    outbound: true,
     networks: |c| c.peers.networks.clone(),
     listen_port: peer_port,
     check: |_| Ok(()),
     run: crate::peers::link_until,
+    prepare: nothing,
 };
 
-pub static ALL: [&Unit; 2] = [&CHECKER, &PEER];
+pub static STATUS: Unit = Unit {
+    service: "nightgrid-node-status-page",
+    key: "status-page",
+    grant: "statuspage",
+    label: "status page",
+    display: "Nightgrid Node status page",
+    description: "A read-only status page about this host at a secret link, for a phone on the tailnet. Answers \
+                  only [statuspage] networks on its port and opens no connections.",
+    warning: "a read-only status page now listens on [statuspage] listen (the tailnet address by default) for \
+              [statuspage] networks. It is plain HTTP inside the tailnet's encryption, at a secret link: anyone \
+              with the link and a tailnet address can read this host's summary. Run deny statuspage to remove \
+              it and the link.",
+    state: true,
+    keep_state: false,
+    outbound: false,
+    networks: |c| c.statuspage.networks.clone(),
+    listen_port: status_port,
+    check: |_| Ok(()),
+    run: crate::statuspage::serve_until,
+    prepare: status_link,
+};
+
+pub static ALL: [&Unit; 3] = [&CHECKER, &PEER, &STATUS];
+
+/// The page's port: `listen = "ip:port"` carries its own, "tailnet" uses `port`.
+fn status_port(c: &Config) -> Option<u16> {
+    match c.statuspage.listen.as_str() {
+        "tailnet" => Some(c.statuspage.port),
+        a => a.parse::<std::net::SocketAddr>().ok().map(|s| s.port()),
+    }
+}
+
+/// Keeps the page's token (or makes one) in its private folder and puts the
+/// link in the report.
+fn status_link(_: &Unit, cfg: &Config, rep: &mut Report) -> Result<(), String> {
+    let path = crate::statuspage::token_path();
+    let old =
+        std::fs::read_to_string(&path).ok().map(|t| t.trim().to_owned()).filter(|t| crate::statuspage::token_ok(t));
+    let token = match old {
+        Some(t) => {
+            step(rep, format!("kept the link in {}", path.display()));
+            t
+        }
+        None => {
+            let t = crate::statuspage::new_token().map_err(|e| format!("random token: {e}"))?;
+            std::fs::write(&path, format!("{t}\n")).map_err(|e| format!("{}: {e}", path.display()))?;
+            step(rep, format!("wrote a new link to {}, which only the status page can read", path.display()));
+            t
+        }
+    };
+    rep.url = Some(crate::statuspage::url(cfg, &token));
+    Ok(())
+}
 
 /// The link's port: `listen = "ip:port"` carries its own, "tailnet" and
 /// "lan" use `port`, "" listens nowhere.
@@ -197,6 +270,7 @@ pub fn firewall_script(u: &Unit, on: bool, exe: &str, networks: &[String], port:
     }
     let nets = firewall_networks(networks).join(",");
     let port = port.map_or(String::new(), |p| p.to_string());
+    let outbound = if u.outbound { "true" } else { "false" };
     format!(
         "$ErrorActionPreference='Stop'\n\
          $sr = (New-Object -ComObject HNetCfg.FwPolicy2).ServiceRestriction\n\
@@ -232,8 +306,9 @@ pub fn firewall_script(u: &Unit, on: bool, exe: &str, networks: &[String], port:
            $r.Enabled = $true\n\
            $sr.Rules.Add($r)\n\
          }}\n\
+         $outbound = ${outbound}\n\
          if ($nets) {{\n\
-           Wsh '{out_name}' 2\n\
+           if ($outbound) {{ Wsh '{out_name}' 2 }}\n\
            if ($port) {{ Wsh '{in_name}' 1 }}\n\
          }}\n\
          Get-NetFirewallRule -Group '{group}' -ErrorAction SilentlyContinue | Remove-NetFirewallRule\n\
@@ -242,7 +317,7 @@ pub fn firewall_script(u: &Unit, on: bool, exe: &str, networks: &[String], port:
          }} else {{\n\
            New-NetFirewallRule -DisplayName '{group}: nothing inbound' -Group '{group}' -Direction Inbound -Service '{svc}' -Action Block -Profile Any | Out-Null\n\
          }}\n\
-         if ($nets) {{\n\
+         if ($nets -and $outbound) {{\n\
            New-NetFirewallRule -DisplayName '{group}: out' -Group '{group}' -Direction Outbound -Service '{svc}' -Protocol TCP -RemoteAddress $ok -Action Allow -Profile Any | Out-Null\n\
          }}\n\
          \"allowed: $nets\"\n\
@@ -331,8 +406,9 @@ pub fn allow(u: &Unit, on: bool, config_path: &Path, no_start: bool) -> Result<R
         let st = u.state_dir();
         std::fs::create_dir_all(&st).map_err(|e| format!("{}: {e}", st.display()))?;
         super::install::set_dacl(&st, &state_sddl(&me))?;
-        step(&mut rep, format!("the {} keeps its key in {}, which the node can't read", u.label, st.display()));
+        step(&mut rep, format!("the {} keeps its secrets in {}, which the node can't read", u.label, st.display()));
     }
+    (u.prepare)(u, &config, &mut rep)?;
     step(&mut rep, format!("the {} may read the config and write only its own folders", u.label));
 
     let out = super::install::powershell(&firewall_script(u, true, &bin.to_string_lossy(), &networks, port))
@@ -342,9 +418,10 @@ pub fn allow(u: &Unit, on: bool, config_path: &Path, no_start: bool) -> Result<R
         rep.warnings
             .push(format!("Windows took none of [{}] networks: the {} can't connect anywhere", u.grant, u.label));
     } else {
-        let how = match port {
-            Some(p) => format!("may connect to and be reached on port {p} from only"),
-            None => "may connect only to".into(),
+        let how = match (port, u.outbound) {
+            (Some(p), true) => format!("may connect to and be reached on port {p} from only"),
+            (Some(p), false) => format!("opens no connections and may be reached on port {p} from only"),
+            (None, _) => "may connect only to".into(),
         };
         step(&mut rep, format!("the {} {how} {} (Windows Service Hardening)", u.label, allowed.join(", ")));
     }
@@ -372,6 +449,7 @@ pub fn allow(u: &Unit, on: bool, config_path: &Path, no_start: bool) -> Result<R
 /// Takes a unit away (deny, uninstall): its rules while Windows can still
 /// resolve its SID, then the service. The link's key stays, as on Linux,
 /// so pairings survive a deny and allow; `uninstall --purge` removes it.
+/// The status page's folder goes, so its link dies.
 pub fn remove(u: &Unit, rep: &mut Report) {
     let bin = super::installed_binary();
     if let Err(e) = super::install::powershell(&firewall_script(u, false, &bin.to_string_lossy(), &[], None)) {
@@ -381,6 +459,13 @@ pub fn remove(u: &Unit, rep: &mut Report) {
     match r {
         Ok(_) => step(rep, format!("removed the {} service", u.label)),
         Err(e) => rep.warnings.push(format!("{}: {e}", u.label)),
+    }
+    let st = u.state_dir();
+    if u.state && !u.keep_state && st.exists() {
+        match std::fs::remove_dir_all(&st) {
+            Ok(()) => step(rep, format!("removed {} (the old link no longer works)", st.display())),
+            Err(e) => rep.warnings.push(format!("{}: {e}", st.display())),
+        }
     }
 }
 
@@ -417,14 +502,14 @@ pub fn start_installed(rep: &mut Report) {
 
 // ---- running under the SCM ----
 
-static STATUS: AtomicPtr<core::ffi::c_void> = AtomicPtr::new(std::ptr::null_mut());
+static HANDLE: AtomicPtr<core::ffi::c_void> = AtomicPtr::new(std::ptr::null_mut());
 static STOP: AtomicBool = AtomicBool::new(false);
 static CONFIG: Mutex<Option<PathBuf>> = Mutex::new(None);
 static UNIT: OnceLock<&'static Unit> = OnceLock::new();
 static RESULT: OnceLock<Result<(), String>> = OnceLock::new();
 
 fn set(state: u32, exit: u32, wait_ms: u32) {
-    let h = STATUS.load(Ordering::SeqCst);
+    let h = HANDLE.load(Ordering::SeqCst);
     if h.is_null() {
         return;
     }
@@ -475,7 +560,7 @@ unsafe extern "system" fn service_main(_argc: u32, _argv: *mut windows_sys::core
     if h.is_null() {
         return;
     }
-    STATUS.store(h as *mut _, Ordering::SeqCst);
+    HANDLE.store(h as *mut _, Ordering::SeqCst);
     set(SERVICE_START_PENDING, NO_ERROR, 10_000);
     let _ = crate::log::to_file(&u.log_dir().join(format!("{}.log", u.key)));
     let config = CONFIG.lock().unwrap_or_else(|e| e.into_inner()).clone().unwrap_or_default();
@@ -546,5 +631,14 @@ mod tests {
         assert_eq!(peer_port(&c), Some(17419));
         c.peers.listen = String::new();
         assert_eq!(peer_port(&c), None);
+
+        assert_eq!(status_port(&c), Some(7420));
+        c.statuspage.listen = "127.0.0.1:17420".into();
+        assert_eq!(status_port(&c), Some(17420));
+        let s = firewall_script(&STATUS, true, "x", &["100.64.0.0/10".into()], Some(17420));
+        assert!(s.contains("$outbound = $false") && s.contains("in on port 17420"), "{s}");
+        assert!(firewall_script(&CHECKER, true, "x", &["10.0.0.0/8".into()], None).contains("$outbound = $true"));
+        assert_eq!(Unit::by_grant("statuspage").map(|u| u.service), Some("nightgrid-node-status-page"));
+        assert!(crate::compat::is_unit(&STATUS.sid(), STATUS.key));
     }
 }

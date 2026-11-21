@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.43.0 · W3e: status page on Windows (2026-11-21)
+
+Additive only: no frozen method, field, frame or link request changed. App spec [0038](docs/app-integration/0038-windows-node-status-page.md). Decision N-094.
+
+- **The status page on Windows**: `allow statuspage` installs the service `nightgrid-node-status-page`, which serves the same read-only page as on Linux, at the same kind of secret link, as its own virtual account. Windows Service Hardening lets it only be reached on its port from `[statuspage] networks` and lets it open no connections at all. It listens on the tailnet address (or loopback) only. The link's token is in `%ProgramData%\Nightgrid Node\data\status-page`, which only the page, SYSTEM and Administrators can read. `allow statuspage` again keeps the link; `deny statuspage` removes the service, its rules and the link.
+- The status page's token now comes from the OS's random generator through ring on every system (it read `/dev/urandom` before; same 256 bits).
+- `win::unit` gained units that only answer (no outbound rule) and private folders that `deny` removes; `doctor` reports the status page; the Windows config template has a `[statuspage]` section, and `doctor`'s limits no longer say "No status page yet".
+- The Windows CI end-to-end test opens the page on loopback, checks its account, its single inbound rule, the token folder's ACL, a 404 for a wrong path, that `allow` again keeps the link, and that `deny statuspage` leaves no service, rules or link.
+
 ## 0.42.0 · W3d: node-to-node link on Windows (2026-11-21)
 
 Additive only: no frozen method, field, frame or link request changed. A Windows node now also advertises `peers` and `hub.member`. App spec [0037](docs/app-integration/0037-windows-node-link.md). Decision N-093.
