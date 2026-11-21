@@ -297,7 +297,7 @@ fn windows_command(a: &Args) -> Option<Result<(), String>> {
         "allow" | "deny" | "serve" => {
             Err(not_on_windows(format!("nightgrid-node {} {}", a.cmd, a.rest.join(" ")).trim_end()))
         }
-        "fix" | "fix-apply" => Err(not_on_windows("the fix menu")),
+        "fix-apply" => Err(not_on_windows("fix-apply (the Linux sandbox for ssh-permissions)")),
         "upgrade" => (|| {
             let file = a.rest.first().ok_or("upgrade needs the new binary: upgrade FILE --sha256 HEX")?;
             let opts = nightgrid_node::upgrade::UpgradeOptions {

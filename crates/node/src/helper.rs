@@ -86,6 +86,12 @@ pub trait Runner {
     fn powershell(&mut self, script: &str) -> Result<String, String> {
         self.output("powershell.exe", &["-Command", script])
     }
+    /// Runs a program with a time limit (a Windows runbook) and returns
+    /// its output.
+    fn capped(&mut self, prog: &str, args: &[&str], secs: u32) -> Result<String, String> {
+        let _ = secs;
+        self.output(prog, args)
+    }
 }
 
 pub struct RealRunner;
@@ -123,6 +129,11 @@ impl Runner for RealRunner {
         crate::win::scm::control(verb, unit)
     }
 
+    #[cfg(windows)]
+    fn capped(&mut self, prog: &str, args: &[&str], secs: u32) -> Result<String, String> {
+        crate::health::watch::run_capped(prog, args, std::time::Duration::from_secs(u64::from(secs)))
+    }
+
     /// By its full path, encoded, so nothing in the script is parsed twice.
     #[cfg(windows)]
     fn powershell(&mut self, script: &str) -> Result<String, String> {
@@ -145,6 +156,7 @@ pub fn supported(a: &str) -> bool {
         || !crate::fixes::needs_helper(a)
         || action::takes_unit(a)
         || action::takes_address(a)
+        || crate::fixes::WINDOWS_LOCAL.contains(&a)
         || matches!(a, action::POWER_REBOOT | action::POWER_POWEROFF)
 }
 

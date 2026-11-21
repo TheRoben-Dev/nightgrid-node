@@ -29,6 +29,12 @@ pub struct Ctx {
     pub json: bool,
 }
 
+/// How the menu tells a user to repeat a command with privileges.
+#[cfg(unix)]
+const ELEVATE: &str = "sudo ";
+#[cfg(windows)]
+const ELEVATE: &str = "(from an elevated prompt) ";
+
 fn is_root() -> bool {
     crate::compat::am_root()
 }
@@ -83,6 +89,7 @@ fn me() -> Option<String> {
 
 /// What a fix needs as its target.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(windows, allow(dead_code))] // no containers there yet
 enum Needs {
     Nothing,
     /// A unit root listed, or a container.
@@ -101,6 +108,7 @@ struct Recipe {
     needs: Needs,
 }
 
+#[cfg(unix)]
 const RECIPES: &[Recipe] = &[
     Recipe {
         key: "restart",
@@ -175,6 +183,47 @@ const RECIPES: &[Recipe] = &[
     },
 ];
 
+/// The Windows menu: the same names where Windows has a counterpart.
+#[cfg(windows)]
+const RECIPES: &[Recipe] = &[
+    Recipe {
+        key: "restart",
+        group: "Services",
+        label: "Restart a service",
+        about: "Restarts a service an administrator listed in [actions] units, through the admin helper.",
+        needs: Needs::Unit,
+    },
+    Recipe {
+        key: "packages",
+        group: "Disk & logs",
+        label: "Clean the Windows Update cache",
+        about: "Empties SoftwareDistribution\\Download (wuauserv and BITS stop meanwhile, then start again).",
+        needs: Needs::Nothing,
+    },
+    Recipe {
+        key: "ssh",
+        group: "Access",
+        label: "Fix SSH key permissions",
+        about: "Resets the ACLs on administrators_authorized_keys and the user's .ssh\\authorized_keys to \
+                SYSTEM, Administrators and the user (OpenSSH ignores keys otherwise). Never follows links.",
+        needs: Needs::User,
+    },
+    Recipe {
+        key: "reboot",
+        group: "Power",
+        label: "Reboot the host",
+        about: "Reboots one minute from now; an administrator can cancel with shutdown /a.",
+        needs: Needs::Nothing,
+    },
+    Recipe {
+        key: "run",
+        group: "Runbooks",
+        label: "Run a runbook",
+        about: "A command an administrator defined in fixes.toml, run as-is (no shell) with a time limit.",
+        needs: Needs::Runbook,
+    },
+];
+
 fn recipe(key: &str) -> Option<&'static Recipe> {
     RECIPES.iter().find(|r| r.key == key)
 }
@@ -182,7 +231,7 @@ fn recipe(key: &str) -> Option<&'static Recipe> {
 /// The action a recipe runs for a target.
 fn action_for(key: &str, target: Option<&str>) -> Option<&'static str> {
     Some(match key {
-        "restart" if target.is_some_and(action::valid_unit) => action::UNIT_RESTART,
+        "restart" if cfg!(windows) || target.is_some_and(fixes::valid_unit) => action::UNIT_RESTART,
         "restart" => action::CONTAINER_RESTART,
         "reset" => fixes::UNIT_RESET,
         "start" => action::CONTAINER_START,
@@ -211,6 +260,7 @@ pub struct Preset {
     pub give_up_after: u32,
 }
 
+#[cfg(unix)]
 pub const PRESETS: &[Preset] = &[
     Preset {
         key: "services",
@@ -270,6 +320,31 @@ pub const PRESETS: &[Preset] = &[
         for_minutes: 10,
         max_per_hour: 1,
         max_per_day: 4,
+        give_up_after: 2,
+    },
+];
+
+/// The Windows presets: services, and the update cache when a disk fills.
+#[cfg(windows)]
+pub const PRESETS: &[Preset] = &[
+    Preset {
+        key: "services",
+        label: "Restart failed services",
+        when: When::UnitFailed,
+        action: action::UNIT_RESTART,
+        for_minutes: 5,
+        max_per_hour: 2,
+        max_per_day: 6,
+        give_up_after: 3,
+    },
+    Preset {
+        key: "packages",
+        label: "Clean the Windows Update cache when a disk fills",
+        when: When::DiskFull,
+        action: fixes::PACKAGE_CACHE,
+        for_minutes: 10,
+        max_per_hour: 1,
+        max_per_day: 2,
         give_up_after: 2,
     },
 ];
@@ -354,7 +429,9 @@ pub struct Issue {
     pub tone: Tone,
 }
 
-fn failed_units() -> Vec<String> {
+/// Failed units: every failed systemd unit (the menu may list one).
+#[cfg(unix)]
+fn failed_units(_listed: &[String]) -> Vec<String> {
     let out = std::process::Command::new("systemctl")
         .args(["list-units", "--state=failed", "--plain", "--no-legend", "--no-pager", "--full"])
         .env("SYSTEMD_PAGER", "")
@@ -371,6 +448,13 @@ fn failed_units() -> Vec<String> {
 }
 
 /// Fixed volumes and how full they are (percent).
+/// Failed services: Windows keeps no failed state, so only the listed
+/// services are checked, the way `heal` does.
+#[cfg(windows)]
+fn failed_units(listed: &[String]) -> Vec<String> {
+    crate::heal::failed_units(listed)
+}
+
 #[cfg(windows)]
 fn full_disks(threshold: u64) -> Vec<(String, u64)> {
     crate::metrics::collect::volumes()
@@ -419,10 +503,28 @@ fn full_disks(threshold: u64) -> Vec<(String, u64)> {
 }
 
 /// `journalctl --disk-usage`, in bytes.
+#[cfg(unix)]
 fn journal_bytes() -> Option<u64> {
     let o = std::process::Command::new("journalctl").args(["--disk-usage", "--no-pager"]).output().ok()?;
     let text = String::from_utf8_lossy(&o.stdout);
     parse_journal_usage(&text)
+}
+
+#[cfg(windows)]
+fn journal_bytes() -> Option<u64> {
+    None
+}
+
+/// Whether Windows has servicing work that waits for a restart.
+#[cfg(windows)]
+fn reboot_pending() -> bool {
+    let root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
+    Path::new(&root).join(r"WinSxS\pending.xml").exists()
+}
+
+#[cfg(unix)]
+fn reboot_pending() -> bool {
+    Path::new("/run/reboot-required").exists() || Path::new("/var/run/reboot-required").exists()
 }
 
 pub fn parse_journal_usage(text: &str) -> Option<u64> {
@@ -441,15 +543,20 @@ pub fn parse_journal_usage(text: &str) -> Option<u64> {
     Some((n * mult) as u64)
 }
 
-/// Looks around the host. `containers` comes from the node when reachable.
-pub fn detect(containers: Option<&ContainersResult>) -> Vec<Issue> {
+/// Looks around the host. `listed` are the units root listed (Windows
+/// checks only those); `containers` comes from the node when reachable.
+pub fn detect(listed: &[String], containers: Option<&ContainersResult>) -> Vec<Issue> {
     let mut out = Vec::new();
-    for u in failed_units() {
+    for u in failed_units(listed) {
         out.push(Issue {
             fix: "restart",
             target: Some(u.clone()),
             title: format!("{u} has failed"),
-            detail: format!("Restart it (or `reset` to just clear the failed state). See: journalctl -u {u} -n 50"),
+            detail: if cfg!(windows) {
+                format!("Restart it. The System event log says why it stopped (nightgrid-node logs {u}).")
+            } else {
+                format!("Restart it (or `reset` to just clear the failed state). See: journalctl -u {u} -n 50")
+            },
             tone: Tone::Danger,
         });
     }
@@ -476,10 +583,14 @@ pub fn detect(containers: Option<&ContainersResult>) -> Vec<Issue> {
     }
     for (m, pct) in full_disks(90) {
         out.push(Issue {
-            fix: "journal",
+            fix: if cfg!(windows) { "packages" } else { "journal" },
             target: None,
             title: format!("disk {m} is {pct}% full"),
-            detail: "Free space: shrink the journal, clean the package cache, or remove unused images.".into(),
+            detail: if cfg!(windows) {
+                "Free space: clean the Windows Update download cache.".into()
+            } else {
+                "Free space: shrink the journal, clean the package cache, or remove unused images.".into()
+            },
             tone: if pct >= 95 { Tone::Danger } else { Tone::Warn },
         });
     }
@@ -492,12 +603,16 @@ pub fn detect(containers: Option<&ContainersResult>) -> Vec<Issue> {
             tone: Tone::Warn,
         });
     }
-    if Path::new("/run/reboot-required").exists() || Path::new("/var/run/reboot-required").exists() {
+    if reboot_pending() {
         out.push(Issue {
             fix: "reboot",
             target: None,
             title: "a reboot is pending".into(),
-            detail: "Updates installed a new kernel or libraries that need a reboot.".into(),
+            detail: if cfg!(windows) {
+                "Installed updates finish when Windows restarts.".into()
+            } else {
+                "Updates installed a new kernel or libraries that need a reboot.".into()
+            },
             tone: Tone::Warn,
         });
     }
@@ -539,14 +654,21 @@ impl Policy {
         Self { config, local, fixes_path, helper: crate::helper::installed(Path::new(crate::helper::SOCKET)) }
     }
 
+    fn units(&self) -> Vec<String> {
+        fixes::units(&self.config, &self.local)
+    }
+
     fn allowed(&self, a: &str) -> bool {
         fixes::allowed(&self.config, &self.local, a)
     }
 
     fn state(&self, key: &str) -> (Tone, String) {
         let a = action_for(key, None).unwrap_or("");
-        let (a, alt) =
-            if key == "restart" { (action::UNIT_RESTART, Some(action::CONTAINER_RESTART)) } else { (a, None) };
+        let (a, alt) = if key == "restart" && cfg!(unix) {
+            (action::UNIT_RESTART, Some(action::CONTAINER_RESTART))
+        } else {
+            (a, None)
+        };
         let any = self.allowed(a) || alt.is_some_and(|x| self.allowed(x));
         if !any {
             (Tone::Dim, "not allowed".into())
@@ -563,6 +685,13 @@ impl Policy {
 
 fn connect(ctx: &Ctx) -> Result<Client, String> {
     Client::connect(&ctx.socket, CLIENT).map_err(|e| {
+        if cfg!(windows) {
+            return format!(
+                "can't reach the node at {} ({e}). Is the service running (sc query nightgrid-node), and are you an \
+                 Administrator or in the \"Nightgrid Node Users\" group?",
+                ctx.socket.display()
+            );
+        }
         format!(
             "can't reach the node at {} ({e}). Is it running (systemctl status nightgrid-node), and are you in the \
              nightgrid-node group (or use sudo)?",
@@ -579,7 +708,7 @@ fn containers(ctx: &Ctx) -> Option<ContainersResult> {
 /// Candidate targets for a recipe, for the picker.
 fn candidates(ctx: &Ctx, pol: &Policy, needs: Needs) -> Vec<(String, String)> {
     let mut v = Vec::new();
-    let failed = if matches!(needs, Needs::Service | Needs::Unit) { failed_units() } else { Vec::new() };
+    let failed = if matches!(needs, Needs::Service | Needs::Unit) { failed_units(&pol.units()) } else { Vec::new() };
     if matches!(needs, Needs::Service | Needs::Unit) {
         for u in fixes::units(&pol.config, &pol.local) {
             let f = failed.contains(&u);
@@ -618,6 +747,7 @@ fn pick_target(ctx: &Ctx, pol: &Policy, r: &Recipe) -> Result<Option<String>, St
     let list = candidates(ctx, pol, r.needs);
     let what = match r.needs {
         Needs::Service => "a unit like nginx.service or a container name",
+        Needs::Unit if cfg!(windows) => "a service like W32Time",
         Needs::Unit => "a unit like nginx.service",
         Needs::Container => "a container name",
         Needs::User => "a user name",
@@ -674,7 +804,7 @@ fn ensure_allowed(ctx: &Ctx, pol: &mut Policy, a: &str, target: Option<&str>) ->
     let what = what.join(" and ");
     if !is_root() {
         say(Tone::Dim, "not allowed", &format!("Root hasn't let the node {what} on this host."));
-        println!("  To allow it: sudo nightgrid-node fix {}", ctx_hint(a, target));
+        println!("  To allow it: {}nightgrid-node fix {}", ELEVATE, ctx_hint(a, target));
         return Err(String::new());
     }
     println!("This host doesn't allow it yet. As root you can {what} now;");
@@ -712,12 +842,25 @@ fn ensure_helper(ctx: &Ctx, pol: &mut Policy, a: &str) -> Result<bool, String> {
     }
     if !is_root() {
         say(Tone::Warn, "needs helper", "This fix runs through the root helper, which isn't installed.");
-        println!("  Install it: sudo nightgrid-node allow helper");
+        println!("  Install it: {ELEVATE}nightgrid-node allow helper");
         return Err(String::new());
     }
     if !(ctx.yes || tui::confirm("It runs through the root helper, which isn't installed. Install it now?", true)) {
         return Ok(false);
     }
+    install_helper(ctx)?;
+    pol.helper = true;
+    say(Tone::Ok, "installed", "the root helper");
+    Ok(true)
+}
+
+#[cfg(windows)]
+fn install_helper(_ctx: &Ctx) -> Result<(), String> {
+    crate::win::helper::allow(&crate::win::helper::ADMIN, true).map(|_| ())
+}
+
+#[cfg(unix)]
+fn install_helper(ctx: &Ctx) -> Result<(), String> {
     let config = Config::load(&ctx.config_path)?;
     crate::install::allow(
         &crate::install::Layout::system(),
@@ -725,10 +868,8 @@ fn ensure_helper(ctx: &Ctx, pol: &mut Policy, a: &str) -> Result<bool, String> {
         crate::install::Grant::Helper,
         &config.docker.socket,
         false,
-    )?;
-    pol.helper = true;
-    say(Tone::Ok, "installed", "the root helper");
-    Ok(true)
+    )
+    .map(|_| ())
 }
 
 fn explain(pol: &Policy, key: &str, a: &str, target: Option<&str>) {
@@ -748,6 +889,9 @@ fn explain(pol: &Policy, key: &str, a: &str, target: Option<&str>) {
             .local
             .runbook(target.unwrap_or(""))
             .map_or_else(String::new, |rb| format!("{} (no shell, {} s limit)", rb.run.join(" "), rb.timeout_secs)),
+        fixes::PACKAGE_CACHE if cfg!(windows) => {
+            "empties %SystemRoot%\\SoftwareDistribution\\Download with wuauserv and BITS stopped".into()
+        }
         fixes::PACKAGE_CACHE => {
             fixes::package_clean().map_or("no package manager found".into(), |(_, argv)| argv.join(" "))
         }
@@ -868,7 +1012,7 @@ fn auto_menu(pol: &Policy) -> Menu {
 fn change_preset(ctx: &Ctx, pol: &mut Policy, key: &str, state: &str) -> Result<(), String> {
     if !is_root() {
         say(Tone::Dim, "root only", "Only root decides what the node does by itself.");
-        println!("  Run: sudo nightgrid-node fix auto {key} {state}");
+        println!("  Run: {ELEVATE}nightgrid-node fix auto {key} {state}");
         return Ok(());
     }
     let p = PRESETS.iter().find(|p| p.key == key).ok_or_else(|| format!("no preset {key:?}"))?;
@@ -885,10 +1029,10 @@ fn change_preset(ctx: &Ctx, pol: &mut Policy, key: &str, state: &str) -> Result<
     pol.local.save(&pol.fixes_path)?;
     say(state_tone(state), state, &format!("{msg} ({})", pol.fixes_path.display()));
     if state != "off" && p.when == When::UnitFailed && fixes::units(&pol.config, &pol.local).is_empty() {
-        println!("  It only watches units root listed; add some with: sudo nightgrid-node fix restart UNIT");
+        println!("  It only watches units root listed; add some with: {ELEVATE}nightgrid-node fix restart UNIT");
     }
     if state != "off" && fixes::needs_helper(p.action) && !pol.helper {
-        println!("  It needs the root helper: sudo nightgrid-node allow helper");
+        println!("  It needs the root helper: {ELEVATE}nightgrid-node allow helper");
     }
     Ok(())
 }
@@ -983,7 +1127,7 @@ pub fn fix(ctx: &Ctx, args: &[String]) -> Result<(), String> {
         None if !tui::interactive() => list(ctx),
         None => loop {
             let pol = Policy::load(ctx);
-            let issues = detect(containers(ctx).as_ref());
+            let issues = detect(&pol.units(), containers(ctx).as_ref());
             let (m, entries) = fix_menu(&pol, &issues);
             let Some(i) = tui::pick(&m) else { return Ok(()) };
             let r = match &entries[i] {
@@ -1005,7 +1149,7 @@ pub fn fix(ctx: &Ctx, args: &[String]) -> Result<(), String> {
 
 fn list(ctx: &Ctx) -> Result<(), String> {
     let pol = Policy::load(ctx);
-    let issues = detect(containers(ctx).as_ref());
+    let issues = detect(&pol.units(), containers(ctx).as_ref());
     if ctx.json {
         let j = ListJson {
             fixes: RECIPES
@@ -1192,12 +1336,16 @@ mod tests {
             let a = action_for(r.key, Some("x.service")).unwrap();
             assert!(fixes::known(a), "{}", r.key);
         }
+        #[cfg(unix)]
         assert_eq!(action_for("restart", Some("web")), Some(action::CONTAINER_RESTART));
+        #[cfg(windows)]
+        assert_eq!(action_for("restart", Some("W32Time")), Some(action::UNIT_RESTART));
         assert_eq!(action_for("restart", Some("nginx.service")), Some(action::UNIT_RESTART));
         assert_eq!(action_for("nope", None), None);
     }
 
     #[test]
+    #[cfg(unix)]
     fn presets_make_valid_rules_and_switch() {
         let mut l = LocalFixes::default();
         for p in PRESETS {
@@ -1213,6 +1361,26 @@ mod tests {
         assert_eq!(l.allow, [fixes::JOURNAL_VACUUM], "turning off keeps the manual fix allowed");
         assert!(set_preset(&mut l, "nope", "on").is_err() && set_preset(&mut l, "journal", "maybe").is_err());
         l.validate().unwrap();
+    }
+
+    #[test]
+    fn windows_has_the_same_names_where_it_has_a_counterpart() {
+        let win = ["restart", "packages", "ssh", "reboot", "run"];
+        for k in win {
+            assert!(recipe(k).is_some(), "{k}");
+        }
+        if cfg!(windows) {
+            assert_eq!(RECIPES.len(), win.len());
+            assert!(RECIPES.iter().all(|r| r.needs != Needs::Container));
+            assert_eq!(PRESETS.iter().map(|p| p.key).collect::<Vec<_>>(), ["services", "packages"]);
+            for r in RECIPES {
+                let a = action_for(r.key, Some("W32Time")).unwrap();
+                assert!(crate::helper::supported(a), "{a}");
+            }
+        }
+        for p in PRESETS {
+            p.rule(true).validate().unwrap();
+        }
     }
 
     #[test]

@@ -76,9 +76,12 @@ Supported: Windows Server 2016, 2019, 2022 and 2025 (and Windows 10/11, which us
 | `net.dhcp` (rogue DHCP) | None | Needs packet capture (Npcap); no built-in way to listen on UDP 67/68 next to the DHCP client | — |
 | `actions` | Direct | Windows services instead of units: `restart`, `start`, `stop` of services listed in `[actions] units` (`W32Time`, not `w32time.service`); `reboot`, `poweroff` with `shutdown.exe` a minute ahead | **W2a (0.31.0)**, after `allow helper` |
 | `heal` (the app's rules and `fixes.toml` autofix) | Direct | A failed unit is a listed service that stopped with an error (its SCM exit code) or an automatic one that isn't running; disk rules name volume roots such as `D:\` | **W2f (0.36.0)** |
-| Fix menu (`fix`, `fix auto`) | Direct | As on Linux, with the substitutes below | W2g |
-| `fix journal` / `fix logs` / `fix packages` / `fix ssh` | Substitute | Event logs over their size, large log files, the Windows Update download cache, and the OpenSSH `authorized_keys` and `administrators_authorized_keys` ACLs (the usual Windows key-login failure) | W2g |
-| `changes` (snapshot and rollback with dead-man timer) | Direct | Same paths model; the helper copies files and restores ACLs | W2g |
+| Fix menu (`fix`, `fix list`, `fix NAME`, `fix auto`) | Direct | Same menu and names, run through the admin helper. Detects failed listed services, full volumes, a pending reboot (`WinSxS\pending.xml`) | **W2g (0.37.0)**, after `allow helper` |
+| `fix restart` / `fix reboot` / `fix run` | Direct | A listed service; `shutdown.exe /r` a minute ahead; a `fixes.toml` runbook (`C:\...` program, no shell, time limit) | **W2g (0.37.0)** |
+| `fix packages` / `fix ssh` | Substitute | The Windows Update download cache (`SoftwareDistribution\Download`, links skipped); the ACLs of `administrators_authorized_keys` and the user's `.ssh\authorized_keys` reset to SYSTEM, Administrators and the user (the usual Windows key-login failure) | **W2g (0.37.0)** |
+| `fix journal` / `fix logs` / `fix reset` | None | No systemd journal, logrotate or failed state; Windows rotates its event logs by size | — |
+| `fix start` / `fix prune` | Later | Come with containers | W3 |
+| `changes` (snapshot and rollback with dead-man timer) | Direct | Same paths model; the helper copies files and restores ACLs | W2h |
 | `block` (block addresses, auto-block after failed logins) | Direct | Inbound Windows Firewall rules in the group `Nightgrid Node blocks`, each with its end time; the helper removes expired ones whenever it touches the group and the node asks it to once a minute after one is due | **W2e (0.35.0)**, after `allow helper` |
 | `health`: disks | Substitute | `MSFT_PhysicalDisk` health and `MSFT_StorageReliabilityCounter` (temperature, wear, errors) instead of SMART attributes, read by the health helper `nightgrid-node-health` | **W2c (0.33.0)**, after `allow health` |
 | `health`: pools | Substitute | Storage Spaces pools and virtual disks instead of ZFS/mdraid/btrfs | **W2c (0.33.0)** |
@@ -106,7 +109,8 @@ Supported: Windows Server 2016, 2019, 2022 and 2025 (and Windows 10/11, which us
 - **W2d (0.34.0):** a UPS on USB (`"battery"`) and the UPS shutdown guard. App spec [0029](app-integration/0029-windows-node-ups.md).
 - **W2e (0.35.0):** blocking addresses and auto-block after failed logins. App spec [0030](app-integration/0030-windows-node-blocks.md).
 - **W2f (0.36.0):** self-healing: the app's rules and `fixes.toml` autofix rules, with failed services. App spec [0031](app-integration/0031-windows-node-heal.md).
-- **W2g:** the fix menu with its Windows substitutes, and rollbacks.
+- **W2g (0.37.0):** the fix menu (`fix`, `fix auto`) with the same names, Windows Update cache and OpenSSH key ACL substitutes, and runbooks. App spec [0032](app-integration/0032-windows-node-fixes.md).
+- **W2h:** rollbacks (`changes`).
 - **W3:** containers, the check runner, the link, the status page, jobs and backups.
 
 ## 5. Same commands
@@ -117,4 +121,4 @@ The binary, subcommands and flags are the same. Differences:
 - `--config` defaults to `%ProgramData%\Nightgrid Node\config.toml`, `--socket` takes a pipe name (`\\.\pipe\nightgrid-node`).
 - `allow journal` is accepted as an alias of `allow eventlog`.
 - `nightgrid-node man` prints the manual as text (there is no `man` on Windows); `completions powershell` prints a completer for `$PROFILE` (on every platform).
-- Commands that aren't on Windows (for example `allow netwatch`) or not yet (`fix`) say so and exit 1 instead of being unknown; with `--json` they print `{"error":{"code":"not_on_windows","message":…}}`.
+- Commands that aren't on Windows (for example `allow netwatch`) or not yet (`peer`) say so and exit 1 instead of being unknown; with `--json` they print `{"error":{"code":"not_on_windows","message":…}}`.

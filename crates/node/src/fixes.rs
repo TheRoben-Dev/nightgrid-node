@@ -301,7 +301,7 @@ impl LocalFixes {
             if self.runbooks[..i].iter().any(|o| o.name == r.name) {
                 return Err(format!("runbook {}: name used twice", r.name));
             }
-            if r.run.is_empty() || !r.run[0].starts_with('/') || r.run.len() > 32 {
+            if r.run.is_empty() || !absolute_program(&r.run[0]) || r.run.len() > 32 {
                 return Err(format!(
                     "runbook {}: run must start with an absolute program path (at most 32 parts)",
                     r.name
@@ -384,6 +384,16 @@ pub fn valid_mount(m: &str) -> bool {
         b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && b[2] == b'\\'
     } else {
         m.starts_with('/')
+    }
+}
+
+/// A runbook's program: an absolute path (`/usr/bin/certbot`, or
+/// `C:\Tools\renew.exe` on Windows).
+pub fn absolute_program(p: &str) -> bool {
+    if cfg!(windows) {
+        valid_mount(p) && p.len() > 3
+    } else {
+        p.starts_with('/')
     }
 }
 
@@ -557,6 +567,9 @@ fn last_line(out: &str, fallback: &str) -> String {
 /// root allowed the action.
 pub fn helper_run(config: &Config, local: &LocalFixes, a: &str, target: Option<&str>, run: &mut dyn Runner) -> Reply {
     let target = target.unwrap_or("");
+    if cfg!(windows) {
+        return helper_run_windows(local, a, target, run);
+    }
     let r = match a {
         UNIT_RESET => {
             if !unit_listed(config, local, target) {
@@ -618,6 +631,122 @@ pub fn helper_run(config: &Config, local: &LocalFixes, a: &str, target: Option<&
                 .map(|out| format!("runbook {} done: {}", rb.name, last_line(&out, "no output")))
         }
         _ => return Reply::no(format!("the helper doesn't do {a:?}")),
+    };
+    match r {
+        Ok(detail) => Reply { ok: true, detail },
+        Err(e) => Reply::no(e),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The Windows admin helper's side (W2g).
+
+/// The local fixes Windows has: the Windows Update download cache, OpenSSH
+/// key file ACLs and runbooks. The journal, logrotate and failed-state
+/// fixes have no Windows counterpart.
+pub const WINDOWS_LOCAL: [&str; 3] = [PACKAGE_CACHE, SSH_PERMISSIONS, RUNBOOK];
+
+/// Empties `SoftwareDistribution\Download` with Windows Update and BITS
+/// stopped (both start again if they ran), skipping links. Prints the
+/// bytes freed.
+pub const WIN_UPDATE_CACHE: &str = r#"$ErrorActionPreference = 'Stop'
+$dir = Join-Path $env:SystemRoot 'SoftwareDistribution\Download'
+if (-not (Test-Path -LiteralPath $dir)) { '0'; return }
+$svcs = @('wuauserv', 'bits')
+$was = @($svcs | Where-Object { (Get-Service -Name $_ -ErrorAction SilentlyContinue).Status -eq 'Running' })
+$script:freed = [int64]0
+function Clean([IO.DirectoryInfo]$d) {
+  foreach ($e in @($d.EnumerateFileSystemInfos())) {
+    if ($e.Attributes -band [IO.FileAttributes]::ReparsePoint) { continue }
+    try {
+      if ($e -is [IO.DirectoryInfo]) { Clean $e; $e.Delete() }
+      else { $n = $e.Length; $e.Delete(); $script:freed += $n }
+    } catch { }
+  }
+}
+try {
+  foreach ($s in $svcs) { Stop-Service -Name $s -Force -ErrorAction SilentlyContinue }
+  $root = Get-Item -LiteralPath $dir -Force
+  if (-not ($root.Attributes -band [IO.FileAttributes]::ReparsePoint)) { Clean $root }
+} finally {
+  foreach ($s in $was) { Start-Service -Name $s -ErrorAction SilentlyContinue }
+}
+[string]$script:freed"#;
+
+/// PowerShell that gives OpenSSH's key files the ACL sshd insists on: only
+/// SYSTEM, Administrators and (for a user's own file) that user, no
+/// inheritance. `administrators_authorized_keys` always; the user's
+/// `.ssh\authorized_keys` when there is one. Links are refused. `user` is
+/// checked by `win::install::valid_user`, which keeps quotes out.
+pub fn win_ssh_script(user: &str) -> String {
+    format!(
+        r#"$ErrorActionPreference = 'Stop'
+$sys = New-Object Security.Principal.SecurityIdentifier('S-1-5-18')
+$adm = New-Object Security.Principal.SecurityIdentifier('S-1-5-32-544')
+$me = (New-Object Security.Principal.NTAccount('{user}')).Translate([Security.Principal.SecurityIdentifier])
+$done = @()
+function Fix([string]$f, $keep) {{
+  if (-not (Test-Path -LiteralPath $f)) {{ return }}
+  $i = Get-Item -LiteralPath $f -Force
+  if ($i.Attributes -band [IO.FileAttributes]::ReparsePoint) {{ throw "$f is a link; left alone" }}
+  $acl = Get-Acl -LiteralPath $f
+  $rules = @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))
+  $bad = @($rules | Where-Object {{ $keep -notcontains $_.IdentityReference.Value }})
+  if ($bad.Count -eq 0 -and $acl.AreAccessRulesProtected) {{ return }}
+  $acl.SetAccessRuleProtection($true, $false)
+  foreach ($r in $rules) {{ $acl.PurgeAccessRules($r.IdentityReference) }}
+  foreach ($s in $keep) {{
+    $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule((New-Object Security.Principal.SecurityIdentifier($s)), 'FullControl', 'Allow')))
+  }}
+  Set-Acl -LiteralPath $f -AclObject $acl
+  $script:done += $f
+}}
+Fix (Join-Path $env:ProgramData 'ssh\administrators_authorized_keys') @($sys.Value, $adm.Value)
+$prof = (Get-ItemProperty -LiteralPath ("HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\" + $me.Value) -ErrorAction SilentlyContinue).ProfileImagePath
+if ($prof) {{
+  $dir = Join-Path $prof '.ssh'
+  if ((Test-Path -LiteralPath $dir) -and ((Get-Item -LiteralPath $dir -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) {{ throw "$dir is a link; left alone" }}
+  Fix (Join-Path $dir 'authorized_keys') @($sys.Value, $adm.Value, $me.Value)
+}}
+if ($done.Count) {{ 'tightened ' + ($done -join ', ') }} else {{ 'already tight' }}"#
+    )
+}
+
+/// An account name `ssh-permissions` takes: a Windows account (no quotes
+/// get through to `win_ssh_script`) or a Linux login.
+pub fn win_account(u: &str) -> bool {
+    #[cfg(windows)]
+    {
+        crate::win::install::valid_user(u)
+    }
+    #[cfg(not(windows))]
+    {
+        crate::install::valid_user(u)
+    }
+}
+
+/// What the Windows helper does for the local fixes.
+fn helper_run_windows(local: &LocalFixes, a: &str, target: &str, run: &mut dyn Runner) -> Reply {
+    let r = match a {
+        PACKAGE_CACHE => run.powershell(WIN_UPDATE_CACHE).map(|out| {
+            let freed = out.trim().parse::<u64>().unwrap_or(0);
+            format!("cleaned the Windows Update download cache ({} freed)", crate::cli::bytes(freed))
+        }),
+        SSH_PERMISSIONS => {
+            if !win_account(target) || target.contains('\'') {
+                return Reply::no(format!("not an account name: {target:?}"));
+            }
+            run.powershell(&win_ssh_script(target)).map(|out| last_line(&out, "ssh key files checked"))
+        }
+        RUNBOOK => {
+            let Some(rb) = local.runbook(target) else {
+                return Reply::no(format!("no runbook named {target:?} in {FILE_NAME}"));
+            };
+            let args: Vec<&str> = rb.run[1..].iter().map(String::as_str).collect();
+            run.capped(&rb.run[0], &args, rb.timeout_secs)
+                .map(|out| format!("runbook {} done: {}", rb.name, last_line(&out, "no output")))
+        }
+        _ => Err(format!("{a} has no Windows counterpart")),
     };
     match r {
         Ok(detail) => Reply { ok: true, detail },
@@ -767,12 +896,14 @@ pub fn ssh_permission_problems(home: &Path, uid: u32) -> Vec<String> {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
     #[derive(Default)]
     struct Fake {
         log: Vec<String>,
         out: String,
     }
 
+    #[cfg(unix)]
     impl Runner for Fake {
         fn run(&mut self, prog: &str, args: &[&str]) -> Result<(), String> {
             self.log.push(format!("{prog} {}", args.join(" ")));
@@ -785,6 +916,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn parses_validates_and_round_trips() {
         let text = r#"
 allow = ["fix.journal-vacuum", "unit.restart"]
@@ -828,6 +960,80 @@ action = "fix.journal-vacuum"
     }
 
     #[test]
+    fn runbooks_name_programs_the_platform_way() {
+        let rb = |prog: &str| LocalFixes::parse(&format!("[[runbook]]\nname = \"x\"\nrun = ['{prog}', 'a']"));
+        assert_eq!(rb("/usr/bin/certbot").is_ok(), !cfg!(windows));
+        assert_eq!(rb(r"C:\Tools\renew.exe").is_ok(), cfg!(windows));
+        assert!(rb(r"C:\").is_err() && rb("certbot").is_err() && rb(r"Tools\renew.exe").is_err());
+    }
+
+    #[derive(Default)]
+    struct FakePs {
+        scripts: Vec<String>,
+        capped: Vec<String>,
+        out: String,
+    }
+
+    impl Runner for FakePs {
+        fn run(&mut self, prog: &str, _args: &[&str]) -> Result<(), String> {
+            Err(format!("unexpected {prog}"))
+        }
+        fn powershell(&mut self, script: &str) -> Result<String, String> {
+            self.scripts.push(script.into());
+            Ok(self.out.clone())
+        }
+        fn capped(&mut self, prog: &str, args: &[&str], secs: u32) -> Result<String, String> {
+            self.capped.push(format!("{prog} {} ({secs} s)", args.join(" ")));
+            Ok(self.out.clone())
+        }
+    }
+
+    #[test]
+    fn windows_local_fixes_run_fixed_scripts() {
+        let mut l = LocalFixes::default();
+        l.runbooks.push(Runbook {
+            name: "hello".into(),
+            run: vec![r"C:\Windows\System32\cmd.exe".into(), "/c".into(), "echo ok".into()],
+            timeout_secs: 30,
+            ..Default::default()
+        });
+        let mut f = FakePs { out: "1048576\n".into(), ..Default::default() };
+        let r = helper_run_windows(&l, PACKAGE_CACHE, "", &mut f);
+        assert!(r.ok && r.detail == "cleaned the Windows Update download cache (1.0 MiB freed)", "{r:?}");
+        assert_eq!(f.scripts[0], WIN_UPDATE_CACHE);
+
+        f.out = "already tight\n".into();
+        let r = helper_run_windows(&l, SSH_PERMISSIONS, "runneradmin", &mut f);
+        assert_eq!((r.ok, r.detail.as_str()), (true, "already tight"));
+        assert!(f.scripts[1].contains("NTAccount('runneradmin')"), "{}", f.scripts[1]);
+        assert!(f.scripts[1].contains(r"'ssh\administrators_authorized_keys'"));
+        assert!(f.scripts[1].contains(r#"CurrentVersion\ProfileList\" + $me.Value"#));
+        assert!(!f.scripts[1].contains('\u{7}'));
+        for bad in ["o'brien", "", "-x", "a;b"] {
+            assert!(!helper_run_windows(&l, SSH_PERMISSIONS, bad, &mut f).ok, "{bad}");
+        }
+        assert_eq!(f.scripts.len(), 2, "refused names never reach PowerShell");
+
+        f.out = "ok\n".into();
+        let r = helper_run_windows(&l, RUNBOOK, "hello", &mut f);
+        assert_eq!(r.detail, "runbook hello done: ok");
+        assert_eq!(f.capped, [r"C:\Windows\System32\cmd.exe /c echo ok (30 s)"]);
+        assert!(!helper_run_windows(&l, RUNBOOK, "nope", &mut f).ok);
+        assert!(!helper_run_windows(&l, JOURNAL_VACUUM, "", &mut f).ok);
+        for a in WINDOWS_LOCAL {
+            assert!(is_local(a), "{a}");
+        }
+    }
+
+    #[test]
+    fn the_update_cache_script_spares_links_and_restarts_what_ran() {
+        let s = WIN_UPDATE_CACHE;
+        assert!(s.contains("SoftwareDistribution") && s.matches("ReparsePoint").count() == 2, "{s}");
+        assert!(!s.contains("-Recurse"), "PowerShell 5.1 follows junctions when it recurses: {s}");
+        assert!(s.contains("wuauserv") && s.contains("bits"), "{s}");
+    }
+
+    #[test]
     fn rules_name_mounts_and_units_the_platform_way() {
         let rule = |when: &str, target: &str| {
             LocalFixes::parse(&format!(
@@ -856,6 +1062,7 @@ action = "fix.journal-vacuum"
     }
 
     #[test]
+    #[cfg(unix)]
     fn helper_runs_fixed_commands_in_transient_units() {
         let c = Config::default();
         let mut l = LocalFixes { units: vec!["web.service".into()], ..Default::default() };

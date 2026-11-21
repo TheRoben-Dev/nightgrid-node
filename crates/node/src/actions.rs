@@ -262,7 +262,7 @@ fn check(shared: &Shared, req: &ActionRequest, now: i64) -> std::result::Result<
             }
         }
         match req.action.as_str() {
-            crate::fixes::SSH_PERMISSIONS if !crate::install::valid_user(req.target.as_deref().unwrap_or("")) => {
+            crate::fixes::SSH_PERMISSIONS if !crate::fixes::win_account(req.target.as_deref().unwrap_or("")) => {
                 return Err(format!("not a user name: {:?}", req.target.as_deref().unwrap_or("")));
             }
             crate::fixes::RUNBOOK if local.runbook(req.target.as_deref().unwrap_or("")).is_none() => {
