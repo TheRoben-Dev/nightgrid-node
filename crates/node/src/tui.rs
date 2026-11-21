@@ -388,45 +388,122 @@ fn stdin_ready() -> bool {
     unsafe { libc::poll(&mut fds, 1, 40) > 0 }
 }
 
-fn read_key(input: &mut impl Read, more: impl Fn() -> bool) -> Key {
-    let mut b = [0u8; 1];
-    if input.read(&mut b).unwrap_or(0) == 0 {
-        return Key::Quit;
-    }
-    match b[0] {
-        b'\r' | b'\n' | b' ' => Key::Enter,
-        b'q' | b'Q' | 3 | 4 => Key::Quit,
-        b'k' | 16 => Key::Up,
-        b'j' | 14 => Key::Down,
-        b'g' => Key::Home,
-        b'G' => Key::End,
-        d @ b'0'..=b'9' => Key::Digit(d - b'0'),
-        0x1b => {
-            // A lone Esc quits; Esc [ A and friends are arrows.
-            if !more() {
-                return Key::Quit;
+/// Reads stdin with no user-space buffer, so `stdin_ready` (which asks the
+/// kernel or console) sees every byte not yet handed to `Keys`. Rust's
+/// `Stdin` buffers 8 KiB: after it swallowed `ESC [ B` in one read, a poll on
+/// fd 0 found nothing and every arrow looked like a lone Esc.
+struct RawIn;
+
+#[cfg(unix)]
+impl Read for RawIn {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        loop {
+            // SAFETY: fd 0 is stdin; buf is writable for buf.len() bytes.
+            let n = unsafe { libc::read(0, buf.as_mut_ptr().cast(), buf.len()) };
+            if n >= 0 {
+                return Ok(n as usize);
             }
-            let mut seq = [0u8; 2];
-            if input.read(&mut seq[..1]).unwrap_or(0) == 0 || !matches!(seq[0], b'[' | b'O') {
-                return Key::Quit;
-            }
-            if input.read(&mut seq[1..]).unwrap_or(0) == 0 {
-                return Key::Other;
-            }
-            match seq[1] {
-                b'A' => Key::Up,
-                b'B' => Key::Down,
-                b'H' => Key::Home,
-                b'F' => Key::End,
-                b'1'..=b'8' => {
-                    let mut t = [0u8; 1];
-                    let _ = input.read(&mut t);
-                    Key::Other
-                }
-                _ => Key::Other,
+            let e = std::io::Error::last_os_error();
+            if e.kind() != std::io::ErrorKind::Interrupted {
+                return Err(e);
             }
         }
-        _ => Key::Other,
+    }
+}
+
+#[cfg(windows)]
+impl Read for RawIn {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        use windows_sys::Win32::Storage::FileSystem::ReadFile;
+        use windows_sys::Win32::System::Console::{GetStdHandle, STD_INPUT_HANDLE};
+        let mut n = 0u32;
+        let len = u32::try_from(buf.len()).unwrap_or(u32::MAX);
+        // SAFETY: this process's console input handle; buf is writable for len bytes.
+        let ok =
+            unsafe { ReadFile(GetStdHandle(STD_INPUT_HANDLE), buf.as_mut_ptr(), len, &mut n, std::ptr::null_mut()) };
+        if ok == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(n as usize)
+    }
+}
+
+/// Turns raw input into keys. Reads up to 16 bytes at a time and parses
+/// escape sequences from its own buffer; `more` (is input waiting outside
+/// this buffer?) is asked only when an Esc is the last byte it holds.
+struct Keys<R> {
+    input: R,
+    buf: [u8; 16],
+    pos: usize,
+    len: usize,
+}
+
+impl<R: Read> Keys<R> {
+    fn new(input: R) -> Self {
+        Self { input, buf: [0; 16], pos: 0, len: 0 }
+    }
+
+    /// Refills the buffer when it is empty; false at end of input or on error.
+    fn fill(&mut self) -> bool {
+        if self.pos < self.len {
+            return true;
+        }
+        self.pos = 0;
+        self.len = self.input.read(&mut self.buf).unwrap_or(0);
+        self.len > 0
+    }
+
+    fn byte(&mut self) -> Option<u8> {
+        if !self.fill() {
+            return None;
+        }
+        self.pos += 1;
+        Some(self.buf[self.pos - 1])
+    }
+
+    fn next(&mut self, more: impl Fn() -> bool) -> Key {
+        let Some(b) = self.byte() else {
+            return Key::Quit;
+        };
+        match b {
+            b'\r' | b'\n' | b' ' => Key::Enter,
+            b'q' | b'Q' | 3 | 4 => Key::Quit,
+            b'k' | 16 => Key::Up,
+            b'j' | 14 => Key::Down,
+            b'g' => Key::Home,
+            b'G' => Key::End,
+            d @ b'0'..=b'9' => Key::Digit(d - b'0'),
+            0x1b => {
+                // A lone Esc quits; Esc [ A and friends are arrows. The rest of
+                // a sequence usually came in the same read, so only wait when
+                // the Esc ended what we have.
+                if self.pos == self.len && !more() {
+                    return Key::Quit;
+                }
+                match self.byte() {
+                    Some(b'[' | b'O') => {}
+                    _ => return Key::Quit,
+                }
+                match self.byte() {
+                    None => Key::Other,
+                    Some(b'A') => Key::Up,
+                    Some(b'B') => Key::Down,
+                    Some(b'H') => Key::Home,
+                    Some(b'F') => Key::End,
+                    Some(b'1'..=b'8') => {
+                        // Esc [ 5 ~ and the like: drop the rest up to '~'.
+                        while let Some(t) = self.byte() {
+                            if t == b'~' || t.is_ascii_alphabetic() {
+                                break;
+                            }
+                        }
+                        Key::Other
+                    }
+                    Some(_) => Key::Other,
+                }
+            }
+            _ => Key::Other,
+        }
     }
 }
 
@@ -449,7 +526,7 @@ pub fn pick(menu: &Menu) -> Option<usize> {
     let c = colors();
     let mut focus = 0usize;
     let mut typed: Option<usize> = None;
-    let mut stdin = std::io::stdin().lock();
+    let mut keys = Keys::new(RawIn);
     loop {
         let (w, h) = term_size();
         let body = menu.text(Some(focus), w.saturating_sub(1), c);
@@ -483,7 +560,7 @@ pub fn pick(menu: &Menu) -> Option<usize> {
         out.push_str(&format!(" {}", paint_with(c, &hint, Tone::Dim, false)));
         print!("{out}");
         let _ = std::io::stdout().flush();
-        match read_key(&mut stdin, stdin_ready) {
+        match keys.next(stdin_ready) {
             Key::Up => focus = focus.checked_sub(1).unwrap_or(n - 1),
             Key::Down => focus = (focus + 1) % n,
             Key::Home => focus = 0,
@@ -642,13 +719,52 @@ mod tests {
 
     #[test]
     fn keys() {
-        let k = |b: &[u8]| read_key(&mut std::io::Cursor::new(b.to_vec()), || true);
+        let k = |b: &[u8]| Keys::new(std::io::Cursor::new(b.to_vec())).next(|| true);
         assert_eq!(k(b"j"), Key::Down);
         assert_eq!(k(b"\x1b[A"), Key::Up);
         assert_eq!(k(b"\r"), Key::Enter);
         assert_eq!(k(b"7"), Key::Digit(7));
         assert_eq!(k(b"q"), Key::Quit);
         assert_eq!(k(b""), Key::Quit);
+    }
+
+    /// The sequence bytes are already read; nothing more waits outside the
+    /// buffer. This was the bug: every arrow quit the menu.
+    #[test]
+    fn arrows_already_read_are_not_a_lone_esc() {
+        let k = |b: &[u8]| Keys::new(std::io::Cursor::new(b.to_vec())).next(|| false);
+        assert_eq!(k(b"\x1b[B"), Key::Down);
+        assert_eq!(k(b"\x1b[A"), Key::Up);
+        assert_eq!(k(b"\x1bOB"), Key::Down);
+        assert_eq!(k(b"\x1b[H"), Key::Home);
+        assert_eq!(k(b"\x1b"), Key::Quit);
+    }
+
+    /// Several keys in one read (a paste, key repeat) come out one at a time,
+    /// and a long sequence (PgDn) does not leak bytes into the next key.
+    #[test]
+    fn many_keys_in_one_read() {
+        let mut keys = Keys::new(std::io::Cursor::new(b"\x1b[B\x1b[6~j\x1b[A\r\x1b".to_vec()));
+        let got: Vec<Key> = (0..6).map(|_| keys.next(|| false)).collect();
+        assert_eq!(got, [Key::Down, Key::Other, Key::Down, Key::Up, Key::Enter, Key::Quit]);
+    }
+
+    /// A sequence split across reads still parses when more input is waiting.
+    #[test]
+    fn sequence_split_across_reads() {
+        struct Chunks(Vec<Vec<u8>>);
+        impl Read for Chunks {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                if self.0.is_empty() {
+                    return Ok(0);
+                }
+                let c = self.0.remove(0);
+                buf[..c.len()].copy_from_slice(&c);
+                Ok(c.len())
+            }
+        }
+        let mut keys = Keys::new(Chunks(vec![b"\x1b".to_vec(), b"[B".to_vec()]));
+        assert_eq!(keys.next(|| true), Key::Down);
     }
 
     #[test]

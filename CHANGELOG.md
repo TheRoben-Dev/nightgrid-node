@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.37.1 · Arrow keys in menus (2026-11-21)
+
+Fix only: no frozen method, field, frame or link request changed.
+
+- **Arrow keys no longer quit the menus.** Every full-screen menu (`nightgrid-node fix`, hub settings and the rest of `tui::pick`) closed on the first ↑ or ↓ as if Esc had been pressed, which left a blank screen in some terminals. Rust's buffered stdin read the whole `ESC [ B` at once, so the check for "more bytes after Esc" asked an empty fd 0 and saw a lone Esc. The menu now reads the terminal (fd 0, or the console handle on Windows) without that buffer and parses escape sequences from its own 16-byte buffer, waiting only when an Esc is the last byte it has. A lone Esc still backs out.
+- New tests cover an arrow whose bytes are already read, several keys in one read (a paste or key repeat, PgDn), and a sequence split across reads.
+
 ## 0.37.0 · W2g: the fix menu on Windows (2026-11-21)
 
 Additive only: no frozen method, field, frame or link request changed, and no new cap. App spec [0032](docs/app-integration/0032-windows-node-fixes.md). Decision N-088.
