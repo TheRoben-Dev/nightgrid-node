@@ -48,11 +48,21 @@ pub fn normalize(j: &BackupJob) -> Result<BackupJob, String> {
         return Err(format!("name must be 1-{MAX_NAME} characters"));
     }
     let target = j.target.trim().to_owned();
+    // NODE: on Windows a unit is a scheduled task and a path a Windows one.
+    let (unit_ok, abs) = if cfg!(windows) {
+        (crate::wintasks::valid_task(&target), crate::wintasks::absolute_path(&target))
+    } else {
+        (valid_unit(&target), target.starts_with('/'))
+    };
     match j.source {
-        BackupSource::Unit if !valid_unit(&target) => return Err(format!("{target:?} isn't a systemd unit name")),
-        BackupSource::Path
-            if !target.starts_with('/') || target.len() > 4096 || target.chars().any(char::is_control) =>
-        {
+        BackupSource::Unit if !unit_ok => {
+            return Err(if cfg!(windows) {
+                format!("{target:?} isn't a scheduled task path like \\Backups\\Nightly")
+            } else {
+                format!("{target:?} isn't a systemd unit name")
+            })
+        }
+        BackupSource::Path if !abs || target.len() > 4096 || target.chars().any(char::is_control) => {
             return Err("target must be an absolute path".into())
         }
         _ => {}

@@ -42,6 +42,7 @@ The Nightgrid app repository is developed elsewhere and is read-only from here. 
 | [0036 · Windows node W3c: NUT servers](0036-windows-node-nut.md) | 0.41.0 (W3c) | proposed |
 | [0037 · Windows node W3d: node-to-node link](0037-windows-node-link.md) | 0.42.0 (W3d) | proposed |
 | [0038 · Windows node W3e: status page](0038-windows-node-status-page.md) | 0.43.0 (W3e) | proposed |
+| [0039 · Windows node W3f: jobs and backups](0039-windows-node-jobs.md) | 0.44.0 (W3f) | proposed |
 
 Rules every spec follows:
 

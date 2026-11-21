@@ -148,7 +148,7 @@ pub fn handle(config: &Config, req: &ReadRequest) -> ReadReply {
 /// Runs one of the vendored PowerShell reads with a time limit. A script
 /// that throws answers `@error <message>` instead of its JSON.
 #[cfg(windows)]
-fn powershell(script: &str, secs: u64) -> Result<String, String> {
+pub(crate) fn powershell(script: &str, secs: u64) -> Result<String, String> {
     let wrapped = format!(
         "$ProgressPreference='SilentlyContinue'\ntry {{ & {{\n{script}\n}} }} catch {{ [Console]::Out.Write('@error ' + $_.Exception.Message) }}"
     );

@@ -12,6 +12,7 @@
 
 use std::collections::BTreeMap;
 use std::path::Path;
+#[cfg(unix)]
 use std::process::{Command, Stdio};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::Arc;
@@ -27,6 +28,7 @@ use crate::redact::line_has_secret;
 
 const META_JOBS: &str = "jobs";
 const META_SEEN: &str = "jobs_seen";
+#[cfg(unix)]
 const META_POWER_BOOT: &str = "jobs_power_boot";
 /// Paths are read at most this often (a newest-file walk isn't free).
 const PATH_EVERY: i64 = 600;
@@ -34,6 +36,7 @@ const PATH_EVERY: i64 = 600;
 const SIZE_EVERY: i64 = 6 * 3600;
 pub const JOB_PREFIX: &str = "nightgrid-job-";
 pub const POWER_PREFIX: &str = "nightgrid-power-";
+#[cfg(unix)]
 const PROPS: &str = "Id,Description,LoadState,ActiveState,SubState,Result,ExecMainStatus,\
 ExecMainStartTimestampMonotonic,ExecMainExitTimestampMonotonic,InvocationID";
 
@@ -232,6 +235,7 @@ pub fn power_event(unit: &str, at: i64) -> NewEvent {
 
 // ---- reading the host ------------------------------------------------------
 
+#[cfg(unix)]
 fn run(prog: &str, args: &[&str]) -> Option<String> {
     let out = Command::new(prog)
         .args(args)
@@ -245,6 +249,7 @@ fn run(prog: &str, args: &[&str]) -> Option<String> {
     Some(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
+#[cfg(unix)]
 fn show(units: &[String], props: &str) -> BTreeMap<String, Props> {
     let mut map = BTreeMap::new();
     if units.is_empty() {
@@ -263,6 +268,7 @@ fn show(units: &[String], props: &str) -> BTreeMap<String, Props> {
     map
 }
 
+#[cfg(unix)]
 fn scheduled_units() -> Vec<String> {
     let Some(out) = run(
         "systemctl",
@@ -286,6 +292,7 @@ fn scheduled_units() -> Vec<String> {
         .collect()
 }
 
+#[cfg(unix)]
 fn journal(inv: &str, service: &str) -> Vec<String> {
     let mut out = String::new();
     if !inv.is_empty() && inv.chars().all(|c| c.is_ascii_hexdigit()) {
@@ -299,6 +306,12 @@ fn journal(inv: &str, service: &str) -> Vec<String> {
     out.lines().map(str::to_owned).collect()
 }
 
+#[cfg(windows)]
+fn uptime() -> f64 {
+    crate::win::sys::uptime_secs()
+}
+
+#[cfg(unix)]
 fn uptime() -> f64 {
     std::fs::read_to_string("/proc/uptime")
         .ok()
@@ -306,6 +319,7 @@ fn uptime() -> f64 {
         .unwrap_or(0.0)
 }
 
+#[cfg(unix)]
 fn boot_id() -> String {
     std::fs::read_to_string("/proc/sys/kernel/random/boot_id").map(|s| s.trim().to_owned()).unwrap_or_default()
 }
@@ -316,12 +330,108 @@ struct Cache {
     /// Service → its last finished run, as reported.
     seen: BTreeMap<String, String>,
     /// Service → the output of its last run.
+    #[cfg(unix)]
     logs: BTreeMap<String, Vec<String>>,
     /// Backup job id → (read at, what was read, size read at).
     paths: BTreeMap<i32, (i64, backups::PathRead, i64)>,
 }
 
+/// A path job's status, read at most every [`PATH_EVERY`].
+fn path_job(paths: &mut BTreeMap<i32, (i64, backups::PathRead, i64)>, j: &BackupJob, now: i64) -> BackupStatus {
+    let due = paths.get(&j.id).is_none_or(|(at, _, _)| now - at >= PATH_EVERY);
+    if due {
+        let prev = paths.get(&j.id).cloned();
+        let quick = backups::read_path(Path::new(&j.target), false);
+        let size_due = match &prev {
+            Some((_, old, size_at)) => old.newest != quick.newest || now - size_at >= SIZE_EVERY,
+            None => true,
+        };
+        let (read, size_at) = if size_due && quick.is_dir {
+            (backups::read_path(Path::new(&j.target), true), now)
+        } else {
+            let mut q = quick;
+            if q.is_dir {
+                q.size = prev.as_ref().and_then(|p| p.1.size);
+            }
+            (q, prev.map_or(now, |p| p.2))
+        };
+        paths.insert(j.id, (now, read, size_at));
+    }
+    backups::path_status(j.id, &paths[&j.id].1)
+}
+
+/// One round on Windows: the listed tasks and `\Nightgrid\` in one
+/// PowerShell read, paths in Rust.
+#[cfg(windows)]
+fn round(shared: &Shared, cache: &mut Cache, first: bool) -> (JobsLatest, Vec<NewEvent>) {
+    use crate::wintasks;
+    let list = shared.jobs.lock().unwrap_or_else(|e| e.into_inner()).list.clone();
+    let now = now_secs();
+    let up = uptime();
+    let mut events = Vec::new();
+    let tasks: Vec<String> = list.iter().filter(|j| j.source == BackupSource::Unit).map(|j| j.target.clone()).collect();
+    let read = crate::health::watch::powershell(&wintasks::script(&tasks), 60).and_then(|o| wintasks::parse(&o));
+    let doc = match read {
+        Ok(d) => d,
+        Err(e) => {
+            crate::debug!("jobs: {e}");
+            // Keep what was read last rather than flap to "not found".
+            let mut l = shared.jobs.lock().unwrap_or_else(|e| e.into_inner()).latest.clone();
+            l.access = "ok".into();
+            return (l, events);
+        }
+    };
+
+    // New finished runs, by task path.
+    let mut finished: Vec<String> = Vec::new();
+    let mut paths: Vec<String> = Vec::new();
+    for t in doc.jobs.iter().chain(&doc.runs) {
+        paths.push(t.path.clone());
+        let Some(key) = wintasks::run_key(t) else { continue };
+        if cache.seen.get(&t.path) != Some(&key) {
+            if cache.seen.contains_key(&t.path) || !first {
+                finished.push(t.path.clone());
+            }
+            cache.seen.insert(t.path.clone(), key);
+        }
+    }
+    cache.seen.retain(|k, _| paths.contains(k));
+
+    let mut statuses = Vec::new();
+    let mut reported: Vec<String> = Vec::new();
+    for j in &list {
+        let mut st = match j.source {
+            BackupSource::Unit => {
+                let t = doc.jobs.iter().find(|t| t.path.eq_ignore_ascii_case(&j.target));
+                let st = wintasks::task_status(j.id, t);
+                if let Some(t) = t.filter(|t| finished.contains(&t.path)) {
+                    if st.result != BackupResult::Running {
+                        events.push(backup_event(j, &st, st.last_run.map_or(now, |v| v as i64)));
+                        reported.push(t.path.clone());
+                    }
+                }
+                st
+            }
+            BackupSource::Path => path_job(&mut cache.paths, j, now),
+        };
+        st.stale = backups::stale(&st, j, now as f64, up);
+        statuses.push(st);
+    }
+    cache.paths.retain(|id, _| list.iter().any(|j| j.id == *id));
+
+    let mut runs = Vec::new();
+    for t in &doc.runs {
+        let r = wintasks::task_run(t);
+        if finished.contains(&t.path) && !reported.contains(&t.path) && r.result != BackupResult::Running {
+            events.push(run_event(&r, r.finished.map_or(now, |v| v as i64)));
+        }
+        runs.push(r);
+    }
+    (JobsLatest { access: "ok".into(), at: now, backups: statuses, runs }, events)
+}
+
 /// One round: reads every job, returns the result and the events to record.
+#[cfg(unix)]
 fn round(shared: &Shared, cache: &mut Cache, first: bool) -> (JobsLatest, Vec<NewEvent>) {
     let list = shared.jobs.lock().unwrap_or_else(|e| e.into_inner()).list.clone();
     let now = now_secs();
@@ -385,28 +495,7 @@ fn round(shared: &Shared, cache: &mut Cache, first: bool) -> (JobsLatest, Vec<Ne
                 }
                 st
             }
-            BackupSource::Path => {
-                let due = cache.paths.get(&j.id).is_none_or(|(at, _, _)| now - at >= PATH_EVERY);
-                if due {
-                    let prev = cache.paths.get(&j.id).cloned();
-                    let quick = backups::read_path(Path::new(&j.target), false);
-                    let size_due = match &prev {
-                        Some((_, old, size_at)) => old.newest != quick.newest || now - size_at >= SIZE_EVERY,
-                        None => true,
-                    };
-                    let (read, size_at) = if size_due && quick.is_dir {
-                        (backups::read_path(Path::new(&j.target), true), now)
-                    } else {
-                        let mut q = quick;
-                        if q.is_dir {
-                            q.size = prev.as_ref().and_then(|p| p.1.size);
-                        }
-                        (q, prev.map_or(now, |p| p.2))
-                    };
-                    cache.paths.insert(j.id, (now, read, size_at));
-                }
-                backups::path_status(j.id, &cache.paths[&j.id].1)
-            }
+            BackupSource::Path => path_job(&mut cache.paths, j, now),
         };
         st.stale = backups::stale(&st, j, now as f64, up);
         statuses.push(st);
@@ -427,6 +516,7 @@ fn round(shared: &Shared, cache: &mut Cache, first: bool) -> (JobsLatest, Vec<Ne
 }
 
 /// After a reboot: whether the previous boot ended with a scheduled power job.
+#[cfg(unix)]
 fn power_check(shared: &Shared) {
     let id = boot_id();
     if id.is_empty() {
@@ -459,6 +549,7 @@ fn watch(shared: &Shared, stop: &mpsc::Receiver<()>) {
     if let Ok(()) | Err(RecvTimeoutError::Disconnected) = stop.recv_timeout(Duration::from_secs(5)) {
         return;
     }
+    #[cfg(unix)]
     power_check(shared);
     let mut cache = Cache {
         seen: {

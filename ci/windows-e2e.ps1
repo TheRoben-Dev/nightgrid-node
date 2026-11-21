@@ -856,6 +856,61 @@ Set-Content -Path $cfg -Value $cfgBefore -NoNewline
 Restart-Service nightgrid-node
 Start-Sleep -Seconds 3
 
+Step 'jobs: backup tasks, path jobs and \Nightgrid\ tasks are watched through Task Scheduler'
+$bk = Join-Path $env:ProgramData 'ng-ci-backup'
+New-Item -ItemType Directory -Path $bk -Force | Out-Null
+Set-Content -Path (Join-Path $bk 'snap.bin') -Value ('x' * 4096)
+$act = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument '/c exit 0'
+Register-ScheduledTask -TaskPath '\CiBackups\' -TaskName 'nightly copy' -Action $act -User 'SYSTEM' -Force | Out-Null
+$act = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument '/c exit 3'
+Register-ScheduledTask -TaskPath '\Nightgrid\' -TaskName 'ci-job' -Description 'ci sync' -Action $act -User 'SYSTEM' -Force | Out-Null
+try {
+    $bad = @(Bridge @($hello, (Rpc 2 'jobs.set' @{ backups = @(@{ id = 1; name = 'b'; tool = 'other'; source = 'path'; target = '/srv/backup'; staleHours = 24 }) })))
+    if ($bad[1] -notmatch 'absolute path') { Fail "a POSIX path was taken on Windows: $($bad[1])" }
+    $set = Rpc 2 'jobs.set' @{ backups = @(
+            @{ id = 1; name = 'task backup'; tool = 'other'; source = 'unit'; target = '\CiBackups\nightly copy'; staleHours = 24 },
+            @{ id = 2; name = 'folder'; tool = 'other'; source = 'path'; target = $bk; staleHours = 24 },
+            @{ id = 3; name = 'gone'; tool = 'other'; source = 'unit'; target = '\CiBackups\missing'; staleHours = 24 }) }
+    $r = @(Bridge @($hello, $set))
+    if ($r[1] -notmatch '"backups"') { Fail "jobs.set: $($r[1])" }
+    $deadline = (Get-Date).AddSeconds(90)
+    do {
+        Start-Sleep -Seconds 3
+        $r = @(Bridge @($hello, '{"id":2,"method":"jobs.latest"}'))
+        $l = ($r[1] | ConvertFrom-Json).result
+    } while (-not ($l.runs | Where-Object { $_.unit -eq '\Nightgrid\ci-job' }) -and (Get-Date) -lt $deadline)
+    Write-Host $r[1]
+    if (-not ($l.runs | Where-Object { $_.unit -eq '\Nightgrid\ci-job' })) { Fail "the node can't see \Nightgrid\ tasks: $($r[1])" }
+    $b1 = $l.backups | Where-Object { $_.jobId -eq 1 }
+    if ($b1.error) { Fail "the node can't read the backup task: $($b1.error)" }
+    $b2 = $l.backups | Where-Object { $_.jobId -eq 2 }
+    if ($b2.result -ne 'ok' -or $b2.size -lt 4096) { Fail "path job: $($b2 | ConvertTo-Json -Compress)" }
+    $b3 = $l.backups | Where-Object { $_.jobId -eq 3 }
+    if (-not $b3.error) { Fail "a missing task has no error: $($b3 | ConvertTo-Json -Compress)" }
+    Start-ScheduledTask -TaskPath '\CiBackups\' -TaskName 'nightly copy'
+    Start-ScheduledTask -TaskPath '\Nightgrid\' -TaskName 'ci-job'
+    $deadline = (Get-Date).AddSeconds(150)
+    do {
+        Start-Sleep -Seconds 5
+        $r = @(Bridge @($hello, '{"id":2,"method":"jobs.latest"}', '{"id":3,"method":"events.sync","params":{"after":0,"limit":500,"kinds":["job"]}}'))
+        $l = ($r[1] | ConvertFrom-Json).result
+        $run = $l.runs | Where-Object { $_.unit -eq '\Nightgrid\ci-job' }
+        $b1 = $l.backups | Where-Object { $_.jobId -eq 1 }
+    } while (($run.result -ne 'failed' -or $b1.result -ne 'ok' -or $r[2] -notmatch 'job ci sync failed' -or $r[2] -notmatch 'backup task backup finished') -and (Get-Date) -lt $deadline)
+    Write-Host $r[1]
+    Write-Host $r[2]
+    if ($b1.result -ne 'ok') { Fail "backup task never ran ok: $($b1 | ConvertTo-Json -Compress)" }
+    if ($run.result -ne 'failed' -or $run.exitCode -ne 3) { Fail "the failing job: $($run | ConvertTo-Json -Compress)" }
+    if ($r[2] -notmatch 'job ci sync failed \(exit 3\)') { Fail "no failed-job event: $($r[2])" }
+    if ($r[2] -notmatch 'backup task backup finished') { Fail "no backup event: $($r[2])" }
+    $w = @(Bridge @($hello))[0] | ConvertFrom-Json
+    if (-not $w.result.caps.jobs) { Fail 'does not advertise jobs' }
+    $r = @(Bridge @($hello, (Rpc 2 'jobs.set' @{ backups = @() })))
+} finally {
+    Unregister-ScheduledTask -TaskPath '\CiBackups\' -TaskName 'nightly copy' -Confirm:$false -ErrorAction SilentlyContinue
+    Unregister-ScheduledTask -TaskPath '\Nightgrid\' -TaskName 'ci-job' -Confirm:$false -ErrorAction SilentlyContinue
+}
+
 Step 'an account outside the group is refused'
 $pw = 'Ng-' + [guid]::NewGuid().ToString('N').Substring(0, 16) + '!a1'
 $sec = ConvertTo-SecureString $pw -AsPlainText -Force
