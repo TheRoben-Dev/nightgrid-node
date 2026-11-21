@@ -92,7 +92,17 @@ pub fn firewall_script(on: bool, exe: &str, networks: &[String]) -> String {
          }}\n\
          if (-not $sr.ServiceRestricted('{SERVICE}', '{exe}')) {{ throw 'not restricted' }}\n\
          try {{ $sr.Rules.Remove('{wsh_name}') }} catch {{}}\n\
-         $nets = '{nets}'\n\
+         # Windows refuses some ranges in a rule (it says which only by\n\
+         # failing): keep the ones it takes and name the rest.\n\
+         $ok = @(); $bad = @()\n\
+         foreach ($n in ('{nets}' -split ',')) {{\n\
+           if (-not $n) {{ continue }}\n\
+           $t = New-Object -ComObject HNetCfg.FWRule\n\
+           $t.Protocol = 6\n\
+           $t.Direction = 2\n\
+           try {{ $t.RemoteAddresses = $n; $ok += $n }} catch {{ $bad += $n }}\n\
+         }}\n\
+         $nets = $ok -join ','\n\
          if ($nets) {{\n\
            $r = New-Object -ComObject HNetCfg.FWRule\n\
            $r.Name = '{wsh_name}'\n\
@@ -108,9 +118,23 @@ pub fn firewall_script(on: bool, exe: &str, networks: &[String]) -> String {
          Get-NetFirewallRule -Group '{FIREWALL_GROUP}' -ErrorAction SilentlyContinue | Remove-NetFirewallRule\n\
          New-NetFirewallRule -DisplayName '{FIREWALL_GROUP}: nothing inbound' -Group '{FIREWALL_GROUP}' -Direction Inbound -Service '{SERVICE}' -Action Block -Profile Any | Out-Null\n\
          if ($nets) {{\n\
-           New-NetFirewallRule -DisplayName '{FIREWALL_GROUP}: out to [checks] networks' -Group '{FIREWALL_GROUP}' -Direction Outbound -Service '{SERVICE}' -Protocol TCP -RemoteAddress ($nets -split ',') -Action Allow -Profile Any | Out-Null\n\
-         }}\n"
+           New-NetFirewallRule -DisplayName '{FIREWALL_GROUP}: out to [checks] networks' -Group '{FIREWALL_GROUP}' -Direction Outbound -Service '{SERVICE}' -Protocol TCP -RemoteAddress $ok -Action Allow -Profile Any | Out-Null\n\
+         }}\n\
+         \"allowed: $nets\"\n\
+         \"refused: $($bad -join ',')\"\n"
     )
+}
+
+/// The `allowed:` and `refused:` lines the rule script prints.
+pub fn parse_rule_output(out: &str) -> (Vec<String>, Vec<String>) {
+    let list = |key: &str| -> Vec<String> {
+        out.lines()
+            .filter_map(|l| l.trim().strip_prefix(key))
+            .next_back()
+            .map(|v| v.split(',').map(str::trim).filter(|x| !x.is_empty()).map(str::to_owned).collect())
+            .unwrap_or_default()
+    };
+    (list("allowed:"), list("refused:"))
 }
 
 /// True when the runner's restriction is in place (for `doctor`).
@@ -182,9 +206,21 @@ pub fn allow(on: bool, config_path: &Path, no_start: bool) -> Result<Report, Str
     super::install::set_dacl(&log, &log_sddl(&node, &runner))?;
     step(&mut rep, format!("the runner may read the config and write only {}", log.display()));
 
-    super::install::powershell(&firewall_script(true, &bin.to_string_lossy(), &config.checks.networks))
+    let out = super::install::powershell(&firewall_script(true, &bin.to_string_lossy(), &config.checks.networks))
         .map_err(|e| format!("could not add the runner's firewall restriction: {e}"))?;
-    step(&mut rep, format!("the runner may connect only to {} (Windows Service Hardening)", nets.join(", ")));
+    let (allowed, refused) = parse_rule_output(&out);
+    if allowed.is_empty() {
+        rep.warnings.push("Windows took none of [checks] networks: the runner can't connect anywhere".into());
+    } else {
+        step(&mut rep, format!("the runner may connect only to {} (Windows Service Hardening)", allowed.join(", ")));
+    }
+    if !refused.is_empty() {
+        rep.warnings.push(format!(
+            "Windows Firewall refused {} in a rule, so the runner can't reach {}",
+            refused.join(", "),
+            if refused.len() == 1 { "it" } else { "them" }
+        ));
+    }
 
     if no_start {
         step(&mut rep, "enabled at boot, not started (--no-start)");
@@ -344,6 +380,11 @@ mod tests {
         assert!(s.contains(r"'C:\Program Files\it''s\n.exe'"), "{s}");
         assert!(s.contains("$r.Direction = 2") && s.contains("$r.Action = 1"));
         assert!(!firewall_script(false, "x", &[]).contains("Rules.Add"));
+        assert_eq!(
+            parse_rule_output("noise\r\nallowed: 10.0.0.0/8,fc00::/7\r\nrefused: \r\n"),
+            (vec!["10.0.0.0/8".to_owned(), "fc00::/7".to_owned()], vec![])
+        );
+        assert_eq!(parse_rule_output("allowed: \nrefused: ::1/128").1, ["::1/128"]);
         assert!(super::super::acl::Sddl::new(&log_sddl("S-1-5-80-1", "S-1-5-80-2")).is_ok());
         assert!(service_command(Path::new(r"C:\P\n.exe"), Path::new(r"C:\c.toml")).contains("\" checker --config \""));
     }

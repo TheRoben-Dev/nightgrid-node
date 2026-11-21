@@ -829,12 +829,27 @@ pub fn powershell(script: &str) -> Result<String, String> {
         .output()
         .map_err(|e| format!("powershell: {e}"))?;
     if !out.status.success() {
-        let err = String::from_utf8_lossy(&out.stderr);
-        let first =
-            err.lines().map(str::trim).find(|l| !l.is_empty() && !l.starts_with("#< CLIXML")).unwrap_or("failed");
-        return Err(first.to_owned());
+        return Err(ps_error(&String::from_utf8_lossy(&out.stderr)));
     }
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// The first error line of PowerShell's stderr, which may be CLIXML
+/// (`<Objs …><S S="Error">text_x000D__x000A_</S>…`).
+pub fn ps_error(err: &str) -> String {
+    let Some(l) = err.lines().map(str::trim).find(|l| !l.is_empty() && !l.starts_with("#< CLIXML")) else {
+        return "failed".into();
+    };
+    let Some(i) = l.find("<S S=\"Error\">") else { return l.to_owned() };
+    let text = l[i + 14..].split("</S>").next().unwrap_or("");
+    let text = text.replace("_x000D_", "").replace("_x000A_", " ");
+    let text = text.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&amp;", "&");
+    let text = text.trim();
+    if text.is_empty() {
+        "failed".into()
+    } else {
+        text.to_owned()
+    }
 }
 
 /// PowerShell's `-EncodedCommand`: base64 of UTF-16LE.
@@ -907,6 +922,11 @@ mod tests {
             Path::new(r"c:\program files\nightgrid node")
         ));
         assert_eq!(encode_utf16_base64("ab"), "YQBiAA==");
+        assert_eq!(
+            ps_error("#< CLIXML\r\n<Objs Version=\"1.1.0.1\"><S S=\"Error\">Exception from HRESULT: 0xD000000D_x000D__x000A_</S><S S=\"Error\">At line:19</S></Objs>"),
+            "Exception from HRESULT: 0xD000000D"
+        );
+        assert_eq!(ps_error("plain\nmore"), "plain");
         assert!(crate::config::Config::parse(TEMPLATE).is_ok());
         assert_eq!(service_command(Path::new(r"C:\P F\n.exe")), r#""C:\P F\n.exe" run"#);
     }
