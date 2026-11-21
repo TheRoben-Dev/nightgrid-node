@@ -316,6 +316,71 @@ if ($w32shared) {
 }
 Remove-Item $fixes
 
+Step 'fix menu: the same fix names, run through the admin helper'
+Set-Content -Path $fixes -Value @'
+allow = ["fix.package-cache", "fix.ssh-permissions", "fix.runbook"]
+
+[[runbook]]
+name = "hello"
+description = "Says ok"
+run = ['C:\Windows\System32\cmd.exe', '/c', 'echo ok']
+timeout_secs = 30
+'@
+# A key file with the inherited ProgramData ACL (Users can read), which
+# OpenSSH refuses; the fix must leave only SYSTEM and Administrators.
+$sshDir = Join-Path $env:ProgramData 'ssh'
+$madeSshDir = -not (Test-Path $sshDir)
+if ($madeSshDir) { New-Item -ItemType Directory -Path $sshDir | Out-Null }
+$keys = Join-Path $sshDir 'administrators_authorized_keys'
+$hadKeys = Test-Path $keys
+if (-not $hadKeys) {
+    Set-Content -Path $keys -Value 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleKeyForCiOnly ci'
+    $acl = Get-Acl $keys
+    $acl.SetAccessRuleProtection($false, $false)
+    $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule('BUILTIN\Users', 'Read', 'Allow')))
+    Set-Acl -Path $keys -AclObject $acl
+}
+$out = (& $bin fix list --json) -join "`n"
+if ($LASTEXITCODE -ne 0) { Fail "fix list: $out" }
+$fl = $out | ConvertFrom-Json
+$names = @($fl.fixes | ForEach-Object { $_.name }) -join ' '
+Write-Host "fixes: $names; auto: $(@($fl.auto | ForEach-Object { $_.name }) -join ' ')"
+if ($names -ne 'restart packages ssh reboot run') { Fail "fix list names: $out" }
+if (@($fl.fixes | Where-Object { $_.name -eq 'run' }).state -ne 'allowed') { Fail "runbook not allowed: $out" }
+$out = (& $bin fix run hello -y) -join "`n"
+Write-Host $out
+if ($LASTEXITCODE -ne 0 -or $out -notmatch 'runbook hello done: ok') { Fail "fix run hello: $out" }
+$out = (& $bin fix ssh $env:USERNAME -y) -join "`n"
+Write-Host $out
+if ($LASTEXITCODE -ne 0 -or $out -notmatch 'tightened|already tight') { Fail "fix ssh: $out" }
+if (-not $hadKeys) {
+    $acl = Get-Acl $keys
+    $who = @($acl.Access | ForEach-Object { $_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value } | Sort-Object -Unique) -join ' '
+    Write-Host "key file ACL: $who (protected: $($acl.AreAccessRulesProtected))"
+    if (-not $acl.AreAccessRulesProtected -or $who -ne 'S-1-5-18 S-1-5-32-544') { Fail "key file ACL after the fix: $who" }
+}
+# A file in the download cache that the fix must remove; Windows Update's
+# start type stays what the image set (the runner images disable it).
+$wuStart = (Get-Service wuauserv).StartType
+$dl = Join-Path $env:SystemRoot 'SoftwareDistribution\Download'
+if (-not (Test-Path $dl)) { New-Item -ItemType Directory -Path $dl | Out-Null }
+$junk = Join-Path $dl 'nightgrid-ci.bin'
+[IO.File]::WriteAllBytes($junk, (New-Object byte[] 1048576))
+$r = @(Bridge @($hello,
+    '{"id":2,"method":"actions.run","params":{"action":"fix.package-cache"}}',
+    '{"id":3,"method":"actions.run","params":{"action":"fix.ssh-permissions","target":"o''brien"}}',
+    '{"id":4,"method":"actions.run","params":{"action":"fix.journal-vacuum"}}'))
+Write-Host ($r -join "`n")
+$a = ($r[1] | ConvertFrom-Json).result
+if ($a.outcome -ne 'ok' -or $a.detail -notmatch 'cleaned the Windows Update download cache') { Fail "fix.package-cache: $($r[1])" }
+if ($null -ne ($r[2] | ConvertFrom-Json).result -and ($r[2] | ConvertFrom-Json).result.outcome -eq 'ok') { Fail "a quoted account name ran: $($r[2])" }
+if ($null -ne ($r[3] | ConvertFrom-Json).result -and ($r[3] | ConvertFrom-Json).result.outcome -eq 'ok') { Fail "journal-vacuum ran on Windows: $($r[3])" }
+if ($a.detail -match '\(0 B freed\)' -or (Test-Path $junk)) { Fail "the cache file was not removed: $($a.detail)" }
+if ((Get-Service wuauserv).StartType -ne $wuStart) { Fail "the cache fix changed wuauserv's start type to $((Get-Service wuauserv).StartType)" }
+if (-not $hadKeys) { Remove-Item $keys -Force }
+if ($madeSshDir) { Remove-Item $sshDir -Recurse -Force }
+Remove-Item $fixes
+
 Step 'allow health: disks and Storage Spaces through the read-only health helper'
 $j = (& $bin allow health --json) -join ''
 Write-Host $j

@@ -98,7 +98,7 @@ pub fn facts() -> crate::host::HostFacts {
 /// What the Windows node doesn't do yet (docs/WINDOWS.md), one sentence each.
 pub fn limits() -> Vec<String> {
     [
-        "No fix menu or rollbacks yet; UPS readings only from a UPS on USB.",
+        "No rollbacks yet; UPS readings only from a UPS on USB.",
         "No containers, service checks, node-to-node link or status page yet.",
         "No rogue DHCP watch: Windows can't listen for DHCP without a packet capture driver.",
     ]

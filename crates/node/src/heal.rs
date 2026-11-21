@@ -214,7 +214,7 @@ pub fn refresh_fixes(shared: &Shared) {
 /// started") or is set to start with Windows. A crashed svchost leaves
 /// exit code 0, so an automatic service that isn't running counts too.
 #[cfg(windows)]
-fn failed_units(units: &[String]) -> Vec<String> {
+pub fn failed_units(units: &[String]) -> Vec<String> {
     use crate::win::scm;
     units
         .iter()
@@ -231,7 +231,7 @@ fn failed_units(units: &[String]) -> Vec<String> {
 /// Which of the units are in the failed state (`systemctl is-failed`
 /// prints one line per unit, in order, whatever its exit status).
 #[cfg(unix)]
-fn failed_units(units: &[String]) -> Vec<String> {
+pub fn failed_units(units: &[String]) -> Vec<String> {
     if units.is_empty() {
         return Vec::new();
     }

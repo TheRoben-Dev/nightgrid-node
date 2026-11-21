@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.37.0 · W2g: the fix menu on Windows (2026-11-21)
+
+Additive only: no frozen method, field, frame or link request changed, and no new cap. App spec [0032](docs/app-integration/0032-windows-node-fixes.md). Decision N-088.
+
+- **`nightgrid-node fix` on Windows**: the same menu, `fix list [--json]`, `fix NAME [TARGET] [-y]` and `fix auto`, run through `actions.run` and the admin helper, so `[actions] allow`, the rate limit and the action log apply. An elevated session can allow a fix or switch a preset on, saved in `fixes.toml`.
+- **Windows fixes under the Linux names**: `restart` (a listed service), `packages` (empties the Windows Update download cache with Windows Update and BITS stopped, skipping links), `ssh` (resets the ACLs of `administrators_authorized_keys` and the user's `.ssh\authorized_keys` to what OpenSSH accepts), `reboot` (`shutdown /r`, cancel with `shutdown /a`) and `run` (a runbook).
+- **Runbooks on Windows** name a `C:\...` program, run with no shell and their time limit.
+- **Detection on Windows**: failed listed services, volumes over 90 %, and a pending reboot.
+- **`fix auto` on Windows** offers the presets that apply: restart failed services, and clean the update cache when a disk fills.
+- The Windows CI end-to-end test lists the fixes, runs a runbook and the SSH fix from the CLI (checking the key file's ACL), and cleans the update cache through `actions.run`.
+
 ## 0.36.0 · W2f: self-healing on Windows (2026-11-21)
 
 Additive only: no frozen method, field, frame or link request changed. A Windows node now also advertises `heal`. App spec [0031](docs/app-integration/0031-windows-node-heal.md). Decision N-087.
