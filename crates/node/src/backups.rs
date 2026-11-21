@@ -472,7 +472,7 @@ mod tests {
         j.target = path.into();
         j.stale_hours = 0;
         assert!(normalize(&j).is_err());
-        let a = job(1, BackupSource::Path, "/a");
+        let a = job(1, BackupSource::Path, path);
         assert!(validate(&[a.clone(), a]).unwrap_err().contains("twice"));
     }
 
