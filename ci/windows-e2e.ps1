@@ -507,9 +507,11 @@ if ($null -eq $docker) {
     $after = (& docker inspect -f '{{.State.StartedAt}}' ngn-ci)
     if ($after -eq $before) { Fail "ngn-ci was not restarted ($before)" }
     & docker stop -t 2 ngn-ci | Out-Null
-    $deadline = (Get-Date).AddSeconds(60)
+    # Container events are held 120 s before they are written, so a die and
+    # a start close together become one "restarted" entry.
+    $deadline = (Get-Date).AddSeconds(240)
     do {
-        Start-Sleep -Seconds 5
+        Start-Sleep -Seconds 10
         $r = @(Bridge @($hello, '{"id":2,"method":"events.sync","params":{"after":0,"limit":500,"kinds":["container"]}}'))
         $seen = $r[1] -match 'ngn-ci'
     } while (-not $seen -and (Get-Date) -lt $deadline)
