@@ -299,7 +299,25 @@ pub struct RollbackConfig {
     pub paths: Vec<String>,
 }
 
+/// A path root may list in `[rollback] paths`: on Windows a folder or file
+/// on a drive (`D:\srv\app`, spaces allowed), not a drive root, not
+/// `C:\Windows` and not the node's own folders.
+#[cfg(windows)]
+pub fn rollback_path_ok(p: &str) -> bool {
+    let lower = p.to_ascii_lowercase();
+    crate::rollback::plain_path(p)
+        && p.len() > 3
+        && !p.ends_with('\\')
+        && p.chars().all(|c| (c.is_ascii_graphic() || c == ' ') && !matches!(c, '"' | '\'' | '/' | '%'))
+        && !Path::new(&lower).components().any(|c| {
+            let n = c.as_os_str().to_string_lossy();
+            n.starts_with("nightgrid-node") || n.starts_with("nightgrid node")
+        })
+        && !(lower.get(1..).is_some_and(|r| r == ":\\windows" || r.starts_with(":\\windows\\")))
+}
+
 /// A path root may list in `[rollback] paths`.
+#[cfg(unix)]
 pub fn rollback_path_ok(p: &str) -> bool {
     let path = Path::new(p);
     path.is_absolute()
@@ -682,10 +700,17 @@ impl Config {
             return Err("rollback.paths takes at most 32 paths".into());
         }
         if let Some(p) = self.rollback.paths.iter().find(|p| !rollback_path_ok(p)) {
-            return Err(format!(
-                "rollback.paths: {p:?} must be an absolute path without spaces or quotes, not / and not under \
-                 /proc, /sys, /dev, /run or /etc/nightgrid-node"
-            ));
+            return Err(if cfg!(windows) {
+                format!(
+                    "rollback.paths: {p:?} must be a path on a drive such as D:\\srv\\app, without quotes, not a \
+                     drive root and not under C:\\Windows or the node's own folders"
+                )
+            } else {
+                format!(
+                    "rollback.paths: {p:?} must be an absolute path without spaces or quotes, not / and not under \
+                     /proc, /sys, /dev, /run or /etc/nightgrid-node"
+                )
+            });
         }
         if self.actions.units.len() > 64 {
             return Err("actions.units takes at most 64 units".into());

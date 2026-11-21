@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.38.0 · W2h: rollbacks on Windows (2026-11-21)
+
+Additive only: no frozen method, field, frame or link request changed. A Windows node now also advertises `changes`. App spec [0033](docs/app-integration/0033-windows-node-rollback.md). Decision N-089.
+
+- **`changes.begin` / `confirm` / `revert` on Windows**, with the dead-man timer: the admin helper snapshots the files under root's `[rollback] paths` and puts them back unless the app confirms in time, as on Linux.
+- **What comes back on Windows**: the contents (the file is replaced in place, so it keeps its identity), its DACL and read-only bit, and the owner where the helper may set it. A file the change created is removed; one it deleted comes back.
+- Snapshots live in `%ProgramData%\Nightgrid Node Rollback`, readable only by SYSTEM and Administrators; the helper refuses a folder there that someone else created first. `uninstall --purge` removes it.
+- `[rollback] paths` on Windows take paths on a drive (`D:\srv\app`, spaces allowed), never a drive root, `C:\Windows` or the node's own folders. The Windows config template has a `[rollback]` section.
+- The Windows CI end-to-end test reverts a change (contents, ACL, a new file), confirms one, lets the timer revert one, and checks the snapshot folder's ACL and that the node's own config and paths outside the list are refused.
+
 ## 0.37.1 · Arrow keys in menus (2026-11-21)
 
 Fix only: no frozen method, field, frame or link request changed.

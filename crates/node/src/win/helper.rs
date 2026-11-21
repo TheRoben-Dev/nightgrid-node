@@ -389,13 +389,7 @@ fn admin_answer(config_path: &Path, line: Option<&str>) -> (Vec<u8>, String) {
                 crate::warn!("helper: {e}");
                 LocalFixes::default()
             });
-            crate::helper::handle(
-                &config,
-                &local,
-                &req,
-                Path::new(crate::helper::ROLLBACK_DIR),
-                &mut crate::helper::RealRunner,
-            )
+            crate::helper::handle(&config, &local, &req, &crate::helper::rollback_dir(), &mut crate::helper::RealRunner)
         }
         Err(e) => Reply::no(format!("config: {e}")),
     };

@@ -69,6 +69,14 @@ enabled = true
 # UPS to read: "battery" is a UPS on this host's USB port (Windows shows it
 # as a battery). [ups] shutdown can then power this host off on battery.
 ups = []
+
+[rollback]
+# Files, or folders of files, that a change from the app may snapshot and
+# that are put back (contents, ACL and read-only bit) unless the app
+# confirms the change in time. Needs files.rollback in [actions] allow and
+# the admin helper (nightgrid-node allow helper). Keep this narrow, e.g.
+#   paths = ['D:\srv\app', 'C:\ProgramData\ssh\sshd_config']
+paths = []
 "#;
 
 pub(crate) fn report(action: &'static str) -> Report {
@@ -98,7 +106,7 @@ pub fn facts() -> crate::host::HostFacts {
 /// What the Windows node doesn't do yet (docs/WINDOWS.md), one sentence each.
 pub fn limits() -> Vec<String> {
     [
-        "No rollbacks yet; UPS readings only from a UPS on USB.",
+        "UPS readings only from a UPS on USB.",
         "No containers, service checks, node-to-node link or status page yet.",
         "No rogue DHCP watch: Windows can't listen for DHCP without a packet capture driver.",
     ]
@@ -289,6 +297,11 @@ pub fn uninstall(purge: bool) -> Result<Report, String> {
         if etc.exists() {
             std::fs::remove_dir_all(&etc).map_err(|e| format!("{}: {e}", etc.display()))?;
             step(&mut rep, format!("removed {} (history and config)", etc.display()));
+        }
+        let snaps = crate::helper::rollback_dir();
+        if snaps.exists() {
+            std::fs::remove_dir_all(&snaps).map_err(|e| format!("{}: {e}", snaps.display()))?;
+            step(&mut rep, format!("removed {} (rollback snapshots)", snaps.display()));
         }
         let w = wide(GROUP);
         // SAFETY: valid string.

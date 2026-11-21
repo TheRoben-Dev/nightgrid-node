@@ -17,7 +17,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd};
 
 use crate::compat::LocalStream as UnixStream;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
@@ -36,6 +36,20 @@ pub const SOCKET: &str = crate::win::helper::PIPE;
 const MAX_REQUEST: u64 = 64 * 1024;
 /// Where file snapshots for rollbacks live (the helper unit's StateDirectory).
 pub const ROLLBACK_DIR: &str = "/var/lib/nightgrid-node-rollback";
+
+/// Where the helper keeps snapshots: [`ROLLBACK_DIR`], or on Windows
+/// `%ProgramData%\Nightgrid Node Rollback` (SYSTEM and Administrators only;
+/// outside the node's data folder, which its service may read).
+pub fn rollback_dir() -> PathBuf {
+    #[cfg(windows)]
+    {
+        crate::win::program_data().join("Nightgrid Node Rollback")
+    }
+    #[cfg(unix)]
+    {
+        PathBuf::from(ROLLBACK_DIR)
+    }
+}
 
 /// What the service asks the helper. Action requests fit as they are.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -179,7 +193,7 @@ pub fn handle(config: &Config, local: &LocalFixes, req: &HelperRequest, store: &
         }
         return crate::firewall::handle(&config.block, a, "", run);
     }
-    if !supported(a) || (cfg!(windows) && a.starts_with("files.")) {
+    if !supported(a) && !a.starts_with("files.") {
         return Reply::no(format!("{a} is not available on Windows yet"));
     }
     if let Some(op) = a.strip_prefix("files.").filter(|op| matches!(*op, "snapshot" | "restore" | "discard")) {

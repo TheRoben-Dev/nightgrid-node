@@ -8,7 +8,7 @@
 //! change made just before a crash or a reboot is still reverted when the
 //! node starts again.
 
-use crate::compat::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
+use crate::compat::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 
@@ -38,36 +38,66 @@ struct Entry {
     mode: u32,
     uid: u32,
     gid: u32,
+    /// Windows: the file's owner, group and DACL (SDDL), put back on revert.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sddl: Option<String>,
 }
 
 fn valid_id(id: &str) -> bool {
     id.len() == 16 && id.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
 }
 
+/// An absolute path with nothing to resolve: `/srv/x`, or `D:\srv\x` on
+/// Windows (a drive letter; no `\\?\`, UNC or device paths).
+pub fn plain_path(p: &str) -> bool {
+    let path = Path::new(p);
+    path.is_absolute()
+        && p.len() <= 1024
+        && path.components().all(|c| match c {
+            Component::RootDir | Component::Normal(_) => true,
+            Component::Prefix(x) => cfg!(windows) && matches!(x.kind(), std::path::Prefix::Disk(_)),
+            _ => false,
+        })
+}
+
+/// Whether a path is inside the node's own files (`nightgrid-node*` on
+/// Linux, `Nightgrid Node*` folders on Windows).
+fn own_path(path: &Path) -> bool {
+    path.components().any(|c| {
+        let n = c.as_os_str().to_string_lossy().to_ascii_lowercase();
+        n.starts_with("nightgrid-node") || n.starts_with("nightgrid node")
+    })
+}
+
+/// `\\?\C:\x` (what `canonicalize` gives on Windows) as `C:\x`.
+fn plain_display(p: PathBuf) -> PathBuf {
+    let s = p.to_string_lossy();
+    match s.strip_prefix(r"\\?\") {
+        Some(rest) if rest.as_bytes().get(1) == Some(&b':') => PathBuf::from(rest),
+        _ => p,
+    }
+}
+
 /// Whether root's config lets the helper touch `p`, after resolving the
 /// directories it is in (so a symlinked directory can't lead elsewhere).
 fn allowed(config: &Config, p: &str) -> Result<PathBuf, String> {
     let path = Path::new(p);
-    let plain = path.is_absolute()
-        && p.len() <= 1024
-        && path.components().all(|c| matches!(c, Component::RootDir | Component::Normal(_)));
-    let own = path.components().any(|c| c.as_os_str().to_string_lossy().starts_with("nightgrid-node"));
-    if !plain || own || path.starts_with("/etc/nightgrid-node") {
+    if !plain_path(p) || own_path(path) || path.starts_with("/etc/nightgrid-node") {
         return Err(format!("{p}: not a path a rollback may touch"));
     }
     let (Some(dir), Some(name)) = (path.parent(), path.file_name()) else {
         return Err(format!("{p}: not a file path"));
     };
-    let real = dir.canonicalize().map_err(|e| format!("{}: {e}", dir.display()))?.join(name);
+    let real = plain_display(dir.canonicalize().map_err(|e| format!("{}: {e}", dir.display()))?).join(name);
     let under = config.rollback.paths.iter().any(|r| {
         let r = Path::new(r);
-        let r = r.canonicalize().unwrap_or_else(|_| r.to_path_buf());
+        let r = plain_display(r.canonicalize().unwrap_or_else(|_| r.to_path_buf()));
         real.starts_with(&r)
     });
     if !under {
         return Err(format!("{p}: not under [rollback] paths"));
     }
-    if real.starts_with("/etc/nightgrid-node") {
+    if real.starts_with("/etc/nightgrid-node") || own_path(&real) {
         return Err(format!("{p}: not a path a rollback may touch"));
     }
     Ok(real)
@@ -95,12 +125,17 @@ pub fn snapshot(config: &Config, store: &Path, id: &str, paths: &[String]) -> Re
                     return Err(format!("{p}: larger than {} KiB", MAX_CHANGE_FILE_BYTES / 1024));
                 }
                 let data = std::fs::read(&real).map_err(|e| format!("{p}: {e}"))?;
+                #[cfg(windows)]
+                let sddl = Some(crate::win::files::sddl_of(&real).map_err(|e| format!("{p}: its ACL: {e}"))?);
+                #[cfg(unix)]
+                let sddl = None;
                 entries.push(Entry {
                     path: real.to_string_lossy().into_owned(),
                     existed: true,
                     mode: md.mode() & 0o7777,
                     uid: md.uid(),
                     gid: md.gid(),
+                    sddl,
                 });
                 blobs.push(Some(data));
             }
@@ -112,12 +147,15 @@ pub fn snapshot(config: &Config, store: &Path, id: &str, paths: &[String]) -> Re
                     mode: 0,
                     uid: 0,
                     gid: 0,
+                    sddl: None,
                 });
                 blobs.push(None);
             }
             Err(e) => return Err(format!("{p}: {e}")),
         }
     }
+    #[cfg(windows)]
+    crate::win::files::private_dir(store)?;
     std::fs::create_dir_all(store).map_err(|e| format!("{}: {e}", store.display()))?;
     std::fs::DirBuilder::new().mode(0o700).create(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let write = |name: &str, data: &[u8]| -> Result<(), String> {
@@ -151,7 +189,9 @@ pub fn snapshot(config: &Config, store: &Path, id: &str, paths: &[String]) -> Re
     ))
 }
 
+#[cfg(unix)]
 fn put_back(e: &Entry, data: &[u8]) -> std::io::Result<()> {
+    use crate::compat::fs::PermissionsExt;
     let path = Path::new(&e.path);
     let dir = path.parent().unwrap_or(Path::new("/"));
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
@@ -164,6 +204,47 @@ fn put_back(e: &Entry, data: &[u8]) -> std::io::Result<()> {
         crate::compat::fs::fchown(&f, Some(e.uid), Some(e.gid))?;
         std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(e.mode))?;
         std::fs::rename(&tmp, path)
+    })();
+    if r.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    r
+}
+
+/// Windows: the saved bytes replace the file in place (it keeps its
+/// identity), or a deleted file comes back; then the saved DACL (and the
+/// owner, where the helper may set it) and the read-only bit.
+#[cfg(windows)]
+fn put_back(e: &Entry, data: &[u8]) -> std::io::Result<()> {
+    let path = Path::new(&e.path);
+    let dir = path.parent().unwrap_or(Path::new(r"C:\"));
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let tmp = dir.join(format!(".{name}.ngn-rollback"));
+    let _ = std::fs::remove_file(&tmp);
+    let mut f = std::fs::OpenOptions::new().write(true).create_new(true).open(&tmp)?;
+    let r = (|| {
+        f.write_all(data)?;
+        f.sync_all()?;
+        drop(f);
+        match std::fs::symlink_metadata(path) {
+            Ok(md) if md.is_file() => {
+                if md.permissions().readonly() {
+                    let mut p = md.permissions();
+                    #[allow(clippy::permissions_set_readonly_false)]
+                    p.set_readonly(false);
+                    std::fs::set_permissions(path, p)?;
+                }
+                crate::win::files::replace(path, &tmp)?;
+            }
+            Ok(_) => return Err(std::io::Error::other("no longer a regular file; left alone")),
+            Err(_) => std::fs::rename(&tmp, path)?,
+        }
+        if let Some(sddl) = &e.sddl {
+            crate::win::files::apply(path, sddl)?;
+        }
+        let mut p = std::fs::metadata(path)?.permissions();
+        p.set_readonly(e.mode & 0o222 == 0);
+        std::fs::set_permissions(path, p)
     })();
     if r.is_err() {
         let _ = std::fs::remove_file(&tmp);
@@ -228,7 +309,11 @@ pub fn discard(store: &Path, id: &str) -> Result<String, String> {
 fn new_id() -> String {
     let mut b = [0u8; 8];
     if std::fs::File::open("/dev/urandom").and_then(|mut f| std::io::Read::read_exact(&mut f, &mut b)).is_err() {
-        b = (crate::daemon::now_millis() as u64).to_le_bytes();
+        // Windows: std's per-process random hash keys, mixed with the time.
+        use std::hash::{BuildHasher, Hasher};
+        let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+        h.write_u64(crate::daemon::now_millis() as u64);
+        b = h.finish().to_le_bytes();
     }
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
@@ -322,8 +407,13 @@ pub fn begin(shared: &Shared, req: &ChangeBegin, source: &str) -> Result<Change,
     };
     if !shared.config.actions.allow.iter().any(|a| a == action::FILES_ROLLBACK) {
         return refuse(format!(
-            "{} is not allowed on this host (root can add it to [actions] allow in /etc/nightgrid-node/config.toml)",
-            action::FILES_ROLLBACK
+            "{} is not allowed on this host (root can add it to [actions] allow in {})",
+            action::FILES_ROLLBACK,
+            if cfg!(windows) {
+                r"C:\ProgramData\Nightgrid Node\config.toml"
+            } else {
+                "/etc/nightgrid-node/config.toml"
+            }
         ));
     }
     if !(30..=3600).contains(&req.confirm_within_secs) {
@@ -492,6 +582,8 @@ pub fn tick(shared: &Shared) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use crate::compat::fs::PermissionsExt;
 
     fn setup() -> (tempfile::TempDir, Config, PathBuf) {
         let d = tempfile::tempdir().unwrap();
@@ -504,7 +596,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(windows, ignore = "Linux paths")]
+    #[cfg(unix)]
     fn snapshot_restore_and_new_files() {
         let (d, c, store) = setup();
         let f = d.path().join("srv/compose.yml");
@@ -528,7 +620,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(windows, ignore = "Linux paths")]
     fn refuses_paths_root_did_not_list() {
         let (d, c, store) = setup();
         let id = "00000000000000aa";
@@ -559,7 +650,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(windows, ignore = "Linux paths")]
     fn discard_is_idempotent() {
         let (d, c, store) = setup();
         let f = d.path().join("srv/a");
@@ -568,6 +658,76 @@ mod tests {
         snapshot(&c, &store, id, &[f.to_string_lossy().into_owned()]).unwrap();
         assert_eq!(discard(&store, id).unwrap(), "snapshot removed");
         assert_eq!(discard(&store, id).unwrap(), "no snapshot left");
+    }
+
+    /// Windows: contents, the DACL and the read-only bit come back; a
+    /// deleted file comes back with its ACL; a new file goes.
+    #[cfg(windows)]
+    #[test]
+    fn snapshot_restore_keeps_the_acl_on_windows() {
+        use crate::win::files::{apply, sddl_of};
+        let (d, c, store) = setup();
+        let f = d.path().join("srv").join("app.conf");
+        let gone = d.path().join("srv").join("gone.conf");
+        let new = d.path().join("srv").join("new.conf");
+        std::fs::write(&f, "v1").unwrap();
+        std::fs::write(&gone, "keep me").unwrap();
+        let tight = "D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FR;;;WD)";
+        apply(&f, tight).unwrap();
+        apply(&gone, tight).unwrap();
+        let mut p = std::fs::metadata(&f).unwrap().permissions();
+        p.set_readonly(true);
+        std::fs::set_permissions(&f, p).unwrap();
+        // (protected, the ACEs): the flags after `D:` may gain AI/AR.
+        let dacl = |x: &PathBuf| {
+            let s = sddl_of(x).unwrap();
+            let d = &s[s.find("D:").unwrap() + 2..];
+            let (flags, aces) = d.split_at(d.find('(').unwrap_or(d.len()));
+            (flags.contains('P'), aces.to_owned())
+        };
+        let before = dacl(&f);
+        assert!(before.0 && before.1.contains("WD"), "{before:?}");
+        let s = |x: &PathBuf| x.to_string_lossy().into_owned();
+        let id = "0123456789abcdef";
+        assert_eq!(
+            snapshot(&c, &store, id, &[s(&f), s(&gone), s(&new)]).unwrap(),
+            "saved 3 files (1 new, removed on revert)"
+        );
+        let mut p = std::fs::metadata(&f).unwrap().permissions();
+        #[allow(clippy::permissions_set_readonly_false)]
+        p.set_readonly(false);
+        std::fs::set_permissions(&f, p).unwrap();
+        std::fs::write(&f, "v2 broken").unwrap();
+        apply(&f, "D:(A;;FA;;;WD)").unwrap();
+        std::fs::remove_file(&gone).unwrap();
+        std::fs::write(&new, "x").unwrap();
+        assert_eq!(restore(&store, id).unwrap(), "put back 2 files, removed 1 new");
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "v1");
+        assert_eq!(dacl(&f), before);
+        assert!(std::fs::metadata(&f).unwrap().permissions().readonly());
+        assert_eq!(std::fs::read_to_string(&gone).unwrap(), "keep me");
+        assert_eq!(dacl(&gone), before);
+        assert!(!new.exists() && !store.join(id).exists());
+        assert!(!d.path().join("srv").join(".app.conf.ngn-rollback").exists());
+        let mut p = std::fs::metadata(&f).unwrap().permissions();
+        #[allow(clippy::permissions_set_readonly_false)]
+        p.set_readonly(false);
+        std::fs::set_permissions(&f, p).unwrap();
+    }
+
+    #[test]
+    fn plain_paths_are_absolute_and_resolved() {
+        assert_eq!(plain_path("/srv/x"), cfg!(unix));
+        assert_eq!(plain_path(r"D:\srv\x"), cfg!(windows));
+        for bad in ["srv/x", "/srv/../etc", r"\\?\C:\x", r"\\server\share\x", r"C:x"] {
+            assert!(!plain_path(bad), "{bad}");
+        }
+        assert!(own_path(Path::new("/etc/nightgrid-node/x")));
+        assert!(cfg!(unix) || own_path(Path::new(r"C:\ProgramData\Nightgrid Node\config.toml")));
+        assert!(cfg!(unix) || own_path(Path::new(r"C:\ProgramData\Nightgrid Node Rollback\x")));
+        assert!(!own_path(Path::new("/srv/nightgrid")));
+        assert_eq!(plain_display(PathBuf::from(r"\\?\C:\srv")), PathBuf::from(r"C:\srv"));
+        assert_eq!(plain_display(PathBuf::from("/srv")), PathBuf::from("/srv"));
     }
 
     #[cfg(unix)]

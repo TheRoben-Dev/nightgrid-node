@@ -36,6 +36,7 @@ The Nightgrid app repository is developed elsewhere and is read-only from here. 
 | [0030 · Windows node W2e: blocking addresses](0030-windows-node-blocks.md) | 0.35.0 (W2e) | proposed |
 | [0031 · Windows node W2f: self-healing](0031-windows-node-heal.md) | 0.36.0 (W2f) | proposed |
 | [0032 · Windows node W2g: the fix menu](0032-windows-node-fixes.md) | 0.37.0 (W2g) | proposed |
+| [0033 · Windows node W2h: rollbacks](0033-windows-node-rollback.md) | 0.38.0 (W2h) | proposed |
 
 Rules every spec follows:
 
