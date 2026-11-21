@@ -840,8 +840,9 @@ pub fn ps_error(err: &str) -> String {
     let Some(l) = err.lines().map(str::trim).find(|l| !l.is_empty() && !l.starts_with("#< CLIXML")) else {
         return "failed".into();
     };
-    let Some(i) = l.find("<S S=\"Error\">") else { return l.to_owned() };
-    let text = l[i + 14..].split("</S>").next().unwrap_or("");
+    const TAG: &str = "<S S=\"Error\">";
+    let Some(i) = l.find(TAG) else { return l.to_owned() };
+    let text = l[i + TAG.len()..].split("</S>").next().unwrap_or("");
     let text = text.replace("_x000D_", "").replace("_x000A_", " ");
     let text = text.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&amp;", "&");
     let text = text.trim();

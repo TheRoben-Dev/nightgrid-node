@@ -376,7 +376,7 @@ mod tests {
             ["10.0.0.0/8", "fe80::/10", "1.2.3.4/32"]
         );
         let s = firewall_script(true, r"C:\Program Files\it's\n.exe", &["192.168.0.0/16".into()]);
-        assert!(s.contains("$nets = '192.168.0.0/16'"), "{s}");
+        assert!(s.contains("foreach ($n in ('192.168.0.0/16' -split ','))"), "{s}");
         assert!(s.contains(r"'C:\Program Files\it''s\n.exe'"), "{s}");
         assert!(s.contains("$r.Direction = 2") && s.contains("$r.Action = 1"));
         assert!(!firewall_script(false, "x", &[]).contains("Rules.Add"));
