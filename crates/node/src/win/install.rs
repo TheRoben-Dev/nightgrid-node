@@ -67,7 +67,10 @@ max_connections = 8
 #   nightgrid-node allow health
 enabled = true
 # UPS to read: "battery" is a UPS on this host's USB port (Windows shows it
-# as a battery). [ups] shutdown can then power this host off on battery.
+# as a battery); "ups@nas" or "ups@192.168.1.5:3493" is a NUT server on the
+# LAN, which the check runner reads (nightgrid-node allow checks; the server
+# must be inside [checks] networks). [ups] shutdown can then power this host
+# off on battery.
 ups = []
 
 [rollback]
@@ -127,7 +130,6 @@ pub fn facts() -> crate::host::HostFacts {
 /// What the Windows node doesn't do yet (docs/WINDOWS.md), one sentence each.
 pub fn limits() -> Vec<String> {
     [
-        "UPS readings only from a UPS on USB.",
         "No node-to-node link or status page yet.",
         "No rogue DHCP watch: Windows can't listen for DHCP without a packet capture driver.",
     ]

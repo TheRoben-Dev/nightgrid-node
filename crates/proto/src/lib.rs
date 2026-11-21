@@ -98,6 +98,9 @@ pub mod method {
     pub const CHECKS_LATEST: &str = "checks.latest";
     /// Internal: the check runner hands over results (service account only).
     pub const CHECKS_REPORT: &str = "checks.report";
+    /// Internal (Windows): the check runner hands over what NUT servers on
+    /// the LAN answered for `[health] ups` targets (runner's account only).
+    pub const UPS_REPORT: &str = "ups.report";
     /// The app's backup jobs for the node to watch (replaces the list).
     pub const JOBS_SET: &str = "jobs.set";
     pub const JOBS_GET: &str = "jobs.get";
@@ -1216,6 +1219,22 @@ pub struct CheckReading {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChecksReport {
     pub readings: Vec<CheckReading>,
+}
+
+/// One NUT server's answer for a `[health] ups` target, as `upsc` would
+/// print it (`key: value` lines, or `Error: …`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NutAnswer {
+    pub target: String,
+    /// When it was read (unix seconds).
+    pub at: i64,
+    pub text: String,
+}
+
+/// `ups.report` params (internal, Windows).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UpsReport {
+    pub answers: Vec<NutAnswer>,
 }
 
 /// `checks.latest`.

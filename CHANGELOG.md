@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.41.0 · W3c: NUT servers on Windows (2026-11-21)
+
+Additive only: no frozen method, field, frame or link request changed. One new internal method, `ups.report`, which only the Windows check runner calls. App spec [0036](docs/app-integration/0036-windows-node-nut.md). Decision N-092.
+
+- **UPS readings from a NUT server on Windows**: `[health] ups = ["ups@nas"]` works on a Windows node as on Linux. Windows has no `upsc`, so the check runner asks the server itself (`LIST VAR`, read only, TCP 3493) every 10 s and hands the node `upsc`-style text. Readings, UPS alerts and the `[ups]` shutdown guard behave as on Linux. Needs `allow health` and `allow checks`, and the server inside `[checks] networks`.
+- The Windows config template explains NUT targets; `doctor`'s limits no longer say "UPS only on USB".
+- `[checks] networks` on Windows: Windows Firewall won't take `::1/128` in a rule; `allow checks` says so (use `127.0.0.1` for local checks).
+- **Fix on Windows**: the Windows Update cache fix retries a file that a scanner still has open, instead of skipping it, and says how many it had to leave.
+- The Windows CI end-to-end test runs a fake NUT server, sees its on-battery, low-battery reading and an unknown UPS through the runner, sees the shutdown guard follow it (dry run), and checks that only the runner may report.
+
 ## 0.40.0 · W3b: service checks on Windows (2026-11-21)
 
 Additive only: no frozen method, field, frame or link request changed. A Windows node now also advertises `checks`. App spec [0035](docs/app-integration/0035-windows-node-checks.md). Decision N-091.

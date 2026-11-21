@@ -721,6 +721,20 @@ fn dispatch(shared: &Shared, session: &mut Session, req: &Request) -> Result<Res
             shared.checks.lock().unwrap_or_else(|e| e.into_inner()).report(r, crate::daemon::now_secs());
             Ok(Response::ok(0, Value::Null))
         }
+        method::UPS_REPORT => {
+            // Only the check runner (Windows reads NUT servers through it).
+            if !crate::compat::is_unit(&session.uid, "checker") {
+                return Err(Response::err(0, ErrorCode::Forbidden, "only the check runner may report"));
+            }
+            let r: nightgrid_node_proto::UpsReport = params(&req.params)?;
+            let wanted = &shared.config.health.ups;
+            let mut m = shared.nut.lock().unwrap_or_else(|e| e.into_inner());
+            for a in r.answers.into_iter().filter(|a| wanted.contains(&a.target)) {
+                let text: String = a.text.chars().take(16 * 1024).collect();
+                m.insert(a.target.clone(), nightgrid_node_proto::NutAnswer { text, ..a });
+            }
+            Ok(Response::ok(0, Value::Null))
+        }
         method::JOBS_SET => {
             let p: nightgrid_node_proto::JobsList = params(&req.params)?;
             let list = crate::backups::validate(&p.backups).map_err(|e| Response::err(0, ErrorCode::BadRequest, e))?;

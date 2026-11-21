@@ -53,6 +53,7 @@ unsubscribe !bad_request
 upgrade.note !forbidden 
 ups.cancel -> belowPercent countdownSecs deadline dryRun enabled ledBy lowBattery onBatteryMinutes phase problem reason since target
 ups.guard -> belowPercent countdownSecs deadline dryRun enabled ledBy lowBattery onBatteryMinutes phase problem reason since target
+ups.report !forbidden 
 uptime.sync -> hours more next
 usage.history !bad_request 
 usage.latest -> 
