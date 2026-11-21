@@ -77,6 +77,12 @@ pub(crate) fn run_capped(prog: &str, args: &[&str], limit: Duration) -> Result<S
                 let _ = child.wait();
                 return Err(format!("{prog} took longer than {} s", limit.as_secs()));
             }
+            #[cfg(windows)]
+            Ok(None) if crate::win::helper::stopping() => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("the health helper is stopping".into());
+            }
             Ok(None) => std::thread::sleep(Duration::from_millis(50)),
             Err(e) => return Err(e.to_string()),
         }
