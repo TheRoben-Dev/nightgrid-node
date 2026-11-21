@@ -450,16 +450,26 @@ mod tests {
 
     #[test]
     fn validates_like_the_app() {
-        let mut j = job(1, BackupSource::Unit, " restic-backup.timer ");
+        // On Windows a unit is a scheduled task and a path a Windows one.
+        let (unit, path, other) = if cfg!(windows) {
+            (r"\Backups\Nightly", r"D:\Backups", "/srv/restic")
+        } else {
+            ("restic-backup.timer", "/srv/restic", r"D:\Backups")
+        };
+        let mut j = job(1, BackupSource::Unit, &format!(" {unit} "));
         j.name = " nightly ".into();
         let n = normalize(&j).unwrap();
-        assert_eq!((n.name.as_str(), n.target.as_str()), ("nightly", "restic-backup.timer"));
+        assert_eq!((n.name.as_str(), n.target.as_str()), ("nightly", unit));
         j.target = "x; rm -rf /".into();
         assert!(normalize(&j).is_err());
         j.source = BackupSource::Path;
         j.target = "relative".into();
         assert!(normalize(&j).is_err());
-        j.target = "/srv/restic".into();
+        j.target = other.into();
+        assert!(normalize(&j).is_err());
+        j.target = path.into();
+        assert!(normalize(&j).is_ok());
+        j.target = path.into();
         j.stale_hours = 0;
         assert!(normalize(&j).is_err());
         let a = job(1, BackupSource::Path, "/a");
