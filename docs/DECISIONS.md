@@ -214,7 +214,7 @@ Windows Firewall has no expiring entries like an nftables set with timeouts. So 
 ## Windows Server · W2f (2026-11-21)
 
 ### N-087 · On Windows a "failed unit" is a listed service that stopped with an error
-systemd keeps a failed state, and the SCM doesn't. What the SCM does keep is the exit code of the last stop. A service that crashed, or exited with an error, is stopped with a code other than 0, and 1077 means it never started. So `unit-failed` rules on Windows match a service root listed that is stopped with any other code. They name it as `[actions] units` does (`W32Time`), and disk rules name volume roots the way the disk-full alert does (`D:\`). The rest of self-healing is the same code as on Linux: waits, caps, giving up, dry run, `[actions] allow` and the action log.
+systemd keeps a failed state, and the SCM doesn't. What the SCM does keep is the exit code of the last stop. A service that crashed, or exited with an error, is stopped with a code other than 0, and 1077 means it never started. So `unit-failed` rules on Windows match a service root listed that is stopped with any other code. A crashed svchost leaves exit code 0, so a listed service set to start with Windows (automatic or delayed) that is stopped counts as failed too, which is the usual Windows check for services that should be running. They name it as `[actions] units` does (`W32Time`), and disk rules name volume roots the way the disk-full alert does (`D:\`). The rest of self-healing is the same code as on Linux: waits, caps, giving up, dry run, `[actions] allow` and the action log.
 
 ## N11 · Fix menu (2026-11-18)
 

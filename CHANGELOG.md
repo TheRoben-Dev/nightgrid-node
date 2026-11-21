@@ -5,7 +5,7 @@
 Additive only: no frozen method, field, frame or link request changed. A Windows node now also advertises `heal`. App spec [0031](docs/app-integration/0031-windows-node-heal.md). Decision N-087.
 
 - **Self-healing on Windows**: the app's rules (`heal.rules.set`) and `fixes.toml` autofix rules run as on Linux, through `[actions] allow` and the action log.
-- **`unit-failed` on Windows** matches a listed service that stopped with an error (a crash, or a non-zero exit), and restarts it with `unit.restart`.
+- **`unit-failed` on Windows** matches a listed service that stopped with an error (a non-zero exit), or one set to start automatically that isn't running (a crash), and restarts it with `unit.restart`.
 - `fixes.toml` rules name Windows services (`W32Time`) and volume roots (`D:\`) on Windows.
 - The Windows CI end-to-end test kills a listed service (where it has its own process) and checks that an autofix rule brings it back.
 

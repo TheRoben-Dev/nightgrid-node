@@ -264,6 +264,25 @@ pub fn command(name: &str) -> Result<Option<String>, String> {
     Ok(Some(unsafe { super::from_pwstr(c.lpBinaryPathName) }))
 }
 
+/// Whether the service starts with Windows (automatic or delayed
+/// automatic), `None` when it isn't installed.
+pub fn auto_start(name: &str) -> Result<Option<bool>, String> {
+    let m = manager(false)?;
+    let Some(s) = open(&m, name, SERVICE_QUERY_CONFIG)? else { return Ok(None) };
+    let mut buf = vec![0u64; 1024];
+    let mut need = 0u32;
+    // SAFETY: an 8 KiB buffer, aligned for the struct.
+    let ok = unsafe {
+        QueryServiceConfigW(s.0, buf.as_mut_ptr() as *mut QUERY_SERVICE_CONFIGW, (buf.len() * 8) as u32, &mut need)
+    };
+    if ok == 0 {
+        return Err(err("query service config"));
+    }
+    // SAFETY: Windows filled the struct.
+    let c = unsafe { &*(buf.as_ptr() as *const QUERY_SERVICE_CONFIGW) };
+    Ok(Some(c.dwStartType == 2)) // SERVICE_AUTO_START
+}
+
 /// Starts the service and waits until it runs (or stops again).
 pub fn start(name: &str, timeout: Duration) -> Result<(), String> {
     let m = manager(false)?;

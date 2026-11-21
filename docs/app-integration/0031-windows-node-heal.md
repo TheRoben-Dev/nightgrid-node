@@ -12,7 +12,7 @@ Self-healing rules work on a Windows host as on Linux. A full disk can run an al
 - Rules the app pushes keep the same conditions. Container conditions never hold on Windows until containers arrive (W3).
 - `disk-full` targets on Windows are volume roots as the disk-full alert names them (`C:\`, `D:\`), or `*`.
 - Actions still need root's `[actions] allow`. On Windows that means `unit.*`, `power.*` and `firewall.*` for now. The local fixes (`fix.*`) come with the fix menu.
-- Host autofix rules in `C:\ProgramData\Nightgrid Node\fixes.toml` can use `when = "unit-failed"` with a Windows service name, which matches a listed service that stopped with an error. Their runs show in `heal.status` and in the action log as `autofix <id>`.
+- Host autofix rules in `C:\ProgramData\Nightgrid Node\fixes.toml` can use `when = "unit-failed"` with a Windows service name, which matches a listed service that stopped with an error, or that is set to start automatically and isn't running. Their runs show in `heal.status` and in the action log as `autofix <id>`.
 
 ## What to change in the app
 

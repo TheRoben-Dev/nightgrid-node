@@ -295,7 +295,9 @@ Write-Host $r[1]
 if ($w32shared) {
     Write-Host "W32Time shares its svchost here; killing it would take other services down, so only the rule is checked"
 } else {
-    # No SCM recovery, so only the node can bring it back.
+    # Automatic start, so a stop that isn't an administrator's counts as
+    # failed; no SCM recovery, so only the node can bring it back.
+    Set-Service W32Time -StartupType Automatic
     & sc.exe failure W32Time reset= 0 actions= '""' | Out-Null
     Stop-Process -Id $w32pid -Force
     Start-Sleep -Seconds 2
@@ -306,10 +308,11 @@ if ($w32shared) {
         Start-Sleep -Seconds 5
         $svc = Get-CimInstance Win32_Service -Filter "Name='W32Time'"
     } while (($svc.State -ne 'Running' -or $svc.ProcessId -eq $w32pid) -and (Get-Date) -lt $deadline)
-    $r = @(Bridge @($hello, '{"id":2,"method":"actions.log"}'))
+    $r = @(Bridge @($hello, '{"id":2,"method":"actions.log","params":{"after":0}}'))
     Write-Host $r[1]
     if ($svc.State -ne 'Running') { Fail "the autofix did not restart W32Time: $($r[1])" }
     if ($r[1] -notmatch 'autofix w32time') { Fail "no autofix entry in the action log: $($r[1])" }
+    Set-Service W32Time -StartupType Manual
 }
 Remove-Item $fixes
 

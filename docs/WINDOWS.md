@@ -75,7 +75,7 @@ Supported: Windows Server 2016, 2019, 2022 and 2025 (and Windows 10/11, which us
 | `net` (LAN devices, IP conflicts) | Direct | `GetIpNetTable2` (the neighbour table; no raw sockets needed), gateway from `GetIpForwardTable2`, interfaces by alias | W1 (0.30.0) |
 | `net.dhcp` (rogue DHCP) | None | Needs packet capture (Npcap); no built-in way to listen on UDP 67/68 next to the DHCP client | — |
 | `actions` | Direct | Windows services instead of units: `restart`, `start`, `stop` of services listed in `[actions] units` (`W32Time`, not `w32time.service`); `reboot`, `poweroff` with `shutdown.exe` a minute ahead | **W2a (0.31.0)**, after `allow helper` |
-| `heal` (the app's rules and `fixes.toml` autofix) | Direct | A failed unit is a listed service that stopped with an error (its SCM exit code); disk rules name volume roots such as `D:\` | **W2f (0.36.0)** |
+| `heal` (the app's rules and `fixes.toml` autofix) | Direct | A failed unit is a listed service that stopped with an error (its SCM exit code) or an automatic one that isn't running; disk rules name volume roots such as `D:\` | **W2f (0.36.0)** |
 | Fix menu (`fix`, `fix auto`) | Direct | As on Linux, with the substitutes below | W2g |
 | `fix journal` / `fix logs` / `fix packages` / `fix ssh` | Substitute | Event logs over their size, large log files, the Windows Update download cache, and the OpenSSH `authorized_keys` and `administrators_authorized_keys` ACLs (the usual Windows key-login failure) | W2g |
 | `changes` (snapshot and rollback with dead-man timer) | Direct | Same paths model; the helper copies files and restores ACLs | W2g |
