@@ -347,7 +347,7 @@ pub fn allowed(networks: &[String], ip: IpAddr) -> bool {
 }
 
 /// Addresses of `host` inside root's networks, in resolver order.
-async fn resolve(host: &str, port: u16, networks: &[String]) -> Result<Vec<SocketAddr>, String> {
+pub(crate) async fn resolve(host: &str, port: u16, networks: &[String]) -> Result<Vec<SocketAddr>, String> {
     let addrs: Vec<SocketAddr> = match host.parse::<IpAddr>() {
         Ok(ip) => vec![SocketAddr::new(ip, port)],
         Err(_) => {
@@ -366,7 +366,7 @@ async fn resolve(host: &str, port: u16, networks: &[String]) -> Result<Vec<Socke
 
 /// Connects to the first address that answers (`localhost` may be ::1 first
 /// while the service listens on 127.0.0.1 only).
-async fn connect(addrs: &[SocketAddr]) -> std::io::Result<tokio::net::TcpStream> {
+pub(crate) async fn connect(addrs: &[SocketAddr]) -> std::io::Result<tokio::net::TcpStream> {
     let mut last = std::io::Error::new(std::io::ErrorKind::NotFound, "no address");
     for a in addrs {
         match tokio::net::TcpStream::connect(a).await {
@@ -552,13 +552,29 @@ pub fn checker_until(config_path: &Path, stop: &dyn Fn() -> bool) -> Result<(), 
     }
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| e.to_string())?;
     let interval = Duration::from_secs(config.checks.interval_secs.into());
+    // Windows has no upsc: the runner reads NUT servers for [health] ups.
+    let nut: Vec<String> = if cfg!(windows) {
+        config.health.ups.iter().filter(|t| crate::health::nut::is_server(t)).cloned().collect()
+    } else {
+        Vec::new()
+    };
+    let mut next_checks = Instant::now();
     loop {
         let started = Instant::now();
-        match round(&config, &rt) {
-            Ok(n) => crate::debug!("checked {n} services"),
-            Err(e) => crate::warn!("check round: {e}"),
+        if started >= next_checks {
+            match round(&config, &rt) {
+                Ok(n) => crate::debug!("checked {n} services"),
+                Err(e) => crate::warn!("check round: {e}"),
+            }
+            next_checks = (started + interval).max(Instant::now() + Duration::from_secs(5));
         }
-        let until = (started + interval).max(Instant::now() + Duration::from_secs(5));
+        if !nut.is_empty() {
+            if let Err(e) = nut_round(&config, &nut, &rt) {
+                crate::warn!("UPS read: {e}");
+            }
+        }
+        let until = if nut.is_empty() { next_checks } else { next_checks.min(started + NUT_EVERY) };
+        let until = until.max(Instant::now() + Duration::from_secs(1));
         while Instant::now() < until {
             if stop() {
                 return Ok(());
@@ -569,6 +585,26 @@ pub fn checker_until(config_path: &Path, stop: &dyn Fn() -> bool) -> Result<(), 
             return Ok(());
         }
     }
+}
+
+/// How often the runner asks NUT servers (the node's UPS guard reads every 10 s on battery).
+const NUT_EVERY: Duration = Duration::from_secs(10);
+
+fn nut_round(config: &crate::config::Config, targets: &[String], rt: &tokio::runtime::Runtime) -> Result<(), String> {
+    let nets = &config.checks.networks;
+    let answers = rt.block_on(async {
+        let mut out = Vec::new();
+        for t in targets {
+            let text = crate::health::nut::read(t, nets, Duration::from_secs(5)).await;
+            out.push(nightgrid_node_proto::NutAnswer { target: t.clone(), at: crate::daemon::now_secs(), text });
+        }
+        out
+    });
+    let mut client =
+        crate::client::Client::connect(&config.server.socket, "nightgrid-node checker").map_err(|e| e.to_string())?;
+    let report = serde_json::to_value(nightgrid_node_proto::UpsReport { answers }).map_err(|e| e.to_string())?;
+    client.call(method::UPS_REPORT, report).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 fn round(config: &crate::config::Config, rt: &tokio::runtime::Runtime) -> Result<usize, String> {

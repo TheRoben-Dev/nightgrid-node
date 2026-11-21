@@ -10,6 +10,7 @@
 //! on a schedule: pools every 5 minutes, SMART hourly, updates every 6 hours,
 //! UPS every 30 seconds.
 
+pub mod nut;
 pub mod packages;
 pub mod pools;
 pub mod smart;

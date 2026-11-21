@@ -70,6 +70,9 @@ pub struct Shared {
     pub autoblock: Mutex<Option<std::sync::mpsc::Sender<String>>>,
     /// The app's service checks and the runner's latest results.
     pub checks: Mutex<crate::checks::ChecksState>,
+    /// What NUT servers last answered for `[health] ups` targets, from the
+    /// check runner (Windows, which has no `upsc`).
+    pub nut: Mutex<std::collections::HashMap<String, nightgrid_node_proto::NutAnswer>>,
     /// The app's backup jobs and the latest read of them and its scheduled jobs.
     pub jobs: Mutex<crate::jobs::JobsState>,
     /// The UPS shutdown guard (`[ups] shutdown`).
@@ -120,6 +123,7 @@ impl Shared {
             blocks: Mutex::new(crate::firewall::Blocks::default()),
             autoblock: Mutex::new(None),
             checks: Mutex::new(crate::checks::ChecksState::default()),
+            nut: Mutex::new(std::collections::HashMap::new()),
             jobs: Mutex::new(crate::jobs::JobsState::default()),
             ups_guard: Mutex::new(crate::upsguard::Guard::default()),
             peers: Mutex::new(crate::peers::PeersState::default()),

@@ -678,6 +678,60 @@ if ($hasBattery) {
 $g = ($r[2] | ConvertFrom-Json).result
 if (-not $g.enabled -or -not $g.dryRun -or $g.target -ne 'battery') { Fail "ups.guard: $($r[2])" }
 
+Step 'NUT server on the LAN: the check runner reads it and the guard follows it'
+$nut = Start-Job {
+    $t = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Any, 3493)
+    $t.Start()
+    while ($true) {
+        $c = $t.AcceptTcpClient()
+        try {
+            $s = $c.GetStream()
+            $rd = New-Object IO.StreamReader($s)
+            $wr = New-Object IO.StreamWriter($s)
+            $wr.NewLine = "`n"
+            $line = $rd.ReadLine()
+            if ($line -eq 'LIST VAR ciups') {
+                $wr.WriteLine('BEGIN LIST VAR ciups')
+                $wr.WriteLine('VAR ciups ups.status "OB LB"')
+                $wr.WriteLine('VAR ciups battery.charge "7"')
+                $wr.WriteLine('VAR ciups device.model "CI \"Fake\" UPS"')
+                $wr.WriteLine('END LIST VAR ciups')
+            } else {
+                $wr.WriteLine('ERR UNKNOWN-UPS')
+            }
+            $wr.Flush()
+            Start-Sleep -Milliseconds 200
+        } catch {} finally { $c.Close() }
+    }
+}
+Start-Sleep -Seconds 3
+$c = Get-Content $cfg -Raw
+$c = $c -replace '(?m)^ups = \["battery"\]', "ups = [`"ciups@${lan}`", `"other@${lan}`"]"
+Set-Content -Path $cfg -Value $c -NoNewline
+if ((Get-Content $cfg -Raw) -notmatch 'ciups@') { Fail "could not set [health] ups: $(Get-Content $cfg -Raw)" }
+Restart-Service nightgrid-node
+$j = (& $bin allow checks --json) -join ''
+if ($LASTEXITCODE -ne 0) { Fail "allow checks for NUT: $j" }
+$deadline = (Get-Date).AddSeconds(120)
+do {
+    Start-Sleep -Seconds 5
+    $r = @(Bridge @($hello, '{"id":2,"method":"health.latest"}', '{"id":3,"method":"ups.guard"}'))
+    $hl = ($r[1] | ConvertFrom-Json).result
+    $u = @($hl.ups | Where-Object { $_.target -eq "ciups@$lan" })[0]
+} while (($null -eq $u -or $u.reading.error) -and (Get-Date) -lt $deadline)
+Write-Host ($r -join "`n")
+if ($null -eq $u -or $u.reading.error) { Fail "no NUT reading through the runner: $($r[1])" }
+if (-not $u.reading.onBattery -or -not $u.reading.lowBattery -or $u.reading.charge -ne 7 -or $u.reading.model -ne 'CI "Fake" UPS') { Fail "NUT reading: $($u | ConvertTo-Json -Compress -Depth 5)" }
+$o = @($hl.ups | Where-Object { $_.target -eq "other@$lan" })[0]
+if ($o.reading.error -ne 'Unknown UPS') { Fail "unknown UPS: $($o | ConvertTo-Json -Compress -Depth 5)" }
+$g = ($r[2] | ConvertFrom-Json).result
+if ($g.target -ne "ciups@$lan" -or $g.phase -eq 'idle') { Fail "the guard did not follow the NUT UPS: $($r[2])" }
+$r = @(Bridge @($hello, '{"id":2,"method":"ups.report","params":{"answers":[]}}', '{"id":3,"method":"ups.cancel"}'))
+if ($r[1] -notmatch 'only the check runner') { Fail "an administrator could report UPS answers: $($r[1])" }
+$j = (& $bin deny checks --json) -join ''
+if ($LASTEXITCODE -ne 0) { Fail "deny checks: $j" }
+Stop-Job $nut; Remove-Job $nut -Force
+
 Step 'an account outside the group is refused'
 $pw = 'Ng-' + [guid]::NewGuid().ToString('N').Substring(0, 16) + '!a1'
 $sec = ConvertTo-SecureString $pw -AsPlainText -Force

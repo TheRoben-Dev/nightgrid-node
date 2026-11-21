@@ -501,6 +501,8 @@ Alerts, with the app's keys (no host segment, like the app's own) and rules `ser
 
 `checks.report` is internal (the runner's results); only the service's own account may call it.
 
+`ups.report` is internal too, and Windows only: the check runner hands over what NUT servers answered for `[health] ups` targets (`{"answers":[{"target":"ups@nas","at":…,"text":"ups.status: OL\n…"}]}`), because Windows has no `upsc`. Only the runner's account may call it; the app never does.
+
 ### `jobs.set` / `jobs.get` / `jobs.latest` (`jobs` 1)
 
 The app's backup jobs, read every `[jobs] interval_secs` (60 s), and the app's scheduled jobs (every `nightgrid-job-*.service` and `nightgrid-power-*.service` on the host, found by the node).

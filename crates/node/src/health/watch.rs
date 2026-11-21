@@ -109,10 +109,8 @@ pub fn handle(config: &Config, req: &ReadRequest) -> ReadReply {
             } else if t == super::windows::BATTERY_TARGET {
                 powershell(super::windows::BATTERY, 30).and_then(|j| super::windows::battery_text(&j))
             } else {
-                // NODE: no upsc on Windows; a NUT server comes with the check runner.
-                Ok(format!(
-                    "Error: {t} is a NUT server; on Windows the node reads only \"battery\" (a UPS on USB) for now\n"
-                ))
+                // NODE: no upsc on Windows; the check runner reads NUT servers.
+                Ok(format!("Error: {t} is a NUT server, which the check runner reads (nightgrid-node allow checks)\n"))
             }
         }
         "files" => crate::files::helper_snapshot(&config.files),
@@ -482,9 +480,13 @@ fn tick(shared: &Shared, due: &mut [Due; 4]) {
         let mut conds = Vec::new();
         for t in &shared.config.health.ups {
             let req = ReadRequest { read: "ups".into(), target: Some(t.clone()) };
-            let reading = match call(&shared.health_socket, &req) {
-                Ok(o) => super::ups::parse(&o),
-                Err(e) => UpsReading { error: Some(e), ..Default::default() },
+            let reading = if cfg!(windows) && super::nut::is_server(t) {
+                nut_reading(shared, t, now)
+            } else {
+                match call(&shared.health_socket, &req) {
+                    Ok(o) => super::ups::parse(&o),
+                    Err(e) => UpsReading { error: Some(e), ..Default::default() },
+                }
             };
             conds.extend(ups_conditions(&host, t, &reading));
             statuses.push(UpsStatus { target: t.clone(), at: now, reading });
@@ -500,6 +502,23 @@ fn tick(shared: &Shared, due: &mut [Due; 4]) {
     } else if shared.ups_guard.lock().unwrap_or_else(|e| e.into_inner()).active() {
         // Between reads: the countdown still ends on time.
         guard(shared, None, now, &mut due[3]);
+    }
+}
+
+/// How old a NUT answer from the check runner may be (it asks every 10 s).
+pub const NUT_FRESH: i64 = 45;
+
+/// A NUT server's reading as the check runner last reported it (Windows).
+pub fn nut_reading(shared: &Shared, target: &str, now: i64) -> UpsReading {
+    let m = shared.nut.lock().unwrap_or_else(|e| e.into_inner());
+    match m.get(target) {
+        Some(a) if a.at >= now - NUT_FRESH => super::ups::parse(&a.text),
+        _ => UpsReading {
+            error: Some(format!(
+                "no recent answer for {target} from the check runner (an administrator can run: nightgrid-node allow checks; the server must be inside [checks] networks)"
+            )),
+            ..Default::default()
+        },
     }
 }
 
