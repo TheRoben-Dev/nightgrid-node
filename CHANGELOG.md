@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.35.0 · W2e: blocking addresses on Windows (2026-11-20)
+
+Additive only: no frozen method, field, frame or link request changed. A Windows node now also advertises `block`. App spec [0030](docs/app-integration/0030-windows-node-blocks.md). Decision N-086.
+
+- **`firewall.block` / `firewall.unblock` on Windows**: an inbound Windows Firewall rule per address in the group `Nightgrid Node blocks`, for root's `[block] minutes`. The same refusals as on Linux apply (private, local and VPN addresses, `[block] never`).
+- **Auto-block after failed logins on Windows**: failed SSH, RDP and network logons from one address past `[block] threshold` block it, with the same rules as on Linux.
+- Expired rules are removed by the admin helper: the node asks once a minute after a block is due, and at start.
+- `deny helper` and `uninstall` remove every block rule.
+- The Windows CI end-to-end test blocks and unblocks a documentation address, checks the rule, sees a private address refused and an expired rule removed, and checks no rule is left after `uninstall`.
+
 ## 0.34.0 · W2d: UPS on USB and the UPS shutdown guard on Windows (2026-11-20)
 
 Additive only: no frozen method, field, frame or link request changed. A Windows node now also advertises `ups`. App spec [0029](docs/app-integration/0029-windows-node-ups.md). Decision N-085.

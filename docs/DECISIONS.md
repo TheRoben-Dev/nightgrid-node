@@ -206,6 +206,11 @@ Reading disk reliability counters, Storage Spaces and the Windows Update search 
 ### N-085 · On Windows a UPS on USB is the `[health] ups` target `"battery"`, read as if it were `upsc`
 Windows has a HID UPS driver built in and shows the UPS as a battery, so no NUT install is needed for the common case. The health helper reads `Win32_Battery` and writes the same `key: value` lines `upsc` prints (`ups.status` OL/OB/LB/CHRG/RB, `battery.charge`, `battery.runtime`, `device.model`). The reading, its alerts, `ups.guard` and `[ups] shutdown` then work exactly as on Linux, and the protocol is unchanged. Windows' "unknown" runtime (on AC) is left out rather than shown as 136 years. A NUT server on the LAN isn't read yet, because the health helper has no network. That comes with the check runner (W3). The power-off is the W2a `power.poweroff`, so a Windows host goes down one minute after the countdown ends.
 
+## Windows Server · W2e (2026-11-20)
+
+### N-086 · A Windows block is a firewall rule that carries its own end time
+Windows Firewall has no expiring entries like an nftables set with timeouts. So each block is one inbound rule, `Nightgrid Node block <address>`, in the group `Nightgrid Node blocks`, blocking all protocols on every profile, with `until <unix time>` as its description. The admin helper removes rules past their time every time it touches the group. The node keeps a block thread on Windows whenever `firewall.block` is allowed: it sends a helper-only `firewall.sweep` at start (for rules that ran out while it was stopped) and a minute after any block is due. A block rule beats an allow rule in Windows Firewall, so a block works whatever else is open. If the firewall is off for a profile, the block still succeeds, and its detail says it does nothing there. The same safety rules apply as on Linux, checked again on the helper's side. `deny helper` and `uninstall` remove the whole group, because without the helper nothing would end the blocks.
+
 ## N11 · Fix menu (2026-11-18)
 
 ### N-060 · Fixes are node-local actions on the existing action path, outside the frozen protocol

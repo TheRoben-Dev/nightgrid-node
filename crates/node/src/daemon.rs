@@ -327,14 +327,16 @@ pub fn run(config: Config, paths: Paths) -> Result<(), String> {
         let peers = crate::peers::load(&shared.store.lock().unwrap_or_else(|e| e.into_inner()));
         shared.peers.lock().unwrap_or_else(|e| e.into_inner()).list = peers;
     }
-    let autoblock = if cfg!(unix) && crate::firewall::auto_enabled(&shared) && config.logins.enabled {
+    let autoblock = if crate::firewall::thread_wanted(&shared) {
         let (b, tx) = crate::firewall::AutoBlocker::start(shared.clone()).map_err(|e| format!("auto-block: {e}"))?;
-        *shared.autoblock.lock().unwrap_or_else(|e| e.into_inner()) = Some(tx);
-        crate::info!(
-            "auto-block is on: {} failed logins in 5 minutes block an address for {} minutes",
-            config.block.threshold,
-            config.block.minutes
-        );
+        if crate::firewall::auto_enabled(&shared) && config.logins.enabled {
+            *shared.autoblock.lock().unwrap_or_else(|e| e.into_inner()) = Some(tx);
+            crate::info!(
+                "auto-block is on: {} failed logins in 5 minutes block an address for {} minutes",
+                config.block.threshold,
+                config.block.minutes
+            );
+        }
         Some(b)
     } else {
         None

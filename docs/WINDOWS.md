@@ -75,10 +75,10 @@ Supported: Windows Server 2016, 2019, 2022 and 2025 (and Windows 10/11, which us
 | `net` (LAN devices, IP conflicts) | Direct | `GetIpNetTable2` (the neighbour table; no raw sockets needed), gateway from `GetIpForwardTable2`, interfaces by alias | W1 (0.30.0) |
 | `net.dhcp` (rogue DHCP) | None | Needs packet capture (Npcap); no built-in way to listen on UDP 67/68 next to the DHCP client | — |
 | `actions` | Direct | Windows services instead of units: `restart`, `start`, `stop` of services listed in `[actions] units` (`W32Time`, not `w32time.service`); `reboot`, `poweroff` with `shutdown.exe` a minute ahead | **W2a (0.31.0)**, after `allow helper` |
-| `heal`, fix menu (`fix`, `fix auto`) | Direct | As on Linux, with the substitutes below | W2e |
-| `fix journal` / `fix logs` / `fix packages` / `fix ssh` | Substitute | Event logs over their size, large log files, the Windows Update download cache, and the OpenSSH `authorized_keys` and `administrators_authorized_keys` ACLs (the usual Windows key-login failure) | W2e |
-| `changes` (snapshot and rollback with dead-man timer) | Direct | Same paths model; the helper copies files and restores ACLs | W2e |
-| `block` (block addresses, auto-block after failed logins) | Direct | Windows Firewall rules in the node's own group, each with an expiry the helper enforces | W2e |
+| `heal`, fix menu (`fix`, `fix auto`) | Direct | As on Linux, with the substitutes below | W2f |
+| `fix journal` / `fix logs` / `fix packages` / `fix ssh` | Substitute | Event logs over their size, large log files, the Windows Update download cache, and the OpenSSH `authorized_keys` and `administrators_authorized_keys` ACLs (the usual Windows key-login failure) | W2f |
+| `changes` (snapshot and rollback with dead-man timer) | Direct | Same paths model; the helper copies files and restores ACLs | W2f |
+| `block` (block addresses, auto-block after failed logins) | Direct | Inbound Windows Firewall rules in the group `Nightgrid Node blocks`, each with its end time; the helper removes expired ones whenever it touches the group and the node asks it to once a minute after one is due | **W2e (0.35.0)**, after `allow helper` |
 | `health`: disks | Substitute | `MSFT_PhysicalDisk` health and `MSFT_StorageReliabilityCounter` (temperature, wear, errors) instead of SMART attributes, read by the health helper `nightgrid-node-health` | **W2c (0.33.0)**, after `allow health` |
 | `health`: pools | Substitute | Storage Spaces pools and virtual disks instead of ZFS/mdraid/btrfs | **W2c (0.33.0)** |
 | `health`: updates | Substitute | Windows Update search (COM), pending reboot from the usual registry keys; hidden updates are left out | **W2c (0.33.0)** |
@@ -103,7 +103,8 @@ Supported: Windows Server 2016, 2019, 2022 and 2025 (and Windows 10/11, which us
 - **W2b (0.32.0):** `upgrade FILE --sha256`. App spec [0027](app-integration/0027-windows-node-upgrade.md).
 - **W2c (0.33.0):** `allow health` and the read-only health helper: disks, Storage Spaces pools, Windows Update. App spec [0028](app-integration/0028-windows-node-health.md).
 - **W2d (0.34.0):** a UPS on USB (`"battery"`) and the UPS shutdown guard. App spec [0029](app-integration/0029-windows-node-ups.md).
-- **W2e:** self-healing, the fix menu, rollbacks and blocking.
+- **W2e (0.35.0):** blocking addresses and auto-block after failed logins. App spec [0030](app-integration/0030-windows-node-blocks.md).
+- **W2f:** self-healing, the fix menu and rollbacks.
 - **W3:** containers, the check runner, the link, the status page, jobs and backups.
 
 ## 5. Same commands

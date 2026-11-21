@@ -419,6 +419,7 @@ pub const WINDOWS_CAPS: &[&str] = &[
     cap::USAGE,
     cap::FILES,
     cap::UPS,
+    cap::BLOCK,
 ];
 
 /// What `hello` advertises on this platform: [`caps`] on Linux, the part
