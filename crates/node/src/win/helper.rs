@@ -449,14 +449,8 @@ pub fn allow(k: &Kind, on: bool) -> Result<Report, String> {
     let mut rep = Report { host: None, ..super::install::report(if on { "allow" } else { "deny" }) };
     let bin = super::installed_binary();
     if !on {
-        let had = installed(k);
-        scm::stop(k.service, Duration::from_secs(30))?;
-        if had {
-            if let Err(e) = firewall(k, false, &bin) {
-                rep.warnings.push(format!("firewall rule: {e}"));
-            }
-        }
-        if scm::delete(k.service)? {
+        if installed(k) {
+            retire(k, &bin, &mut rep)?;
             step(&mut rep, format!("removed the {} service", k.label));
         } else {
             step(&mut rep, format!("{} was not allowed", k.grant));
@@ -532,21 +526,26 @@ fn firewall(k: &Kind, on: bool, bin: &Path) -> Result<(), String> {
     super::install::powershell(&script).map(|_| ())
 }
 
+/// Takes a helper away: its hardening rule while Windows can still resolve
+/// its SID, then marks it for deletion *before* stopping it, because a
+/// running node starts its helper again as soon as a stop completes (a
+/// marked service can't be started), and it is gone once it has stopped.
+fn retire(k: &Kind, bin: &Path, rep: &mut Report) -> Result<(), String> {
+    if let Err(e) = firewall(k, false, bin) {
+        rep.warnings.push(format!("{} firewall rule: {e}", k.label));
+    }
+    scm::delete(k.service)?;
+    scm::stop(k.service, Duration::from_secs(30))
+}
+
 /// Removes both helpers on uninstall.
 pub fn remove(rep: &mut Report) {
     for k in [&ADMIN, &HEALTH] {
         if !installed(k) {
             continue;
         }
-        if let Err(e) = scm::stop(k.service, Duration::from_secs(30)) {
-            rep.warnings.push(e);
-        }
-        if let Err(e) = firewall(k, false, &super::installed_binary()) {
-            rep.warnings.push(format!("{} firewall rule: {e}", k.label));
-        }
-        match scm::delete(k.service) {
-            Ok(true) => step(rep, format!("removed the {} service", k.label)),
-            Ok(false) => {}
+        match retire(k, &super::installed_binary(), rep) {
+            Ok(()) => step(rep, format!("removed the {} service", k.label)),
             Err(e) => rep.warnings.push(e),
         }
     }

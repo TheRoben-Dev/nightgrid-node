@@ -8,7 +8,7 @@ Additive only: no frozen method, field, frame or link request changed. A Windows
 - **`[ups] shutdown` on Windows**: the guard follows that reading and powers the host off through the admin helper, like on Linux.
 - A NUT target on Windows says it isn't read yet; NUT servers come with the check runner.
 - The Windows config template has a `[health]` section with `ups = []`.
-- A Windows helper asked to stop while a read is running (a Windows Update search can take minutes) now ends that read and stops at once, so `uninstall` no longer leaves the health helper behind.
+- `deny` and `uninstall` now mark a Windows helper for deletion before stopping it, so a running node can't start it again in between, and a helper asked to stop during a long read (a Windows Update search can take minutes) ends that read at once.
 - The Windows CI end-to-end test now reads `"battery"` and checks `ups.guard`.
 
 ## 0.33.0 · W2c: Windows health (disks, Storage Spaces, Windows Update) (2026-11-20)
