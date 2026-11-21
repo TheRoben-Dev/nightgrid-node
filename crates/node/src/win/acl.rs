@@ -89,7 +89,7 @@ impl Sddl {
 /// SID and the users' group may read and write; nobody else, and nothing
 /// from the network (the pipe also rejects remote clients). `group_sid` is
 /// the local group's SID, when it exists.
-pub fn pipe_sddl(service_sid: Option<&str>, group_sid: Option<&str>) -> String {
+pub fn pipe_sddl(service_sid: Option<&str>, group_sid: Option<&str>, units: &[String]) -> String {
     let mut s = String::from("D:P(A;;GA;;;SY)(A;;GA;;;BA)");
     if let Some(sid) = service_sid.filter(|s| s.starts_with("S-1-")) {
         s.push_str(&format!("(A;;GA;;;{sid})"));
@@ -97,7 +97,16 @@ pub fn pipe_sddl(service_sid: Option<&str>, group_sid: Option<&str>) -> String {
     if let Some(sid) = group_sid.filter(|s| s.starts_with("S-1-")) {
         s.push_str(&format!("(A;;GRGW;;;{sid})"));
     }
+    // The node's own units (the check runner), each its own service.
+    for sid in units.iter().filter(|s| s.starts_with("S-1-5-80-")) {
+        s.push_str(&format!("(A;;GRGW;;;{sid})"));
+    }
     s
+}
+
+/// The SIDs of the node's own unit services that may use its pipe.
+pub fn unit_sids() -> Vec<String> {
+    vec![crate::compat::service_sid(super::checker::SERVICE)]
 }
 
 #[cfg(test)]
@@ -106,13 +115,13 @@ mod tests {
 
     #[test]
     fn pipe_dacl_lists_only_known_principals() {
-        assert_eq!(pipe_sddl(None, None), "D:P(A;;GA;;;SY)(A;;GA;;;BA)");
+        assert_eq!(pipe_sddl(None, None, &[]), "D:P(A;;GA;;;SY)(A;;GA;;;BA)");
         assert_eq!(
-            pipe_sddl(Some("S-1-5-80-1"), Some("S-1-5-21-9-1001")),
-            "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;S-1-5-80-1)(A;;GRGW;;;S-1-5-21-9-1001)"
+            pipe_sddl(Some("S-1-5-80-1"), Some("S-1-5-21-9-1001"), &["S-1-5-80-2".into(), "x".into()]),
+            "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;S-1-5-80-1)(A;;GRGW;;;S-1-5-21-9-1001)(A;;GRGW;;;S-1-5-80-2)"
         );
         // Anything that isn't a SID string is left out, never pasted in.
-        assert_eq!(pipe_sddl(Some("(A;;GA;;;WD)"), Some("")), "D:P(A;;GA;;;SY)(A;;GA;;;BA)");
-        assert!(Sddl::new(&pipe_sddl(None, None)).is_ok());
+        assert_eq!(pipe_sddl(Some("(A;;GA;;;WD)"), Some(""), &[]), "D:P(A;;GA;;;SY)(A;;GA;;;BA)");
+        assert!(Sddl::new(&pipe_sddl(None, None, &[])).is_ok());
     }
 }

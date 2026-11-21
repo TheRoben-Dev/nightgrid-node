@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.40.0 · W3b: service checks on Windows (2026-11-21)
+
+Additive only: no frozen method, field, frame or link request changed. A Windows node now also advertises `checks`. App spec [0035](docs/app-integration/0035-windows-node-checks.md). Decision N-091.
+
+- **Service checks on Windows**: `checks.set`, `checks.get`, `checks.latest` and the service-down alerts work as on Linux once an administrator runs `allow checks`. HTTP(S) status and certificates and TCP connects, every `[checks] interval_secs`.
+- **`allow checks` on Windows** installs the service `nightgrid-node-checker`, which runs the same exe as its own virtual account (`NT SERVICE\nightgrid-node-checker`): no administrator, one privilege, a write-restricted SID. A Windows Service Hardening rule blocks all its traffic except outbound TCP to `[checks] networks`, even with the firewall off; the main service keeps no network at all. Run it again after changing the networks. `deny checks` removes the service and its rules; `uninstall` does too.
+- The node takes `checks.report` only from the runner's account. Its SID follows from the service name, so the pipe and config ACLs name it ahead of time and nothing needs a restart.
+- `doctor` on Windows reports the runner and whether its network limit is in place. The Windows config template has a `[checks]` section. `install` (and so `upgrade`) stops the runner while it replaces the exe and starts it again.
+- The Windows CI end-to-end test checks an HTTP server and a TCP port through the runner, sees a closed port down and an address outside the networks refused, checks the runner's account, SID type, privileges and firewall rules, shows that Windows blocks an address the runner would allow when the rule wasn't updated, and that `deny checks` leaves nothing behind.
+
 ## 0.39.0 · W3a: containers on Windows (2026-11-21)
 
 Additive only: no frozen method, field, frame or link request changed. A Windows node now also advertises `containers`. App spec [0034](docs/app-integration/0034-windows-node-containers.md). Decision N-090.

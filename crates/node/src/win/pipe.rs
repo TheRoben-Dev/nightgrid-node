@@ -57,7 +57,7 @@ fn options() -> ServerOptions {
 fn sddl() -> io::Result<Sddl> {
     let me = super::sys::my_sid();
     let group = sid_of(super::GROUP);
-    Sddl::new(&acl::pipe_sddl(Some(&me), group.as_deref()))
+    Sddl::new(&acl::pipe_sddl(Some(&me), group.as_deref(), &acl::unit_sids()))
 }
 
 /// The SID of a local account or group, if it exists.

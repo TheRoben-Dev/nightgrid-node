@@ -133,6 +133,32 @@ pub fn run(config_path: &Path, socket: Option<&Path>) -> Report {
         Err(_) => {}
     }
 
+    // Check runner.
+    match super::scm::status(super::checker::SERVICE) {
+        Ok(Some(s)) => {
+            let fenced = if crate::compat::am_root() { super::checker::restricted() } else { None };
+            match (s.running(), fenced) {
+                (_, Some(false)) => r.add(
+                    "checks",
+                    Level::Warn,
+                    "the check runner's network limit is missing (run: nightgrid-node allow checks)",
+                ),
+                (true, _) => r.add("checks", Level::Ok, "check runner running, outbound only to [checks] networks"),
+                (false, _) => r.add(
+                    "checks",
+                    Level::Warn,
+                    format!("check runner {} (see {})", s.word(), super::checker::log_dir().display()),
+                ),
+            }
+        }
+        Ok(None) => r.add(
+            "checks",
+            Level::Info,
+            "service checks from this host are off (an administrator can run: nightgrid-node allow checks)",
+        ),
+        Err(_) => {}
+    }
+
     // Network restriction.
     if crate::compat::am_root() {
         match super::install::firewall_restricted() {

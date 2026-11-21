@@ -655,13 +655,22 @@ if (-not (Test-Path -LiteralPath $dir)) { '0'; return }
 $svcs = @('wuauserv', 'bits')
 $was = @($svcs | Where-Object { (Get-Service -Name $_ -ErrorAction SilentlyContinue).Status -eq 'Running' })
 $script:freed = [int64]0
+$script:left = 0
 function Clean([IO.DirectoryInfo]$d) {
   foreach ($e in @($d.EnumerateFileSystemInfos())) {
     if ($e.Attributes -band [IO.FileAttributes]::ReparsePoint) { continue }
-    try {
-      if ($e -is [IO.DirectoryInfo]) { Clean $e; $e.Delete() }
-      else { $n = $e.Length; $e.Delete(); $script:freed += $n }
-    } catch { }
+    if ($e -is [IO.DirectoryInfo]) {
+      Clean $e
+      try { $e.Delete() } catch { }
+      continue
+    }
+    # A file a virus scanner or the update service still has open usually
+    # comes free within a second or two.
+    $n = $e.Length
+    for ($i = 0; $i -lt 6; $i++) {
+      try { $e.Delete(); $script:freed += $n; break }
+      catch { if ($i -eq 5) { $script:left++ } else { Start-Sleep -Milliseconds 400 } }
+    }
   }
 }
 try {
@@ -671,7 +680,19 @@ try {
 } finally {
   foreach ($s in $was) { Start-Service -Name $s -ErrorAction SilentlyContinue }
 }
-[string]$script:freed"#;
+"$script:freed $script:left""#;
+
+/// The cache fix's detail from its last line, `FREED LEFT`.
+pub fn win_cache_detail(out: &str) -> String {
+    let mut it = out.lines().last().unwrap_or("").split_whitespace();
+    let freed = it.next().and_then(|n| n.parse::<u64>().ok()).unwrap_or(0);
+    let left = it.next().and_then(|n| n.parse::<u64>().ok()).unwrap_or(0);
+    let mut d = format!("cleaned the Windows Update download cache ({} freed)", crate::cli::bytes(freed));
+    if left > 0 {
+        d.push_str(&format!("; {left} file{} in use left", if left == 1 { "" } else { "s" }));
+    }
+    d
+}
 
 /// PowerShell that gives OpenSSH's key files the ACL sshd insists on: only
 /// SYSTEM, Administrators and (for a user's own file) that user, no
@@ -728,10 +749,7 @@ pub fn win_account(u: &str) -> bool {
 /// What the Windows helper does for the local fixes.
 fn helper_run_windows(local: &LocalFixes, a: &str, target: &str, run: &mut dyn Runner) -> Reply {
     let r = match a {
-        PACKAGE_CACHE => run.powershell(WIN_UPDATE_CACHE).map(|out| {
-            let freed = out.trim().parse::<u64>().unwrap_or(0);
-            format!("cleaned the Windows Update download cache ({} freed)", crate::cli::bytes(freed))
-        }),
+        PACKAGE_CACHE => run.powershell(WIN_UPDATE_CACHE).map(|out| win_cache_detail(&out)),
         SSH_PERMISSIONS => {
             if !win_account(target) || target.contains('\'') {
                 return Reply::no(format!("not an account name: {target:?}"));
@@ -997,7 +1015,7 @@ action = "fix.journal-vacuum"
             timeout_secs: 30,
             ..Default::default()
         });
-        let mut f = FakePs { out: "1048576\n".into(), ..Default::default() };
+        let mut f = FakePs { out: "1048576 0\n".into(), ..Default::default() };
         let r = helper_run_windows(&l, PACKAGE_CACHE, "", &mut f);
         assert!(r.ok && r.detail == "cleaned the Windows Update download cache (1.0 MiB freed)", "{r:?}");
         assert_eq!(f.scripts[0], WIN_UPDATE_CACHE);
@@ -1031,6 +1049,12 @@ action = "fix.journal-vacuum"
         assert!(s.contains("SoftwareDistribution") && s.matches("ReparsePoint").count() == 2, "{s}");
         assert!(!s.contains("-Recurse"), "PowerShell 5.1 follows junctions when it recurses: {s}");
         assert!(s.contains("wuauserv") && s.contains("bits"), "{s}");
+        assert!(s.contains("Start-Sleep") && s.contains("$script:left++"), "files in use get a few tries: {s}");
+        assert_eq!(
+            win_cache_detail("0 2\n"),
+            "cleaned the Windows Update download cache (0 B freed); 2 files in use left"
+        );
+        assert_eq!(win_cache_detail("garbage"), "cleaned the Windows Update download cache (0 B freed)");
     }
 
     #[test]

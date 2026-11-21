@@ -77,6 +77,27 @@ ups = []
 # the admin helper (nightgrid-node allow helper). Keep this narrow, e.g.
 #   paths = ['D:\srv\app', 'C:\ProgramData\ssh\sshd_config']
 paths = []
+
+[checks]
+# Run the app's service checks (HTTP(S) status and certificates, TCP
+# connects) from this host with the app closed. The main service has no
+# network: `nightgrid-node allow checks` installs a separate runner service
+# that may connect only to `networks` (run it again after changing them).
+enabled = true
+# Seconds between rounds (30-3600).
+interval_secs = 60
+# The only addresses checks may reach. Add a public address or range to
+# check something outside your LAN.
+networks = [
+  "127.0.0.0/8",
+  "::1/128",
+  "10.0.0.0/8",
+  "172.16.0.0/12",
+  "192.168.0.0/16",
+  "100.64.0.0/10",
+  "fc00::/7",
+  "fe80::/10",
+]
 "#;
 
 pub(crate) fn report(action: &'static str) -> Report {
@@ -107,7 +128,7 @@ pub fn facts() -> crate::host::HostFacts {
 pub fn limits() -> Vec<String> {
     [
         "UPS readings only from a UPS on USB.",
-        "No service checks, node-to-node link or status page yet.",
+        "No node-to-node link or status page yet.",
         "No rogue DHCP watch: Windows can't listen for DHCP without a packet capture driver.",
     ]
     .iter()
@@ -158,8 +179,10 @@ pub fn install(self_exe: &Path, opts: &InstallOptions) -> Result<Report, String>
         step(&mut rep, "stopped the running service for the upgrade");
     }
     if !same {
-        // The helper runs the same exe; it starts again when next needed.
+        // The helpers and the check runner run the same exe; the helpers
+        // start again when next needed, the runner at the end.
         super::helper::stop_all()?;
+        super::checker::stop()?;
     }
     if same {
         step(&mut rep, format!("{} already in place", bin.display()));
@@ -227,7 +250,7 @@ pub fn install(self_exe: &Path, opts: &InstallOptions) -> Result<Report, String>
     std::fs::create_dir_all(&tmp).map_err(|e| format!("{}: {e}", tmp.display()))?;
     let svc = pipe::sid_of(&format!("NT SERVICE\\{SERVICE}")).ok_or("the service's account did not resolve")?;
     let grp = pipe::sid_of(GROUP);
-    set_dacl(&etc, &etc_sddl(&svc, grp.as_deref()))?;
+    set_dacl(&etc, &etc_sddl(&svc, grp.as_deref(), &acl::unit_sids()))?;
     set_dacl(&data, &data_sddl(&svc))?;
     step(&mut rep, format!("locked down {}", etc.display()));
     set_service_env(&[format!("TEMP={}", tmp.display()), format!("TMP={}", tmp.display())])?;
@@ -255,6 +278,12 @@ pub fn install(self_exe: &Path, opts: &InstallOptions) -> Result<Report, String>
         scm::start(SERVICE, Duration::from_secs(30))?;
         wait_answering(Duration::from_secs(20))?;
         step(&mut rep, "started the service; it answers on its pipe");
+        if !same && super::checker::installed() {
+            match super::checker::start_if_installed() {
+                Ok(()) => step(&mut rep, "started the check runner again"),
+                Err(e) => rep.warnings.push(format!("check runner: {e}")),
+            }
+        }
     }
     if !rep.users.is_empty() {
         rep.warnings
@@ -266,6 +295,9 @@ pub fn install(self_exe: &Path, opts: &InstallOptions) -> Result<Report, String>
 pub fn uninstall(purge: bool) -> Result<Report, String> {
     preflight()?;
     let mut rep = report("uninstall");
+    if super::checker::installed() {
+        super::checker::remove(&mut rep);
+    }
     super::helper::remove(&mut rep);
     scm::stop(SERVICE, Duration::from_secs(30))?;
     for sid in [PERF_USERS, super::EVENT_LOG_READERS] {
@@ -517,12 +549,24 @@ fn remove_binary(bin: &Path, rep: &mut Report) {
     let _ = std::fs::remove_dir(&dir);
 }
 
-pub fn etc_sddl(service_sid: &str, group_sid: Option<&str>) -> String {
+pub fn etc_sddl(service_sid: &str, group_sid: Option<&str>, units: &[String]) -> String {
     let mut s = format!("D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FR;;;{service_sid})");
     if let Some(g) = group_sid {
         s.push_str(&format!("(A;OICI;FR;;;{g})"));
     }
+    // The node's unit services read the config too.
+    for u in units.iter().filter(|u| u.starts_with("S-1-5-80-")) {
+        s.push_str(&format!("(A;OICI;FR;;;{u})"));
+    }
     s
+}
+
+/// Sets the config folder's ACL (install, and `allow checks` on a node
+/// installed before the check runner existed).
+pub fn lock_etc() -> Result<(), String> {
+    let svc = pipe::sid_of(&format!("NT SERVICE\\{SERVICE}")).ok_or("the service's account did not resolve")?;
+    let grp = pipe::sid_of(GROUP);
+    set_dacl(&super::etc_dir(), &etc_sddl(&svc, grp.as_deref(), &acl::unit_sids()))
 }
 
 pub fn data_sddl(service_sid: &str) -> String {
@@ -530,7 +574,7 @@ pub fn data_sddl(service_sid: &str) -> String {
 }
 
 /// Replaces a folder's DACL (protected: nothing inherited from above).
-fn set_dacl(path: &Path, sddl: &str) -> Result<(), String> {
+pub(crate) fn set_dacl(path: &Path, sddl: &str) -> Result<(), String> {
     let sd = acl::Sddl::new(sddl).map_err(|e| format!("{sddl}: {e}"))?;
     let (mut present, mut defaulted) = (0, 0);
     let mut dacl: *mut ACL = std::ptr::null_mut();
@@ -785,12 +829,28 @@ pub fn powershell(script: &str) -> Result<String, String> {
         .output()
         .map_err(|e| format!("powershell: {e}"))?;
     if !out.status.success() {
-        let err = String::from_utf8_lossy(&out.stderr);
-        let first =
-            err.lines().map(str::trim).find(|l| !l.is_empty() && !l.starts_with("#< CLIXML")).unwrap_or("failed");
-        return Err(first.to_owned());
+        return Err(ps_error(&String::from_utf8_lossy(&out.stderr)));
     }
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// The first error line of PowerShell's stderr, which may be CLIXML
+/// (`<Objs …><S S="Error">text_x000D__x000A_</S>…`).
+pub fn ps_error(err: &str) -> String {
+    let Some(l) = err.lines().map(str::trim).find(|l| !l.is_empty() && !l.starts_with("#< CLIXML")) else {
+        return "failed".into();
+    };
+    const TAG: &str = "<S S=\"Error\">";
+    let Some(i) = l.find(TAG) else { return l.to_owned() };
+    let text = l[i + TAG.len()..].split("</S>").next().unwrap_or("");
+    let text = text.replace("_x000D_", "").replace("_x000A_", " ");
+    let text = text.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&amp;", "&");
+    let text = text.trim();
+    if text.is_empty() {
+        "failed".into()
+    } else {
+        text.to_owned()
+    }
 }
 
 /// PowerShell's `-EncodedCommand`: base64 of UTF-16LE.
@@ -854,8 +914,8 @@ mod tests {
         assert!(!valid_user("-x"));
         assert!(!valid_user("a;b"));
         assert_eq!(
-            etc_sddl("S-1-5-80-1", Some("S-1-5-21-2")),
-            "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FR;;;S-1-5-80-1)(A;OICI;FR;;;S-1-5-21-2)"
+            etc_sddl("S-1-5-80-1", Some("S-1-5-21-2"), &["S-1-5-80-3".into()]),
+            "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FR;;;S-1-5-80-1)(A;OICI;FR;;;S-1-5-21-2)(A;OICI;FR;;;S-1-5-80-3)"
         );
         assert!(acl::Sddl::new(&data_sddl("S-1-5-18")).is_ok());
         assert!(path_has(
@@ -863,6 +923,11 @@ mod tests {
             Path::new(r"c:\program files\nightgrid node")
         ));
         assert_eq!(encode_utf16_base64("ab"), "YQBiAA==");
+        assert_eq!(
+            ps_error("#< CLIXML\r\n<Objs Version=\"1.1.0.1\"><S S=\"Error\">Exception from HRESULT: 0xD000000D_x000D__x000A_</S><S S=\"Error\">At line:19</S></Objs>"),
+            "Exception from HRESULT: 0xD000000D"
+        );
+        assert_eq!(ps_error("plain\nmore"), "plain");
         assert!(crate::config::Config::parse(TEMPLATE).is_ok());
         assert_eq!(service_command(Path::new(r"C:\P F\n.exe")), r#""C:\P F\n.exe" run"#);
     }
