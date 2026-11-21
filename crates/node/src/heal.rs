@@ -208,8 +208,24 @@ pub fn refresh_fixes(shared: &Shared) {
     }
 }
 
+/// Windows: which of the services stopped with an error (the SCM's exit
+/// code), the counterpart of systemd's failed state. A service stopped on
+/// purpose, or never started, has exit code 0 or 1077.
+#[cfg(windows)]
+fn failed_units(units: &[String]) -> Vec<String> {
+    units
+        .iter()
+        .filter(|u| match crate::win::scm::status(u) {
+            Ok(Some(st)) => st.state == 1 && !matches!(st.exit, 0 | 1077),
+            _ => false,
+        })
+        .cloned()
+        .collect()
+}
+
 /// Which of the units are in the failed state (`systemctl is-failed`
 /// prints one line per unit, in order, whatever its exit status).
+#[cfg(unix)]
 fn failed_units(units: &[String]) -> Vec<String> {
     if units.is_empty() {
         return Vec::new();

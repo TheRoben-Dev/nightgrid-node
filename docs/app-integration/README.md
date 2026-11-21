@@ -34,6 +34,7 @@ The Nightgrid app repository is developed elsewhere and is read-only from here. 
 | [0028 · Windows node W2c: health](0028-windows-node-health.md) | 0.33.0 (W2c) | proposed |
 | [0029 · Windows node W2d: UPS](0029-windows-node-ups.md) | 0.34.0 (W2d) | proposed |
 | [0030 · Windows node W2e: blocking addresses](0030-windows-node-blocks.md) | 0.35.0 (W2e) | proposed |
+| [0031 · Windows node W2f: self-healing](0031-windows-node-heal.md) | 0.36.0 (W2f) | proposed |
 
 Rules every spec follows:
 

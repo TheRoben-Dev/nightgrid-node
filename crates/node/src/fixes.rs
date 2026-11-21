@@ -183,8 +183,8 @@ impl AutoRule {
         }
         let target_ok = self.target == "*"
             || match self.when {
-                When::UnitFailed => action::valid_unit(&self.target),
-                When::DiskFull => self.target.starts_with('/') && self.target.len() <= 255,
+                When::UnitFailed => valid_unit(&self.target),
+                When::DiskFull => valid_mount(&self.target),
                 _ => crate::actions::valid_container(&self.target),
             };
         if !target_ok {
@@ -370,6 +370,20 @@ pub fn valid_unit(name: &str) -> bool {
         action::valid_service(name)
     } else {
         action::valid_unit(name)
+    }
+}
+
+/// A mount a disk rule may name: an absolute path on Linux, a volume root
+/// such as `C:\` on Windows (how the disk-full alert names it).
+pub fn valid_mount(m: &str) -> bool {
+    if m.len() > 255 {
+        return false;
+    }
+    if cfg!(windows) {
+        let b = m.as_bytes();
+        b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && b[2] == b'\\'
+    } else {
+        m.starts_with('/')
     }
 }
 
@@ -804,13 +818,27 @@ action = "fix.journal-vacuum"
             "[[runbook]]\nname = \"../x\"\nrun = [\"/bin/true\"]",
             "[[autofix]]\nid = \"a\"\nwhen = \"unit-failed\"\naction = \"power.reboot\"",
             "[[autofix]]\nid = \"a\"\nwhen = \"disk-full\"\naction = \"container.restart\"",
-            "[[autofix]]\nid = \"a\"\nwhen = \"unit-failed\"\ntarget = \"sshd\"",
+            "[[autofix]]\nid = \"a\"\nwhen = \"unit-failed\"\ntarget = \"ssh d\"",
             "[[autofix]]\nid = \"a\"\n[[autofix]]\nid = \"a\"",
             "[[autofix]]\nid = \"a\"\nmax_per_hour = 0",
             "surprise = 1",
         ] {
             assert!(LocalFixes::parse(bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn rules_name_mounts_and_units_the_platform_way() {
+        let rule = |when: &str, target: &str| {
+            LocalFixes::parse(&format!(
+                "[[autofix]]\nid = \"a\"\nwhen = \"{when}\"\ntarget = '{target}'\naction = \"{}\"",
+                if when == "unit-failed" { "unit.restart" } else { "fix.journal-vacuum" }
+            ))
+        };
+        assert_eq!(rule("disk-full", "/srv").is_ok(), !cfg!(windows));
+        assert_eq!(rule("disk-full", r"D:\").is_ok(), cfg!(windows));
+        assert!(cfg!(windows) || rule("unit-failed", "nginx.service").is_ok());
+        assert_eq!(rule("unit-failed", "W32Time").is_ok(), cfg!(windows));
     }
 
     #[test]

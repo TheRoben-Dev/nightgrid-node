@@ -211,6 +211,11 @@ Windows has a HID UPS driver built in and shows the UPS as a battery, so no NUT 
 ### N-086 · A Windows block is a firewall rule that carries its own end time
 Windows Firewall has no expiring entries like an nftables set with timeouts. So each block is one inbound rule, `Nightgrid Node block <address>`, in the group `Nightgrid Node blocks`, blocking all protocols on every profile, with `until <unix time>` as its description. The admin helper removes rules past their time every time it touches the group. The node keeps a block thread on Windows whenever `firewall.block` is allowed: it sends a helper-only `firewall.sweep` at start (for rules that ran out while it was stopped) and a minute after any block is due. A block rule beats an allow rule in Windows Firewall, so a block works whatever else is open. If the firewall is off for a profile, the block still succeeds, and its detail says it does nothing there. The same safety rules apply as on Linux, checked again on the helper's side. `deny helper` and `uninstall` remove the whole group, because without the helper nothing would end the blocks.
 
+## Windows Server · W2f (2026-11-21)
+
+### N-087 · On Windows a "failed unit" is a listed service that stopped with an error
+systemd keeps a failed state, and the SCM doesn't. What the SCM does keep is the exit code of the last stop. A service that crashed, or exited with an error, is stopped with a code other than 0, and 1077 means it never started. So `unit-failed` rules on Windows match a service root listed that is stopped with any other code. They name it as `[actions] units` does (`W32Time`), and disk rules name volume roots the way the disk-full alert does (`D:\`). The rest of self-healing is the same code as on Linux: waits, caps, giving up, dry run, `[actions] allow` and the action log.
+
 ## N11 · Fix menu (2026-11-18)
 
 ### N-060 · Fixes are node-local actions on the existing action path, outside the frozen protocol
