@@ -1324,9 +1324,7 @@ mod tests {
         assert_eq!(crate::engine::load_rules(&s.store.lock().unwrap()).disk_percent, 80);
         assert_eq!(call(&s, &mut ses, 10, "alerts.active", Value::Null).result_value(), Some(json!([])));
         let r = call(&s, &mut ses, 11, "containers.list", Value::Null).result_value().unwrap();
-        // Windows has no container watcher yet (W3), so it reads as off.
-        let access = if cfg!(windows) { "off" } else { "absent" };
-        assert_eq!((r["access"].as_str(), r["containers"].as_array().map(Vec::len)), (Some(access), Some(0)));
+        assert_eq!((r["access"].as_str(), r["containers"].as_array().map(Vec::len)), (Some("absent"), Some(0)));
     }
 
     #[test]
