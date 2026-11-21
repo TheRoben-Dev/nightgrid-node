@@ -334,6 +334,9 @@ struct Cache {
     logs: BTreeMap<String, Vec<String>>,
     /// Backup job id → (read at, what was read, size read at).
     paths: BTreeMap<i32, (i64, backups::PathRead, i64)>,
+    /// The last failed read, logged once (Windows).
+    #[cfg(windows)]
+    error: Option<String>,
 }
 
 /// A path job's status, read at most every [`PATH_EVERY`].
@@ -372,9 +375,15 @@ fn round(shared: &Shared, cache: &mut Cache, first: bool) -> (JobsLatest, Vec<Ne
     let tasks: Vec<String> = list.iter().filter(|j| j.source == BackupSource::Unit).map(|j| j.target.clone()).collect();
     let read = crate::health::watch::powershell(&wintasks::script(&tasks), 60).and_then(|o| wintasks::parse(&o));
     let doc = match read {
-        Ok(d) => d,
+        Ok(d) => {
+            cache.error = None;
+            d
+        }
         Err(e) => {
-            crate::debug!("jobs: {e}");
+            if cache.error.as_deref() != Some(e.as_str()) {
+                crate::warn!("jobs: Task Scheduler read failed: {e}");
+                cache.error = Some(e);
+            }
             // Keep what was read last rather than flap to "not found".
             let mut l = shared.jobs.lock().unwrap_or_else(|e| e.into_inner()).latest.clone();
             l.access = "ok".into();

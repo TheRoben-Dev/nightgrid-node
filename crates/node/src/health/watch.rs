@@ -53,15 +53,33 @@ pub struct ReadReply {
 
 /// Runs `prog args` with a time limit; stdout (capped), or why not.
 pub(crate) fn run_capped(prog: &str, args: &[&str], limit: Duration) -> Result<String, String> {
-    let mut child = Command::new(prog)
-        .args(args)
-        .env("LANG", "C")
-        .env("SYSTEMD_PAGER", "")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|e| format!("{prog}: {e}"))?;
+    let command = || {
+        let mut c = Command::new(prog);
+        c.args(args)
+            .env("LANG", "C")
+            .env("SYSTEMD_PAGER", "")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        c
+    };
+    // On Windows the node's service sits in a job with a 64 MiB cap per
+    // process (win::service::cap_memory), which PowerShell doesn't fit in:
+    // its reads leave the job (the job allows that). Outside such a job,
+    // or in one that doesn't allow it, the plain spawn is used.
+    #[cfg(windows)]
+    let spawned = {
+        use std::os::windows::process::CommandExt;
+        const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command()
+            .creation_flags(CREATE_BREAKAWAY_FROM_JOB | CREATE_NO_WINDOW)
+            .spawn()
+            .or_else(|_| command().creation_flags(CREATE_NO_WINDOW).spawn())
+    };
+    #[cfg(not(windows))]
+    let spawned = command().spawn();
+    let mut child = spawned.map_err(|e| format!("{prog}: {e}"))?;
     let mut out = child.stdout.take().ok_or("no stdout")?;
     let reader = std::thread::spawn(move || {
         let mut buf = Vec::new();
