@@ -37,6 +37,7 @@ The Nightgrid app repository is developed elsewhere and is read-only from here. 
 | [0031 · Windows node W2f: self-healing](0031-windows-node-heal.md) | 0.36.0 (W2f) | proposed |
 | [0032 · Windows node W2g: the fix menu](0032-windows-node-fixes.md) | 0.37.0 (W2g) | proposed |
 | [0033 · Windows node W2h: rollbacks](0033-windows-node-rollback.md) | 0.38.0 (W2h) | proposed |
+| [0034 · Windows node W3a: containers](0034-windows-node-containers.md) | 0.39.0 (W3a) | proposed |
 
 Rules every spec follows:
 

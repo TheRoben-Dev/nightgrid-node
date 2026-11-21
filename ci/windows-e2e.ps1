@@ -91,7 +91,8 @@ $r = @(Bridge $lines)
 if ($r.Count -lt 2) { Fail "bridge answers: $r" }
 $w = $r[0] | ConvertFrom-Json
 if ($w.result.proto -ne 2 -or -not $w.result.caps.'metrics.sync') { Fail "hello: $($r[0])" }
-if ($w.result.caps.PSObject.Properties.Name -contains 'containers') { Fail 'advertises containers, which Windows lacks so far' }
+if (-not $w.result.caps.containers) { Fail 'does not advertise containers' }
+if ($w.result.caps.PSObject.Properties.Name -contains 'checks') { Fail 'advertises checks, which Windows lacks so far' }
 if (-not $w.result.caps.health) { Fail 'does not advertise health' }
 $info = ($r[1] | ConvertFrom-Json).result
 if ($info.node.hostname -eq '' -or $info.rssBytes -le 0) { Fail "node.info: $($r[1])" }
@@ -345,7 +346,7 @@ if ($LASTEXITCODE -ne 0) { Fail "fix list: $out" }
 $fl = $out | ConvertFrom-Json
 $names = @($fl.fixes | ForEach-Object { $_.name }) -join ' '
 Write-Host "fixes: $names; auto: $(@($fl.auto | ForEach-Object { $_.name }) -join ' ')"
-if ($names -ne 'restart packages ssh reboot run') { Fail "fix list names: $out" }
+if ($names -ne 'restart start packages prune ssh reboot run') { Fail "fix list names: $out" }
 if (@($fl.fixes | Where-Object { $_.name -eq 'run' }).state -ne 'allowed') { Fail "runbook not allowed: $out" }
 $out = (& $bin fix run hello -y) -join "`n"
 Write-Host $out
@@ -450,6 +451,79 @@ if ((Get-Content $app -Raw) -ne 'v3') { Fail "the timer did not revert: $(Get-Co
 $last = @(($r[1] | ConvertFrom-Json).result.changes | Where-Object { $_.id -eq $ch.id })
 if ($last.Count -ne 1 -or $last[0].state -ne 'reverted') { Fail "changes.list after the timer: $($r[1])" }
 Remove-Item $rb -Recurse -Force
+
+Step 'allow docker: containers, their events and container actions through Docker''s pipe'
+$dj = Join-Path $env:ProgramData 'docker\config\daemon.json'
+$djOld = if (Test-Path $dj) { Get-Content $dj -Raw } else { $null }
+Write-Host "daemon.json before: $djOld"
+if ($djOld -and ($djOld | ConvertFrom-Json).group) {
+    # A runner image with its own pipe group: take it out for the test, put it back after.
+    $o = $djOld | ConvertFrom-Json; $o.PSObject.Properties.Remove('group'); $o | ConvertTo-Json | Set-Content $dj
+}
+$j = (& $bin allow docker --json) -join ''
+Write-Host $j
+if ($LASTEXITCODE -ne 0) { Fail "allow docker: $j" }
+if ((Get-Content $dj -Raw | ConvertFrom-Json).group -ne 'NT SERVICE\nightgrid-node') { Fail "daemon.json group: $(Get-Content $dj -Raw)" }
+$again = (& $bin allow docker --json) -join ''
+if ($again -notmatch 'already lets the service') { Fail "allow docker twice: $again" }
+$docker = Get-Service docker -ErrorAction SilentlyContinue
+if ($null -eq $docker) {
+    Write-Host 'No Docker Engine on this runner: only the settings are checked'
+} else {
+    Restart-Service docker
+    $deadline = (Get-Date).AddSeconds(90)
+    do { Start-Sleep -Seconds 3; & docker version --format '{{.Server.Version}}' 2>$null | Out-Null } while ($LASTEXITCODE -ne 0 -and (Get-Date) -lt $deadline)
+    $tag = if ([Environment]::OSVersion.Version.Build -ge 26100) { 'ltsc2025' } else { 'ltsc2022' }
+    $img = "mcr.microsoft.com/windows/nanoserver:$tag"
+    & docker pull -q $img
+    if ($LASTEXITCODE -ne 0) { Fail "docker pull $img" }
+    & docker rm -f ngn-ci 2>$null | Out-Null
+    & docker run -d --name ngn-ci $img ping -t localhost | Out-Null
+    if ($LASTEXITCODE -ne 0) { Fail 'docker run' }
+    $deadline = (Get-Date).AddSeconds(60)
+    do {
+        Start-Sleep -Seconds 5
+        $r = @(Bridge @($hello, '{"id":2,"method":"containers.list"}'))
+        $cl = ($r[1] | ConvertFrom-Json).result
+        $mine = @($cl.containers | Where-Object { $_.name -eq 'ngn-ci' })
+    } while (($cl.access -ne 'ok' -or $mine.Count -ne 1 -or $mine[0].state -ne 'running') -and (Get-Date) -lt $deadline)
+    Write-Host $r[1]
+    if ($cl.access -ne 'ok') { Fail "container access: $($r[1])" }
+    if ($mine.Count -ne 1 -or $mine[0].state -ne 'running') { Fail "ngn-ci not listed as running: $($r[1])" }
+    $c = Get-Content $cfg -Raw
+    $c = $c -replace '(?m)^allow = \[', 'allow = ["container.restart", '
+    Set-Content -Path $cfg -Value $c -NoNewline
+    Restart-Service nightgrid-node
+    Start-Sleep -Seconds 3
+    $before = (& docker inspect -f '{{.State.StartedAt}}' ngn-ci)
+    $deadline = (Get-Date).AddSeconds(60)
+    do {
+        Start-Sleep -Seconds 3
+        $r = @(Bridge @($hello, '{"id":2,"method":"actions.run","params":{"action":"container.restart","target":"ngn-ci"}}'))
+        $a = ($r[1] | ConvertFrom-Json)
+    } while ($null -ne $a.error -and $a.error.message -match 'no access|no container' -and (Get-Date) -lt $deadline)
+    Write-Host $r[1]
+    if ($a.result.outcome -ne 'ok') { Fail "container.restart: $($r[1])" }
+    $after = (& docker inspect -f '{{.State.StartedAt}}' ngn-ci)
+    if ($after -eq $before) { Fail "ngn-ci was not restarted ($before)" }
+    & docker stop -t 2 ngn-ci | Out-Null
+    # Container events are held 120 s before they are written, so a die and
+    # a start close together become one "restarted" entry.
+    $deadline = (Get-Date).AddSeconds(240)
+    do {
+        Start-Sleep -Seconds 10
+        $r = @(Bridge @($hello, '{"id":2,"method":"events.sync","params":{"after":0,"limit":500,"kinds":["container"]}}'))
+        $seen = $r[1] -match 'ngn-ci'
+    } while (-not $seen -and (Get-Date) -lt $deadline)
+    if (-not $seen) { Fail "no event for ngn-ci: $($r[1])" }
+    & docker rm -f ngn-ci | Out-Null
+}
+$j = (& $bin deny docker --json) -join ''
+Write-Host $j
+if ($LASTEXITCODE -ne 0) { Fail "deny docker: $j" }
+if ((Get-Content $dj -Raw | ConvertFrom-Json).group) { Fail "group left in daemon.json: $(Get-Content $dj -Raw)" }
+if ($null -eq $djOld) { Remove-Item $dj } else { Set-Content -Path $dj -Value $djOld -NoNewline }
+if ($docker) { Restart-Service docker }
 
 Step 'allow health: disks and Storage Spaces through the read-only health helper'
 $j = (& $bin allow health --json) -join ''

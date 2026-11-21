@@ -89,7 +89,7 @@ fn me() -> Option<String> {
 
 /// What a fix needs as its target.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(windows, allow(dead_code))] // no containers there yet
+#[cfg_attr(windows, allow(dead_code))] // Service: units and containers share `restart` on Linux only
 enum Needs {
     Nothing,
     /// A unit root listed, or a container.
@@ -194,10 +194,24 @@ const RECIPES: &[Recipe] = &[
         needs: Needs::Unit,
     },
     Recipe {
+        key: "start",
+        group: "Services",
+        label: "Start a stopped container",
+        about: "Starts a container that exited, through Docker's pipe.",
+        needs: Needs::Container,
+    },
+    Recipe {
         key: "packages",
         group: "Disk & logs",
         label: "Clean the Windows Update cache",
         about: "Empties SoftwareDistribution\\Download (wuauserv and BITS stop meanwhile, then start again).",
+        needs: Needs::Nothing,
+    },
+    Recipe {
+        key: "prune",
+        group: "Disk & logs",
+        label: "Remove unused container images",
+        about: "Deletes dangling image layers through Docker's pipe (images in use stay).",
         needs: Needs::Nothing,
     },
     Recipe {
@@ -324,7 +338,8 @@ pub const PRESETS: &[Preset] = &[
     },
 ];
 
-/// The Windows presets: services, and the update cache when a disk fills.
+/// The Windows presets: services, containers, and the update cache and
+/// images when a disk fills.
 #[cfg(windows)]
 pub const PRESETS: &[Preset] = &[
     Preset {
@@ -338,6 +353,26 @@ pub const PRESETS: &[Preset] = &[
         give_up_after: 3,
     },
     Preset {
+        key: "containers",
+        label: "Restart unhealthy containers",
+        when: When::ContainerUnhealthy,
+        action: action::CONTAINER_RESTART,
+        for_minutes: 5,
+        max_per_hour: 2,
+        max_per_day: 6,
+        give_up_after: 3,
+    },
+    Preset {
+        key: "stopped",
+        label: "Start containers that stopped",
+        when: When::ContainerDown,
+        action: action::CONTAINER_START,
+        for_minutes: 10,
+        max_per_hour: 1,
+        max_per_day: 4,
+        give_up_after: 2,
+    },
+    Preset {
         key: "packages",
         label: "Clean the Windows Update cache when a disk fills",
         when: When::DiskFull,
@@ -345,6 +380,16 @@ pub const PRESETS: &[Preset] = &[
         for_minutes: 10,
         max_per_hour: 1,
         max_per_day: 2,
+        give_up_after: 2,
+    },
+    Preset {
+        key: "images",
+        label: "Remove unused images when a disk fills",
+        when: When::DiskFull,
+        action: action::IMAGES_PRUNE,
+        for_minutes: 10,
+        max_per_hour: 1,
+        max_per_day: 4,
         give_up_after: 2,
     },
 ];
@@ -587,7 +632,7 @@ pub fn detect(listed: &[String], containers: Option<&ContainersResult>) -> Vec<I
             target: None,
             title: format!("disk {m} is {pct}% full"),
             detail: if cfg!(windows) {
-                "Free space: clean the Windows Update download cache.".into()
+                "Free space: clean the Windows Update download cache, or remove unused images.".into()
             } else {
                 "Free space: shrink the journal, clean the package cache, or remove unused images.".into()
             },
@@ -1371,14 +1416,16 @@ mod tests {
 
     #[test]
     fn windows_has_the_same_names_where_it_has_a_counterpart() {
-        let win = ["restart", "packages", "ssh", "reboot", "run"];
+        let win = ["restart", "start", "packages", "prune", "ssh", "reboot", "run"];
         for k in win {
             assert!(recipe(k).is_some(), "{k}");
         }
         if cfg!(windows) {
             assert_eq!(RECIPES.len(), win.len());
-            assert!(RECIPES.iter().all(|r| r.needs != Needs::Container));
-            assert_eq!(PRESETS.iter().map(|p| p.key).collect::<Vec<_>>(), ["services", "packages"]);
+            assert_eq!(
+                PRESETS.iter().map(|p| p.key).collect::<Vec<_>>(),
+                ["services", "containers", "stopped", "packages", "images"]
+            );
             for r in RECIPES {
                 let a = action_for(r.key, Some("W32Time")).unwrap();
                 assert!(crate::helper::supported(a), "{a}");
