@@ -248,6 +248,43 @@ if (($r[1] | ConvertFrom-Json).result.outcome -ne 'refused') { Fail "unit.restar
 & $bin allow helper --json | Out-Null
 if ($LASTEXITCODE -ne 0) { Fail 'allow helper again' }
 
+Step 'firewall.block makes an expiring Windows Firewall rule; expired ones go; unblock removes it'
+$c = Get-Content $cfg -Raw
+$c = $c -replace 'allow = \["unit.restart", "power.reboot"\]', 'allow = ["unit.restart", "power.reboot", "firewall.block", "firewall.unblock"]'
+Set-Content -Path $cfg -Value $c -NoNewline
+Restart-Service nightgrid-node
+$fwp = New-Object -ComObject HNetCfg.FwPolicy2
+$old = New-Object -ComObject HNetCfg.FWRule
+$old.Name = 'Nightgrid Node block 198.51.100.7'; $old.Description = 'until 1'; $old.Grouping = 'Nightgrid Node blocks'
+$old.Direction = 1; $old.Action = 0; $old.RemoteAddresses = '198.51.100.7'; $old.Enabled = $true
+$fwp.Rules.Add($old)
+Start-Sleep -Seconds 3
+$r = @(Bridge @($hello,
+    '{"id":2,"method":"actions.policy"}',
+    '{"id":3,"method":"actions.run","params":{"action":"firewall.block","target":"203.0.113.9"}}',
+    '{"id":4,"method":"actions.run","params":{"action":"firewall.block","target":"192.168.1.10"}}',
+    '{"id":5,"method":"block.list"}'))
+Write-Host ($r -join "`n")
+if (($r[1] | ConvertFrom-Json).result.allowed -notcontains 'firewall.block') { Fail "policy lacks firewall.block: $($r[1])" }
+$b = ($r[2] | ConvertFrom-Json).result
+if ($b.outcome -ne 'ok' -or $b.detail -notmatch 'blocked 203.0.113.9') { Fail "firewall.block: $($r[2])" }
+if (($r[3] | ConvertFrom-Json).result.outcome -ne 'refused' -and ($r[3] | ConvertFrom-Json).result.outcome -ne 'failed') { Fail "a private address was blocked: $($r[3])" }
+if (($r[3] | ConvertFrom-Json).result.detail -notmatch 'private') { Fail "private address refusal: $($r[3])" }
+$rules = @(Get-NetFirewallRule -Group 'Nightgrid Node blocks' -ErrorAction SilentlyContinue)
+Write-Host "rules: $(@($rules | ForEach-Object { "$($_.DisplayName) [$($_.Description)] $($_.Direction) $($_.Action)" }) -join '; ')"
+$rule = $rules | Where-Object { $_.DisplayName -eq 'Nightgrid Node block 203.0.113.9' }
+if ($null -eq $rule -or $rule.Direction -ne 'Inbound' -or $rule.Action -ne 'Block' -or $rule.Description -notmatch '^until \d+$') { Fail 'no inbound block rule for 203.0.113.9' }
+if ((($rule | Get-NetFirewallAddressFilter).RemoteAddress) -notcontains '203.0.113.9') { Fail "rule address: $(($rule | Get-NetFirewallAddressFilter).RemoteAddress)" }
+if ($rules | Where-Object { $_.DisplayName -eq 'Nightgrid Node block 198.51.100.7' }) { Fail 'an expired block rule was not removed' }
+if ($r[4] -notmatch '203\.0\.113\.9') { Fail "block.list: $($r[4])" }
+$r = @(Bridge @($hello,
+    '{"id":2,"method":"actions.run","params":{"action":"firewall.unblock","target":"203.0.113.9"}}',
+    '{"id":3,"method":"actions.run","params":{"action":"firewall.block","target":"203.0.113.10"}}'))
+Write-Host ($r -join "`n")
+if (($r[1] | ConvertFrom-Json).result.outcome -ne 'ok') { Fail "firewall.unblock: $($r[1])" }
+if (Get-NetFirewallRule -DisplayName 'Nightgrid Node block 203.0.113.9' -ErrorAction SilentlyContinue) { Fail 'the unblocked rule is still there' }
+if (($r[2] | ConvertFrom-Json).result.outcome -ne 'ok') { Fail "second block: $($r[2])" }
+
 Step 'allow health: disks and Storage Spaces through the read-only health helper'
 $j = (& $bin allow health --json) -join ''
 Write-Host $j
@@ -365,6 +402,7 @@ if ($LASTEXITCODE -ne 0) { Fail 'uninstall' }
 if (Get-Service nightgrid-node -ErrorAction SilentlyContinue) { Fail 'service still there' }
 if (Get-Service nightgrid-node-helper -ErrorAction SilentlyContinue) { Fail 'helper service still there' }
 if (Get-Service nightgrid-node-health -ErrorAction SilentlyContinue) { Fail 'health service still there' }
+if (Get-NetFirewallRule -Group 'Nightgrid Node blocks' -ErrorAction SilentlyContinue) { Fail 'block rules left after uninstall' }
 if (-not (Test-Path (Join-Path $etc 'data\node.db'))) { Fail 'history removed by a plain uninstall' }
 $re = (& $Exe install --json) -join ''
 if ($LASTEXITCODE -ne 0 -or $re -notmatch 'blocked all network traffic') {

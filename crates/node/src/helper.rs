@@ -82,6 +82,10 @@ pub trait Runner {
     fn unit(&mut self, verb: &str, unit: &str) -> Result<(), String> {
         self.run("systemctl", &[verb, "--", unit])
     }
+    /// Runs a fixed PowerShell script (Windows) and returns its output.
+    fn powershell(&mut self, script: &str) -> Result<String, String> {
+        self.output("powershell.exe", &["-Command", script])
+    }
 }
 
 pub struct RealRunner;
@@ -118,6 +122,19 @@ impl Runner for RealRunner {
     fn unit(&mut self, verb: &str, unit: &str) -> Result<(), String> {
         crate::win::scm::control(verb, unit)
     }
+
+    /// By its full path, encoded, so nothing in the script is parsed twice.
+    #[cfg(windows)]
+    fn powershell(&mut self, script: &str) -> Result<String, String> {
+        let root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
+        let exe = format!(r"{root}\System32\WindowsPowerShell\v1.0\powershell.exe");
+        let enc =
+            crate::win::install::encode_utf16_base64(&format!("$ProgressPreference='SilentlyContinue'\n{script}"));
+        self.output(
+            &exe,
+            &["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", &enc],
+        )
+    }
 }
 
 /// Whether this platform's helper can carry the action out. Windows has
@@ -127,6 +144,7 @@ pub fn supported(a: &str) -> bool {
     !cfg!(windows)
         || !crate::fixes::needs_helper(a)
         || action::takes_unit(a)
+        || action::takes_address(a)
         || matches!(a, action::POWER_REBOOT | action::POWER_POWEROFF)
 }
 
@@ -140,6 +158,15 @@ fn shutdown_exe() -> String {
 /// Checks a request against root's config and carries it out.
 pub fn handle(config: &Config, local: &LocalFixes, req: &HelperRequest, store: &Path, run: &mut dyn Runner) -> Reply {
     let a = req.action.as_str();
+    if a == crate::firewall::SWEEP {
+        if !cfg!(windows) {
+            return Reply::no("the kernel ends blocks by itself here");
+        }
+        if !config.actions.allow.iter().any(|x| x == action::FIREWALL_BLOCK) {
+            return Reply::no(format!("{} is not in [actions] allow", action::FIREWALL_BLOCK));
+        }
+        return crate::firewall::handle(&config.block, a, "", run);
+    }
     if !supported(a) || (cfg!(windows) && a.starts_with("files.")) {
         return Reply::no(format!("{a} is not available on Windows yet"));
     }
@@ -454,7 +481,7 @@ mod tests {
         }
         // Windows refuses what it can't do yet before asking anyone.
         assert!(supported("unit.restart") && supported("power.reboot") && supported("container.restart"));
-        assert_eq!(supported("firewall.block"), !cfg!(windows));
+        assert!(supported("firewall.block"));
         assert_eq!(supported("files.rollback"), !cfg!(windows));
     }
 

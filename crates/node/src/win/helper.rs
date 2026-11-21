@@ -535,7 +535,15 @@ fn retire(k: &Kind, bin: &Path, rep: &mut Report) -> Result<(), String> {
         rep.warnings.push(format!("{} firewall rule: {e}", k.label));
     }
     scm::delete(k.service)?;
-    scm::stop(k.service, Duration::from_secs(30))
+    scm::stop(k.service, Duration::from_secs(30))?;
+    if k.grant == ADMIN.grant {
+        // Blocks are the admin helper's; without it nothing would end them.
+        match super::install::powershell(&crate::firewall::win_remove_all_script()) {
+            Ok(_) => step(rep, "removed the node's firewall blocks"),
+            Err(e) => rep.warnings.push(format!("firewall blocks: {e}")),
+        }
+    }
+    Ok(())
 }
 
 /// Removes both helpers on uninstall.

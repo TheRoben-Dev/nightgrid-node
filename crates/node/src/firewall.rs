@@ -13,6 +13,12 @@
 //! loopback, private, link-local and CGNAT/Tailscale addresses are never
 //! blocked (unless root sets `[block] private`), nor anything in
 //! `[block] never`. The service can't widen any of that.
+//!
+//! On Windows (W2e) a block is an inbound Windows Firewall rule in the
+//! group `Nightgrid Node blocks`, named after the address, whose description
+//! holds its end time. Windows has no expiring rules, so the helper removes
+//! the ones past their time whenever it touches the group, and the node asks
+//! it to (`firewall.sweep`) once a minute after one is due.
 
 use std::collections::BTreeMap;
 use std::net::IpAddr;
@@ -118,11 +124,115 @@ pub fn ensure_script() -> String {
     s
 }
 
+/// The Windows Firewall rule group that holds the node's blocks.
+pub const WIN_GROUP: &str = "Nightgrid Node blocks";
+/// The helper-only request that removes expired Windows rules.
+pub const SWEEP: &str = "firewall.sweep";
+
+fn win_rule(ip: IpAddr) -> String {
+    format!("Nightgrid Node block {ip}")
+}
+
+/// PowerShell that removes the group's rules past their time (and the rule
+/// named `also`, if given). `IpAddr`'s display is digits, dots, hex and
+/// colons only, so nothing here needs quoting beyond the fixed names.
+fn win_prune(now: i64, also: Option<&str>) -> String {
+    let also = also.map(|n| format!("$r.Name -eq '{n}' -or ")).unwrap_or_default();
+    format!(
+        "$ErrorActionPreference = 'Stop'\n\
+         $fw = New-Object -ComObject HNetCfg.FwPolicy2\n\
+         $gone = 0\n\
+         foreach ($r in @($fw.Rules | Where-Object {{ $_.Grouping -eq '{WIN_GROUP}' }})) {{\n\
+         \x20 if ({also}($r.Description -match '^until (\\d+)$' -and [int64]$Matches[1] -le {now})) {{ $fw.Rules.Remove($r.Name); $gone++ }}\n\
+         }}\n"
+    )
+}
+
+/// PowerShell for one block: an inbound rule for the address, any protocol
+/// and profile, that ends at `until`. Says `firewall-off` when a profile has
+/// Windows Firewall turned off (the rule then does nothing there).
+pub fn win_block_script(ip: IpAddr, now: i64, until: i64) -> String {
+    let name = win_rule(ip);
+    format!(
+        "{}$n = New-Object -ComObject HNetCfg.FWRule\n\
+         $n.Name = '{name}'; $n.Description = 'until {until}'; $n.Grouping = '{WIN_GROUP}'\n\
+         $n.Direction = 1; $n.Action = 0; $n.Protocol = 256; $n.RemoteAddresses = '{ip}'; $n.Profiles = 2147483647; $n.Enabled = $true\n\
+         $fw.Rules.Add($n)\n\
+         if (@(1, 2, 4 | Where-Object {{ -not $fw.FirewallEnabled($_) }}).Count) {{ 'firewall-off' }}\n",
+        win_prune(now, Some(&name))
+    )
+}
+
+/// PowerShell for an unblock: says `removed` when there was a rule.
+pub fn win_unblock_script(ip: IpAddr, now: i64) -> String {
+    let name = win_rule(ip);
+    format!(
+        "{}$had = @($fw.Rules | Where-Object {{ $_.Name -eq '{name}' }}).Count\n\
+         if ($had) {{ $fw.Rules.Remove('{name}') }}\n\
+         if ($had -or $gone) {{ 'removed' }}\n",
+        win_prune(now, None)
+    )
+}
+
+/// PowerShell that removes the expired rules: says how many.
+pub fn win_sweep_script(now: i64) -> String {
+    format!("{}$gone\n", win_prune(now, None))
+}
+
+/// PowerShell that removes every block (`deny helper`, `uninstall`).
+pub fn win_remove_all_script() -> String {
+    format!(
+        "$fw = New-Object -ComObject HNetCfg.FwPolicy2\n\
+         foreach ($r in @($fw.Rules | Where-Object {{ $_.Grouping -eq '{WIN_GROUP}' }})) {{ $fw.Rules.Remove($r.Name) }}\n"
+    )
+}
+
+/// The Windows side of `firewall.*` and `firewall.sweep`.
+fn handle_windows(cfg: &BlockConfig, req_action: &str, ip: Option<IpAddr>, now: i64, run: &mut dyn Runner) -> Reply {
+    let no = |detail: String| Reply { ok: false, detail };
+    match (req_action, ip) {
+        (SWEEP, _) => match run.powershell(&win_sweep_script(now)) {
+            Ok(out) => Reply { ok: true, detail: format!("removed {} expired blocks", out.trim()) },
+            Err(e) => no(e),
+        },
+        (action::FIREWALL_UNBLOCK, Some(ip)) => match run.powershell(&win_unblock_script(ip, now)) {
+            Ok(out) if out.contains("removed") => Reply { ok: true, detail: format!("unblocked {ip}") },
+            Ok(_) => no(format!("{ip} is not blocked")),
+            Err(e) => no(e),
+        },
+        (_, Some(ip)) => {
+            let m = cfg.minutes;
+            match run.powershell(&win_block_script(ip, now, now + i64::from(m) * 60)) {
+                Ok(out) if out.contains("firewall-off") => Reply {
+                    ok: true,
+                    detail: format!(
+                        "blocked {ip} for {m} minutes (Windows Firewall is off for some network profile, where this does nothing)"
+                    ),
+                },
+                Ok(_) => Reply { ok: true, detail: format!("blocked {ip} for {m} minutes") },
+                Err(e) => no(e),
+            }
+        }
+        (_, None) => no("no address".into()),
+    }
+}
+
 /// The helper's side of `firewall.*` (after the `[actions] allow` check).
 pub fn handle(cfg: &BlockConfig, req_action: &str, target: &str, run: &mut dyn Runner) -> Reply {
+    if cfg!(windows) && req_action == SWEEP {
+        return handle_windows(cfg, req_action, None, now_secs(), run);
+    }
     let Ok(ip) = target.parse::<IpAddr>().map(canonical) else {
         return Reply { ok: false, detail: format!("not an IP address: {target:?}") };
     };
+    if cfg!(windows) {
+        if req_action == action::FIREWALL_BLOCK {
+            if let Some(why) = refuse(cfg, ip) {
+                return Reply { ok: false, detail: why };
+            }
+        }
+        return handle_windows(cfg, req_action, Some(ip), now_secs(), run);
+    }
     let t = format!("inet {TABLE}");
     if req_action == action::FIREWALL_UNBLOCK {
         return match run.run("nft", &[&format!("delete element {t} {} {{ {ip} }}", set_for(ip))]) {
@@ -233,6 +343,25 @@ impl AutoBlocker {
     }
 }
 
+/// Windows: asks the helper to remove the rules past their time (not an
+/// action; nothing is logged unless it fails).
+pub fn sweep(shared: &Shared) {
+    let req = crate::helper::HelperRequest { action: SWEEP.into(), ..Default::default() };
+    match crate::helper::call(&shared.helper_socket, &req) {
+        Ok(r) if r.ok => crate::debug!("{}", r.detail),
+        Ok(r) => crate::warn!("removing expired blocks: {}", r.detail),
+        Err(e) => crate::warn!("removing expired blocks: {e}"),
+    }
+}
+
+/// Whether the block thread should run: auto-block on Linux, and on
+/// Windows also whenever blocks can be made, to remove them on time.
+pub fn thread_wanted(shared: &Shared) -> bool {
+    let allowed = shared.config.actions.allow.iter().any(|a| a == action::FIREWALL_BLOCK)
+        && crate::helper::installed(&shared.helper_socket);
+    (auto_enabled(shared) && shared.config.logins.enabled) || (cfg!(windows) && allowed)
+}
+
 /// Auto-block is on and can work: root turned it on, allowed the action and
 /// installed the helper.
 pub fn auto_enabled(shared: &Shared) -> bool {
@@ -264,16 +393,31 @@ pub fn should_block(shared: &Shared, addr: &str, now: i64) -> Result<(), String>
 }
 
 fn run(shared: &Shared, rx: &mpsc::Receiver<String>) {
+    if cfg!(windows) {
+        // Rules that ran out while the node was stopped.
+        sweep(shared);
+    }
     loop {
         let addr = match rx.recv_timeout(Duration::from_secs(60)) {
             Ok(a) if a.is_empty() => return,
             Ok(a) => a,
             Err(RecvTimeoutError::Timeout) => {
-                shared.blocks.lock().unwrap_or_else(|e| e.into_inner()).prune(now_secs());
+                let expired = {
+                    let mut b = shared.blocks.lock().unwrap_or_else(|e| e.into_inner());
+                    let before = b.active.len();
+                    b.prune(now_secs());
+                    before - b.active.len()
+                };
+                if cfg!(windows) && expired > 0 {
+                    sweep(shared);
+                }
                 continue;
             }
             Err(RecvTimeoutError::Disconnected) => return,
         };
+        if !shared.config.block.auto {
+            continue;
+        }
         let now = now_secs();
         if let Err(why) = should_block(shared, &addr, now) {
             crate::debug!("not auto-blocking {addr}: {why}");
@@ -362,6 +506,48 @@ mod tests {
         f.fail = true;
         assert_eq!(handle(&cfg, action::FIREWALL_UNBLOCK, "203.0.113.7", &mut f).detail, "203.0.113.7 is not blocked");
         assert!(!handle(&cfg, action::FIREWALL_BLOCK, "203.0.113.9", &mut f).ok);
+    }
+
+    #[derive(Default)]
+    struct Ps(Vec<String>, String);
+
+    impl Runner for Ps {
+        fn run(&mut self, _: &str, _: &[&str]) -> Result<(), String> {
+            Err("no programs".into())
+        }
+        fn powershell(&mut self, script: &str) -> Result<String, String> {
+            self.0.push(script.to_owned());
+            Ok(self.1.clone())
+        }
+    }
+
+    #[test]
+    fn windows_rules_carry_their_end_and_old_ones_go() {
+        let cfg = BlockConfig::default();
+        let ip: IpAddr = "203.0.113.9".parse().unwrap();
+        let s = win_block_script(ip, 1000, 4600);
+        assert!(s.contains("$n.Name = 'Nightgrid Node block 203.0.113.9'; $n.Description = 'until 4600'"));
+        assert!(s.contains("$n.RemoteAddresses = '203.0.113.9'") && s.contains("$n.Direction = 1; $n.Action = 0"));
+        assert!(
+            s.contains("[int64]$Matches[1] -le 1000")
+                && s.contains("$r.Name -eq 'Nightgrid Node block 203.0.113.9' -or")
+        );
+        assert!(win_unblock_script(ip, 5).contains("$fw.Rules.Remove('Nightgrid Node block 203.0.113.9')"));
+        assert!(win_sweep_script(7).ends_with("$gone\n") && win_remove_all_script().contains(WIN_GROUP));
+
+        let mut ps = Ps::default();
+        let r = handle_windows(&cfg, action::FIREWALL_BLOCK, Some(ip), 1000, &mut ps);
+        assert!(r.ok && r.detail == format!("blocked 203.0.113.9 for {} minutes", cfg.minutes), "{}", r.detail);
+        let r = handle_windows(&cfg, action::FIREWALL_UNBLOCK, Some(ip), 1000, &mut ps);
+        assert!(!r.ok && r.detail.contains("is not blocked"));
+        ps.1 = "removed\r\n".into();
+        assert!(handle_windows(&cfg, action::FIREWALL_UNBLOCK, Some(ip), 1000, &mut ps).ok);
+        ps.1 = "firewall-off\r\n".into();
+        assert!(handle_windows(&cfg, action::FIREWALL_BLOCK, Some(ip), 1000, &mut ps)
+            .detail
+            .contains("Firewall is off"));
+        ps.1 = "2\r\n".into();
+        assert_eq!(handle_windows(&cfg, SWEEP, None, 1000, &mut ps).detail, "removed 2 expired blocks");
     }
 
     #[test]
