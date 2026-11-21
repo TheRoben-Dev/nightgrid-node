@@ -200,6 +200,20 @@ pub fn serve(config_path: &Path) -> Result<(), String> {
 
 /// Asks the health helper (service side).
 pub fn call(socket: &Path, req: &ReadRequest) -> Result<String, String> {
+    // Reads change nothing, so one that got no answer at all (a helper that
+    // was just starting or stopping closed the connection) is asked again.
+    match call_once(socket, req) {
+        Err(e) if e == NO_ANSWER => {
+            std::thread::sleep(Duration::from_secs(1));
+            call_once(socket, req)
+        }
+        r => r,
+    }
+}
+
+const NO_ANSWER: &str = "health helper: no answer";
+
+fn call_once(socket: &Path, req: &ReadRequest) -> Result<String, String> {
     #[cfg(windows)]
     let mut s = match crate::win::helper::by_pipe(socket) {
         Some(k) => crate::win::helper::connect(k)?,
@@ -213,7 +227,7 @@ pub fn call(socket: &Path, req: &ReadRequest) -> Result<String, String> {
     s.write_all(&line).map_err(|e| format!("health helper: {e}"))?;
     let mut answer = String::new();
     BufReader::new(s.take(MAX_OUTPUT * 2)).read_line(&mut answer).map_err(|e| format!("health helper: {e}"))?;
-    let r: ReadReply = serde_json::from_str(&answer).map_err(|_| "health helper: no answer".to_string())?;
+    let r: ReadReply = serde_json::from_str(&answer).map_err(|_| NO_ANSWER.to_string())?;
     if r.ok {
         Ok(r.output)
     } else {

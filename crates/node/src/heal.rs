@@ -208,8 +208,29 @@ pub fn refresh_fixes(shared: &Shared) {
     }
 }
 
+/// Windows: the counterpart of systemd's failed state, which the SCM
+/// doesn't keep. A listed service is failed when it is stopped and either
+/// stopped with an error (an exit code other than 0, or 1077 "never
+/// started") or is set to start with Windows. A crashed svchost leaves
+/// exit code 0, so an automatic service that isn't running counts too.
+#[cfg(windows)]
+fn failed_units(units: &[String]) -> Vec<String> {
+    use crate::win::scm;
+    units
+        .iter()
+        .filter(|u| match scm::status(u) {
+            Ok(Some(st)) if st.state == 1 => {
+                !matches!(st.exit, 0 | 1077) || scm::auto_start(u).ok().flatten().unwrap_or(false)
+            }
+            _ => false,
+        })
+        .cloned()
+        .collect()
+}
+
 /// Which of the units are in the failed state (`systemctl is-failed`
 /// prints one line per unit, in order, whatever its exit status).
+#[cfg(unix)]
 fn failed_units(units: &[String]) -> Vec<String> {
     if units.is_empty() {
         return Vec::new();

@@ -285,6 +285,37 @@ if (($r[1] | ConvertFrom-Json).result.outcome -ne 'ok') { Fail "firewall.unblock
 if (Get-NetFirewallRule -DisplayName 'Nightgrid Node block 203.0.113.9' -ErrorAction SilentlyContinue) { Fail 'the unblocked rule is still there' }
 if (($r[2] | ConvertFrom-Json).result.outcome -ne 'ok') { Fail "second block: $($r[2])" }
 
+Step 'self-healing: an autofix restarts a listed service that stopped with an error'
+$fixes = Join-Path $etc 'fixes.toml'
+Set-Content -Path $fixes -Value "[[autofix]]`nid = `"w32time`"`nenabled = true`ndry_run = false`nwhen = `"unit-failed`"`ntarget = `"W32Time`"`naction = `"unit.restart`"`nfor_minutes = 1`n"
+$w32pid = (Get-CimInstance Win32_Service -Filter "Name='W32Time'").ProcessId
+$w32shared = @(Get-CimInstance Win32_Service -Filter "ProcessId=$w32pid").Count -gt 1
+$r = @(Bridge @($hello, '{"id":2,"method":"heal.status"}'))
+Write-Host $r[1]
+if ($w32shared) {
+    Write-Host "W32Time shares its svchost here; killing it would take other services down, so only the rule is checked"
+} else {
+    # Automatic start, so a stop that isn't an administrator's counts as
+    # failed; no SCM recovery, so only the node can bring it back.
+    Set-Service W32Time -StartupType Automatic
+    & sc.exe failure W32Time reset= 0 actions= '""' | Out-Null
+    Stop-Process -Id $w32pid -Force
+    Start-Sleep -Seconds 2
+    $st = (sc.exe query W32Time) -join ' '
+    Write-Host "after the kill: $st"
+    $deadline = (Get-Date).AddSeconds(150)
+    do {
+        Start-Sleep -Seconds 5
+        $svc = Get-CimInstance Win32_Service -Filter "Name='W32Time'"
+    } while (($svc.State -ne 'Running' -or $svc.ProcessId -eq $w32pid) -and (Get-Date) -lt $deadline)
+    $r = @(Bridge @($hello, '{"id":2,"method":"actions.log","params":{"after":0}}'))
+    Write-Host $r[1]
+    if ($svc.State -ne 'Running') { Fail "the autofix did not restart W32Time: $($r[1])" }
+    if ($r[1] -notmatch 'autofix w32time') { Fail "no autofix entry in the action log: $($r[1])" }
+    Set-Service W32Time -StartupType Manual
+}
+Remove-Item $fixes
+
 Step 'allow health: disks and Storage Spaces through the read-only health helper'
 $j = (& $bin allow health --json) -join ''
 Write-Host $j
@@ -301,7 +332,7 @@ do {
     Start-Sleep -Seconds 5
     $r = @(Bridge @($hello, '{"id":2,"method":"health.latest"}'))
     $hl = ($r[1] | ConvertFrom-Json).result
-} while (($null -eq $hl -or $null -eq $hl.smart -or $null -eq $hl.pools) -and (Get-Date) -lt $deadline)
+} while (($null -eq $hl -or $null -eq $hl.smart.report -or $null -eq $hl.pools.report) -and (Get-Date) -lt $deadline)
 Write-Host $r[1]
 if ($hl.access -ne 'ok') { Fail "health access: $($r[1])" }
 if ($null -eq $hl.smart.report -or @($hl.smart.report.disks).Count -lt 1) { Fail "no disks from the health helper: $($r[1])" }
