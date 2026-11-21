@@ -593,9 +593,18 @@ fn first_host(ip: IpAddr, bits: u8) -> IpAddr {
 }
 
 fn state_dir() -> PathBuf {
-    std::env::var_os("STATE_DIRECTORY")
-        .map(|s| PathBuf::from(s.to_string_lossy().split(':').next().unwrap_or_default().to_owned()))
-        .unwrap_or_else(|| PathBuf::from("/var/lib/nightgrid-node-peer"))
+    if let Some(s) = std::env::var_os("STATE_DIRECTORY") {
+        return PathBuf::from(s.to_string_lossy().split(':').next().unwrap_or_default().to_owned());
+    }
+    #[cfg(windows)]
+    {
+        // `allow peers` makes it readable only by the link's own account.
+        crate::win::unit::PEER.state_dir()
+    }
+    #[cfg(not(windows))]
+    {
+        PathBuf::from("/var/lib/nightgrid-node-peer")
+    }
 }
 
 /// How often a `tailnet` or `lan` listen address is looked up again.
@@ -603,6 +612,11 @@ const LISTEN_LOOK: Duration = Duration::from_secs(30);
 
 /// `nightgrid-node peer`: the link unit's loop.
 pub fn link(config_path: &Path) -> Result<(), String> {
+    link_until(config_path, &|| false)
+}
+
+/// [`link`] until `stop` says so (the Windows service's stop request).
+pub fn link_until(config_path: &Path, stop: &dyn Fn() -> bool) -> Result<(), String> {
     let cfg = Config::load(config_path).map_err(|e| format!("config: {e}"))?;
     let id = Arc::new(identity(&state_dir())?);
     crate::info!("node-to-node link, fingerprint {}", id.fingerprint);
@@ -629,6 +643,12 @@ pub fn link(config_path: &Path) -> Result<(), String> {
         let mut known: Option<PeersList> = None;
         let mut leader = Leader::default();
         loop {
+            if stop() {
+                if let Some(t) = accept.take() {
+                    t.abort();
+                }
+                return Ok(());
+            }
             if Instant::now() >= next_look {
                 next_look = Instant::now() + LISTEN_LOOK;
                 let want = listen_addr(&cfg);
@@ -718,7 +738,7 @@ pub fn link(config_path: &Path) -> Result<(), String> {
             // the address again every LISTEN_LOOK.
             let look = if follows || accept.is_none() { next_look } else { next_round };
             let wait = next_round.min(next_check).min(look).saturating_duration_since(Instant::now());
-            tokio::time::sleep(wait).await;
+            tokio::time::sleep(wait.min(Duration::from_secs(1))).await;
         }
     })
 }

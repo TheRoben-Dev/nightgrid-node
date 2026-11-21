@@ -2,7 +2,6 @@
 //! of `/proc`, systemd and the unix socket.
 
 pub mod acl;
-pub mod checker;
 pub mod doctor;
 pub mod eventlog;
 pub mod files;
@@ -12,6 +11,7 @@ pub mod net;
 pub mod pipe;
 pub mod scm;
 pub mod service;
+pub mod unit;
 pub mod upgrade;
 pub mod usage;
 

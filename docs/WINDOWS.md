@@ -89,7 +89,7 @@ Supported: Windows Server 2016, 2019, 2022 and 2025 (and Windows 10/11, which us
 | `health`: UPS, `ups` shutdown guard | Substitute | `[health] ups = ["battery"]`: a USB HID UPS shows up as a battery (`Win32_Battery`): charge, on battery, low battery, runtime, read by the health helper and turned into the same reading as `upsc`, so alerts and `[ups] shutdown` work unchanged. `"ups@nas"`, a NUT server on the LAN, is read by the check runner with the node's own NUT client (`LIST VAR`, read only) because Windows has no `upsc` | **W2d (0.34.0)**; NUT servers **W3c (0.41.0)**, after `allow health` and `allow checks` |
 | `containers` (list, events, `container.*` actions, logs) | Direct | Docker Engine on `\\.\pipe\docker_engine`, after `allow docker`, which sets `"group": "NT SERVICE\\nightgrid-node"` in `%ProgramData%\docker\config\daemon.json` (Administrator-equivalent, like the docker group on Linux); Docker applies it at its next restart | **W3a (0.39.0)** |
 | `checks` (service checks from the LAN) | Direct | Separate service `nightgrid-node-checker` as its own virtual account (no administrator, write-restricted SID), outbound TCP only to `[checks] networks` by a Windows Service Hardening rule; it may read the config and write only `data\log\checker`. Windows Firewall won't take `::1/128` in a rule, so `allow checks` says so and checks of `localhost` should use `127.0.0.1` | **W3b (0.40.0)**, after `allow checks` |
-| `peers`, `serve`, `hub.member` (node-to-node link) | Direct | Separate service `nightgrid-node-peer`, inbound only on the tailnet or LAN address and port | W3 |
+| `peers`, `serve`, `hub.member` (node-to-node link) | Direct | Separate service `nightgrid-node-peer` as its own virtual account, inbound only on its listen port and outbound only with `[peers] networks` (Windows Service Hardening); its TLS key in `data\peer`, which the node's own service can't read | **W3d (0.42.0)**, after `allow peers` |
 | Status page | Direct | Separate service, tailnet address only | W3 |
 | `jobs` (scheduled jobs) | Substitute | Task Scheduler tasks under `\Nightgrid\` (what the app creates on Windows) instead of systemd timers | W3 |
 | `jobs` backups | Substitute | Path jobs as on Linux; Windows Server Backup results from its event log instead of restic/borg units | W3 |
@@ -114,7 +114,8 @@ Supported: Windows Server 2016, 2019, 2022 and 2025 (and Windows 10/11, which us
 - **W3a (0.39.0):** containers through Docker Engine and `allow docker`. App spec [0034](app-integration/0034-windows-node-containers.md).
 - **W3b (0.40.0):** the check runner service and `allow checks`/`deny checks`. App spec [0035](app-integration/0035-windows-node-checks.md).
 - **W3c (0.41.0):** NUT servers on the LAN for UPS readings and the shutdown guard, through the check runner. App spec [0036](app-integration/0036-windows-node-nut.md).
-- **W3d and later:** the link, the status page, jobs and backups.
+- **W3d (0.42.0):** the node-to-node link service and `allow peers`/`deny peers`; `hub.member`. App spec [0037](app-integration/0037-windows-node-link.md).
+- **W3e and later:** the status page, jobs and backups.
 
 ## 5. Same commands
 

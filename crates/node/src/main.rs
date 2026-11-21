@@ -295,8 +295,9 @@ fn windows_command(a: &Args) -> Option<Result<(), String>> {
         "allow" | "deny" if a.rest.first().map(String::as_str) == Some("helper") => {
             win::helper::allow(&win::helper::ADMIN, a.cmd == "allow").map(|r| print_report(&r, a.json))
         }
-        "allow" | "deny" if a.rest.first().map(String::as_str) == Some("checks") => {
-            win::checker::allow(a.cmd == "allow", &a.config, a.no_start).map(|r| print_report(&r, a.json))
+        "allow" | "deny" if a.rest.first().and_then(|g| win::unit::Unit::by_grant(g)).is_some() => {
+            let u = a.rest.first().and_then(|g| win::unit::Unit::by_grant(g)).expect("checked");
+            win::unit::allow(u, a.cmd == "allow", &a.config, a.no_start).map(|r| print_report(&r, a.json))
         }
         "allow" | "deny" if a.rest.first().map(String::as_str) == Some("health") => {
             win::helper::allow(&win::helper::HEALTH, a.cmd == "allow").map(|r| print_report(&r, a.json))
@@ -333,8 +334,9 @@ fn windows_command(a: &Args) -> Option<Result<(), String>> {
         })(),
         "helper" => win::helper::serve(&win::helper::ADMIN, &a.config),
         "health-helper" => win::helper::serve(&win::helper::HEALTH, &a.config),
-        "checker" => win::checker::serve(&a.config),
-        "peer" | "status-page" | "netwatch" => Err(not_on_windows(&a.cmd)),
+        "checker" => win::unit::serve(&win::unit::CHECKER, &a.config),
+        "peer" => win::unit::serve(&win::unit::PEER, &a.config),
+        "status-page" | "netwatch" => Err(not_on_windows(&a.cmd)),
         _ => return None,
     })
 }

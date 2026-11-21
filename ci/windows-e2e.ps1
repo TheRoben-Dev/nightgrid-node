@@ -94,7 +94,7 @@ if ($r.Count -lt 2) { Fail "bridge answers: $r" }
 $w = $r[0] | ConvertFrom-Json
 if ($w.result.proto -ne 2 -or -not $w.result.caps.'metrics.sync') { Fail "hello: $($r[0])" }
 if (-not $w.result.caps.containers) { Fail 'does not advertise containers' }
-if (-not $w.result.caps.checks) { Fail 'does not advertise checks' }
+if (-not $w.result.caps.checks -or -not $w.result.caps.peers) { Fail 'does not advertise checks and peers' }
 if (-not $w.result.caps.health) { Fail 'does not advertise health' }
 $info = ($r[1] | ConvertFrom-Json).result
 if ($info.node.hostname -eq '' -or $info.rssBytes -le 0) { Fail "node.info: $($r[1])" }
@@ -731,6 +731,73 @@ if ($r[1] -notmatch 'only the check runner') { Fail "an administrator could repo
 $j = (& $bin deny checks --json) -join ''
 if ($LASTEXITCODE -ne 0) { Fail "deny checks: $j" }
 Stop-Job $nut; Remove-Job $nut -Force
+
+Step 'allow peers: the link service pairs with itself over loopback, mutual TLS with a pinned fingerprint'
+$r = @(Bridge @($hello, '{"id":2,"method":"peers.latest"}'))
+if ($r[1] -notmatch '"access":"off"') { Fail "link should be off by default: $($r[1])" }
+$cfgBefore = Get-Content $cfg -Raw
+$c = $cfgBefore -replace '(?m)^listen = "tailnet"\r?$', 'listen = "127.0.0.1:17419"'
+$c = $c -replace '(?m)^networks = \["100\.64\.0\.0/10", "fd7a:115c:a1e0::/48"\]\r?$', 'networks = ["127.0.0.0/8"]'
+$c = $c -replace '(?m)^serve = \["ping"\]\r?\ninterval_secs = 60', "serve = [`"ping`"]`ninterval_secs = 30"
+Set-Content -Path $cfg -Value $c -NoNewline
+if ((Get-Content $cfg -Raw) -notmatch 'listen = "127\.0\.0\.1:17419"' -or (Get-Content $cfg -Raw) -notmatch 'networks = \["127\.0\.0\.0/8"\]') { Fail "could not set [peers]: $(Get-Content $cfg -Raw)" }
+Restart-Service nightgrid-node
+Start-Sleep -Seconds 3
+$j = (& $bin allow peers --json) -join ''
+Write-Host $j
+if ($LASTEXITCODE -ne 0) { Fail "allow peers: $j" }
+if ($j -notmatch 'pinned certificates') { Fail "no peers warning: $j" }
+$ps = Get-CimInstance Win32_Service -Filter "Name='nightgrid-node-peer'"
+if ($null -eq $ps -or $ps.StartName -ne 'NT SERVICE\nightgrid-node-peer') { Fail "link service: $($ps | Out-String)" }
+if ((sc.exe qsidtype nightgrid-node-peer) -join ' ' -notmatch 'RESTRICTED') { Fail 'link SID type' }
+$fw = New-Object -ComObject HNetCfg.FwPolicy2
+if (-not $fw.ServiceRestriction.ServiceRestricted('nightgrid-node-peer', $bin)) { Fail 'no hardening rule for the link' }
+$wsh = @($fw.ServiceRestriction.Rules | Where-Object { $_.ServiceName -eq 'nightgrid-node-peer' -and $_.Action -eq 1 })
+Write-Host "link rules: $(@($wsh | ForEach-Object { "$($_.Direction) $($_.LocalPorts) $($_.RemoteAddresses)" }) -join '; ')"
+if ($wsh.Count -ne 2 -or -not ($wsh | Where-Object { $_.Direction -eq 1 -and $_.LocalPorts -eq '17419' })) { Fail 'expected an inbound and an outbound link rule' }
+$deadline = (Get-Date).AddSeconds(60)
+do {
+    Start-Sleep -Seconds 2
+    $r = @(Bridge @($hello, '{"id":2,"method":"peers.latest"}', '{"id":3,"method":"node.info"}'))
+} while ($r[1] -notmatch '"listening":"127\.0\.0\.1:17419"' -and (Get-Date) -lt $deadline)
+Write-Host $r[1]
+if ($r[1] -notmatch '"listening":"127\.0\.0\.1:17419"') { Fail "link never reported: $($r[1])" }
+$key = Join-Path $etc 'data\peer\key.pk8'
+if (-not (Test-Path $key)) { Fail "no link key at $key" }
+$who = @((Get-Acl (Split-Path $key)).Access | ForEach-Object { $_.IdentityReference.Value })
+Write-Host "key folder ACL: $($who -join ', ')"
+if ($who -match '\\nightgrid-node$' -or $who -match 'Users|Everyone') { Fail "the link's key folder is readable by others: $($who -join ', ')" }
+$fp = ($r[1] | ConvertFrom-Json).result.fingerprint
+$nid = ($r[2] | ConvertFrom-Json).result.node.nodeId
+$r = @(Bridge @($hello, (Rpc 2 'peers.set' @{ peers = @(@{ id = $nid; name = 'self'; address = '127.0.0.1:17419'; fingerprint = $fp }) })))
+if ($r[1] -notmatch '"serve":\["ping"\]') { Fail "peers.set: $($r[1])" }
+$deadline = (Get-Date).AddSeconds(80)
+do {
+    Start-Sleep -Seconds 2
+    $r = @(Bridge @($hello, '{"id":2,"method":"peers.latest"}'))
+} while ($r[1] -notmatch '"ok":true' -and (Get-Date) -lt $deadline)
+Write-Host $r[1]
+if ($r[1] -notmatch '"ok":true') { Fail "the link never reached the paired node: $($r[1])" }
+$wrong = 'ab' * 32
+$r = @(Bridge @($hello, (Rpc 2 'peers.set' @{ peers = @(@{ id = $nid; name = 'self'; address = '127.0.0.1:17419'; fingerprint = $wrong }) })))
+$deadline = (Get-Date).AddSeconds(120)
+do {
+    Start-Sleep -Seconds 3
+    $r = @(Bridge @($hello, '{"id":2,"method":"peers.latest"}'))
+} while ($r[1] -notmatch 'certificate' -and (Get-Date) -lt $deadline)
+Write-Host $r[1]
+if ($r[1] -notmatch 'certificate') { Fail "wrong pin not explained: $($r[1])" }
+$r = @(Bridge @($hello, '{"id":2,"method":"peers.report","params":{"readings":[]}}'))
+if ($r[1] -notmatch 'only the node-to-node link') { Fail "an administrator could report peers: $($r[1])" }
+$doc = (& $bin doctor --json) -join ''
+if ($doc -notmatch '"check":"peers","level":"ok"') { Fail "doctor after allow peers: $doc" }
+$j = (& $bin deny peers --json) -join ''
+if ($LASTEXITCODE -ne 0) { Fail "deny peers: $j" }
+if (Get-Service nightgrid-node-peer -ErrorAction SilentlyContinue) { Fail 'link service left after deny' }
+if (@(Get-NetFirewallRule -Group 'Nightgrid Node node-to-node link' -ErrorAction SilentlyContinue).Count -ne 0) { Fail 'link rules left after deny' }
+Set-Content -Path $cfg -Value $cfgBefore -NoNewline
+Restart-Service nightgrid-node
+Start-Sleep -Seconds 3
 
 Step 'an account outside the group is refused'
 $pw = 'Ng-' + [guid]::NewGuid().ToString('N').Substring(0, 16) + '!a1'

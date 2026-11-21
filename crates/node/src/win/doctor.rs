@@ -133,30 +133,36 @@ pub fn run(config_path: &Path, socket: Option<&Path>) -> Report {
         Err(_) => {}
     }
 
-    // Check runner.
-    match super::scm::status(super::checker::SERVICE) {
-        Ok(Some(s)) => {
-            let fenced = if crate::compat::am_root() { super::checker::restricted() } else { None };
-            match (s.running(), fenced) {
-                (_, Some(false)) => r.add(
-                    "checks",
-                    Level::Warn,
-                    "the check runner's network limit is missing (run: nightgrid-node allow checks)",
-                ),
-                (true, _) => r.add("checks", Level::Ok, "check runner running, outbound only to [checks] networks"),
-                (false, _) => r.add(
-                    "checks",
-                    Level::Warn,
-                    format!("check runner {} (see {})", s.word(), super::checker::log_dir().display()),
-                ),
+    // The network units (check runner, link).
+    for u in super::unit::ALL {
+        let off = match u.grant {
+            "checks" => "service checks from this host are off",
+            _ => "the node-to-node link is off",
+        };
+        match super::scm::status(u.service) {
+            Ok(Some(s)) => {
+                let fenced = if crate::compat::am_root() { super::unit::restricted(u) } else { None };
+                match (s.running(), fenced) {
+                    (_, Some(false)) => r.add(
+                        u.grant,
+                        Level::Warn,
+                        format!("the {}'s network limit is missing (run: nightgrid-node allow {})", u.label, u.grant),
+                    ),
+                    (true, _) => {
+                        r.add(u.grant, Level::Ok, format!("{} running, only with [{}] networks", u.label, u.grant))
+                    }
+                    (false, _) => {
+                        r.add(u.grant, Level::Warn, format!("{} {} (see {})", u.label, s.word(), u.log_dir().display()))
+                    }
+                }
             }
+            Ok(None) => r.add(
+                u.grant,
+                Level::Info,
+                format!("{off} (an administrator can run: nightgrid-node allow {})", u.grant),
+            ),
+            Err(_) => {}
         }
-        Ok(None) => r.add(
-            "checks",
-            Level::Info,
-            "service checks from this host are off (an administrator can run: nightgrid-node allow checks)",
-        ),
-        Err(_) => {}
     }
 
     // Network restriction.

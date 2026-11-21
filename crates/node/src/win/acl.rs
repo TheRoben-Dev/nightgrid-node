@@ -106,7 +106,7 @@ pub fn pipe_sddl(service_sid: Option<&str>, group_sid: Option<&str>, units: &[St
 
 /// The SIDs of the node's own unit services that may use its pipe.
 pub fn unit_sids() -> Vec<String> {
-    vec![crate::compat::service_sid(super::checker::SERVICE)]
+    super::unit::ALL.iter().map(|u| u.sid()).collect()
 }
 
 #[cfg(test)]

@@ -424,6 +424,8 @@ pub const WINDOWS_CAPS: &[&str] = &[
     cap::CHANGES,
     cap::CONTAINERS,
     cap::CHECKS,
+    cap::PEERS,
+    cap::HUB_MEMBER,
 ];
 
 /// What `hello` advertises on this platform: [`caps`] on Linux, the part
@@ -475,7 +477,8 @@ fn dispatch(shared: &Shared, session: &mut Session, req: &Request) -> Result<Res
         let client: String = h.client.chars().filter(|c| !c.is_control()).take(80).collect();
         session.client = client.clone();
         // The node's own units (link, check runner, helpers) connect often.
-        if crate::compat::is_unit(&session.uid, "checker") && client.starts_with("nightgrid-node") {
+        let own = crate::compat::is_unit(&session.uid, "checker") || crate::compat::is_unit(&session.uid, "peer");
+        if own && client.starts_with("nightgrid-node") {
             crate::debug!("hello from {client:?} as uid {} (protocol {v})", session.uid);
         } else {
             crate::info!("hello from {client:?} as uid {} (protocol {v})", session.uid);
@@ -841,8 +844,9 @@ fn dispatch(shared: &Shared, session: &mut Session, req: &Request) -> Result<Res
             Ok(Response::ok(0, l))
         }
         method::PEERS_REPORT => {
-            // Only the link unit, which runs as the service's own account.
-            if !crate::compat::is_self(&session.uid) {
+            // Only the link unit (the service's own account; on Windows
+            // its own service, `NT SERVICE\nightgrid-node-peer`).
+            if !crate::compat::is_unit(&session.uid, "peer") {
                 return Err(Response::err(0, ErrorCode::Forbidden, "only the node-to-node link may report"));
             }
             let r: nightgrid_node_proto::PeersReport = params(&req.params)?;
@@ -854,9 +858,9 @@ fn dispatch(shared: &Shared, session: &mut Session, req: &Request) -> Result<Res
             Ok(Response::ok(0, Value::Null))
         }
         method::PEERS_INBOUND => {
-            // Only the link, which runs as the service's own account and has
-            // checked the peer's certificate.
-            if !crate::compat::is_self(&session.uid) {
+            // Only the link (see peers.report), which has checked the
+            // peer's certificate.
+            if !crate::compat::is_unit(&session.uid, "peer") {
                 return Err(Response::err(0, ErrorCode::Forbidden, "only the node-to-node link may pass requests on"));
             }
             let p: nightgrid_node_proto::PeerInbound = params(&req.params)?;

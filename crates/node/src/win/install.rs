@@ -101,6 +101,29 @@ networks = [
   "fc00::/7",
   "fe80::/10",
 ]
+
+[peers]
+# The node-to-node link, off until an administrator runs
+#   nightgrid-node allow peers
+# Each node acts alone by default; the link lets nodes the app paired check
+# each other. A separate service runs it, with mutual TLS: a peer is
+# accepted only if the app gave this node its certificate fingerprint. It
+# may talk only to `networks` (run `allow peers` again after changing them
+# or the port).
+#
+# Where it listens: "tailnet" (this host's tailnet address), "lan" (this
+# host's LAN address; add the LAN to networks too), "ip:port", or "" to
+# only connect out. Never every interface.
+listen = "tailnet"
+# Port for "tailnet" and "lan".
+port = 7419
+networks = ["100.64.0.0/10", "fd7a:115c:a1e0::/48"]
+# What paired peers may ask this node: "ping" (version, host name, uptime),
+# "ups" (follow a peer's UPS shutdown; also needs [ups] shutdown here),
+# "sync" (let this node's hub read its history; read-only).
+serve = ["ping"]
+# Seconds between probes of each peer (30-3600).
+interval_secs = 60
 "#;
 
 pub(crate) fn report(action: &'static str) -> Report {
@@ -129,13 +152,10 @@ pub fn facts() -> crate::host::HostFacts {
 
 /// What the Windows node doesn't do yet (docs/WINDOWS.md), one sentence each.
 pub fn limits() -> Vec<String> {
-    [
-        "No node-to-node link or status page yet.",
-        "No rogue DHCP watch: Windows can't listen for DHCP without a packet capture driver.",
-    ]
-    .iter()
-    .map(|s| (*s).to_owned())
-    .collect()
+    ["No status page yet.", "No rogue DHCP watch: Windows can't listen for DHCP without a packet capture driver."]
+        .iter()
+        .map(|s| (*s).to_owned())
+        .collect()
 }
 
 pub fn preflight() -> Result<(), String> {
@@ -184,7 +204,7 @@ pub fn install(self_exe: &Path, opts: &InstallOptions) -> Result<Report, String>
         // The helpers and the check runner run the same exe; the helpers
         // start again when next needed, the runner at the end.
         super::helper::stop_all()?;
-        super::checker::stop()?;
+        super::unit::stop_all()?;
     }
     if same {
         step(&mut rep, format!("{} already in place", bin.display()));
@@ -280,11 +300,8 @@ pub fn install(self_exe: &Path, opts: &InstallOptions) -> Result<Report, String>
         scm::start(SERVICE, Duration::from_secs(30))?;
         wait_answering(Duration::from_secs(20))?;
         step(&mut rep, "started the service; it answers on its pipe");
-        if !same && super::checker::installed() {
-            match super::checker::start_if_installed() {
-                Ok(()) => step(&mut rep, "started the check runner again"),
-                Err(e) => rep.warnings.push(format!("check runner: {e}")),
-            }
+        if !same {
+            super::unit::start_installed(&mut rep);
         }
     }
     if !rep.users.is_empty() {
@@ -297,9 +314,7 @@ pub fn install(self_exe: &Path, opts: &InstallOptions) -> Result<Report, String>
 pub fn uninstall(purge: bool) -> Result<Report, String> {
     preflight()?;
     let mut rep = report("uninstall");
-    if super::checker::installed() {
-        super::checker::remove(&mut rep);
-    }
+    super::unit::remove_all(&mut rep);
     super::helper::remove(&mut rep);
     scm::stop(SERVICE, Duration::from_secs(30))?;
     for sid in [PERF_USERS, super::EVENT_LOG_READERS] {
