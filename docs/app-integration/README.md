@@ -43,6 +43,7 @@ The Nightgrid app repository is developed elsewhere and is read-only from here. 
 | [0037 · Windows node W3d: node-to-node link](0037-windows-node-link.md) | 0.42.0 (W3d) | proposed |
 | [0038 · Windows node W3e: status page](0038-windows-node-status-page.md) | 0.43.0 (W3e) | proposed |
 | [0039 · Windows node W3f: jobs and backups](0039-windows-node-jobs.md) | 0.44.0 (W3f) | proposed |
+| [0040 · Hub: the app's profile, sealed, store-and-forward](0040-hub-profile-store.md) | 0.45.0 | proposed (issue #50) |
 
 Rules every spec follows:
 

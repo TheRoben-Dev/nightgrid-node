@@ -27,6 +27,8 @@ pub struct Hub {
     pub store: Mutex<Store>,
     pub identity: NodeIdentity,
     pub collector: Mutex<CollectorState>,
+    /// Pushes per profile this minute (`profile` 1).
+    pub profile_rate: crate::profile::RateLimit,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -45,7 +47,13 @@ impl Hub {
             hostname: hostname(),
             arch: std::env::consts::ARCH.into(),
         };
-        Self { config, store: Mutex::new(store), identity, collector: Mutex::default() }
+        Self {
+            config,
+            store: Mutex::new(store),
+            identity,
+            collector: Mutex::default(),
+            profile_rate: Default::default(),
+        }
     }
 
     pub fn store(&self) -> std::sync::MutexGuard<'_, Store> {

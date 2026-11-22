@@ -175,6 +175,10 @@ fn run(a: &Args) -> Result<(), String> {
                     if n > 0 {
                         nightgrid_node::info!("pruned {n} old rows");
                     }
+                    let t = nightgrid_hub::profile::prune(&h, now)?;
+                    if t > 0 {
+                        nightgrid_node::info!("pruned {t} old profile tombstones");
+                    }
                     if capped {
                         let since = h.store().minutes_since().ok().flatten().unwrap_or(now);
                         let ev = serde_json::json!({"seq": 0, "at": now, "kind": "other", "level": "warn",

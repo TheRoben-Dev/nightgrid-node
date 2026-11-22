@@ -2198,10 +2198,121 @@ pub mod hub {
         pub const PLAN: &str = "fleet.plan";
         /// Internal: the collector's results.
         pub const INGEST: &str = "fleet.ingest";
+        /// `profile` 1 (0.45.0): the app's sealed profile, store-and-forward.
+        pub const PROFILE_LIST: &str = "profile.list";
+        pub const PROFILE_INFO: &str = "profile.info";
+        pub const PROFILE_PUSH: &str = "profile.push";
+        pub const PROFILE_PULL: &str = "profile.pull";
+        pub const PROFILE_DROP: &str = "profile.drop";
     }
 
     pub mod cap {
         pub const FLEET: &str = "fleet";
+        /// The app's sealed profile (0.45.0).
+        pub const PROFILE: &str = "profile";
+    }
+
+    /// One sealed profile item as the app pushes it. The hub never reads
+    /// `blob`; it only compares `modified` (last write wins).
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    pub struct ProfileRecord {
+        pub tbl: String,
+        pub uid: String,
+        /// Unix ms of the item's last edit.
+        pub modified: i64,
+        #[serde(default)]
+        pub deleted: bool,
+        /// The item sealed by the app (base64 or base64url), optional on a
+        /// tombstone.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub blob: Option<String>,
+    }
+
+    /// A record as `profile.pull` returns it: with the hub's `seq`.
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    pub struct ProfilePulled {
+        pub seq: i64,
+        #[serde(flatten)]
+        pub record: ProfileRecord,
+    }
+
+    /// `profile.info` / `profile.drop` params.
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    pub struct ProfileId {
+        pub profile_id: String,
+    }
+
+    /// `profile.push` params.
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    pub struct ProfilePush {
+        pub profile_id: String,
+        /// Free text naming the pushing device, shown in `profile.info`.
+        #[serde(default)]
+        pub device: Option<String>,
+        pub records: Vec<ProfileRecord>,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    pub struct ProfilePushResult {
+        /// Records stored (newer than the hub's copy).
+        pub accepted: u32,
+        /// Records dropped as older than, or the same as, the hub's copy.
+        pub ignored: u32,
+        /// The profile's newest `seq` after the push.
+        pub seq: i64,
+    }
+
+    /// `profile.pull` params.
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    pub struct ProfilePull {
+        pub profile_id: String,
+        #[serde(default)]
+        pub after: i64,
+        #[serde(default)]
+        pub limit: Option<u32>,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    pub struct ProfilePullResult {
+        /// Oldest `seq` first.
+        pub records: Vec<ProfilePulled>,
+        /// The cursor for the next call.
+        pub next: i64,
+        pub more: bool,
+        /// `after` is older than tombstones the hub has pruned: pull again
+        /// from 0 to be sure nothing deleted lingers.
+        pub resync: bool,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    pub struct ProfileInfo {
+        pub profile_id: String,
+        /// Live items (not tombstones).
+        pub items: u64,
+        pub tombstones: u64,
+        pub bytes: u64,
+        pub max_bytes: u64,
+        /// Newest `seq`; 0 for an empty profile.
+        pub seq: i64,
+        /// Unix seconds of the last push that stored something.
+        pub last_push: Option<i64>,
+        pub last_device: Option<String>,
+        /// Tombstones up to this `seq` were pruned.
+        pub pruned_through: i64,
+    }
+
+    #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    pub struct ProfileList {
+        pub profiles: Vec<ProfileInfo>,
     }
 
     /// One member, as the app gives it (`fleet.members.set`). Same fields

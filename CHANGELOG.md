@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.45.0 · Hub holds the app's profile (2026-11-22)
+
+Additive only: no frozen method, field, frame or link request changed, and `fleet` 1 is unchanged. App spec [0040](docs/app-integration/0040-hub-profile-store.md). Decision N-096. Issue #50.
+
+- **`profile` 1 on the hub socket**: `profile.list`, `profile.info`, `profile.push`, `profile.pull`, `profile.drop`. The hub keeps the Nightgrid app's profile as opaque records `(profileId, tbl, uid) → {modified, deleted, blob}`, sealed by the app, so a fresh app install can import everything from the hub and devices that are never open at the same time stay in sync through it.
+- **End to end**: the hub never reads `blob`. It applies last write wins (`modified`, then a tombstone, then the larger blob), so a replayed old push changes nothing; pushes are all or nothing.
+- Pulls page by a per-profile `seq` (500 by default, at most 2000 records or about 3 MiB), with `resync` when a cursor predates pruned tombstones.
+- New root-owned `[profile]` section: `enabled`, `max_mb` (32), `max_profiles` (8), `tombstone_days` (90), `pushes_per_minute` (60). Tombstones are pruned hourly with the rest of the store.
+- Reached over SSH like `fleet`; the hub's main unit still has no network socket.
+- `ci/hub-test.sh` pushes, replays, pulls, lists and drops a profile through the installed hub.
+
 ## 0.44.0 · W3f: jobs and backups on Windows (2026-11-21)
 
 Additive only: no frozen method, field, frame or link request changed. A Windows node now also advertises `jobs`. App spec [0039](docs/app-integration/0039-windows-node-jobs.md). Decision N-095.
