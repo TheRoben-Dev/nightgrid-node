@@ -676,6 +676,45 @@ The sockets listening on this host at the last read (every 15 s, `[ports] interv
 
 `fleet.plan` and `fleet.ingest` are internal (the collector's); only the hub's own account may call them.
 
+## Hub socket (`profile` 1, 0.45.0)
+
+The Nightgrid app's profile (hosts, groups, services, dashboards, notes, alert rules, shared settings), held for apps that are never open at the same time. `hello` lists `profile` 1 unless root set `[profile] enabled = false` (then every `profile.*` method answers `capability disabled`). The app seals every item before it sends it; the hub never reads `blob`. App spec [0040](app-integration/0040-hub-profile-store.md).
+
+Common rules:
+
+- `profileId`: 8-64 characters of `A-Z a-z 0-9 _ -`, chosen by the app (for example a hash of the profile's public id). Several profiles may share a hub (at most `[profile] max_profiles`, 8 by default).
+- A record is `{"tbl", "uid", "modified", "deleted", "blob"}`. `tbl` (1-64) and `uid` (1-128) take letters, digits and `_ - . : + / =`, so table names, UUIDs, hex or base64 hashes all fit. `modified` is unix milliseconds of the item's last edit. `blob` is the sealed item in base64 or base64url (at most 1 MiB); required unless `deleted` is true.
+- **Last write wins on the hub too.** A pushed record replaces the hub's copy only if `(modified, deleted, blob)` is greater: newer `modified` first, then a tombstone over an item at the same time, then the bytewise larger blob. An equal or older record is ignored, so replaying an old push changes nothing.
+
+### `profile.list`
+
+`{"profiles": [<info>, …]}`: every profile the hub holds, oldest first. A fresh app uses it to offer "Import from hub".
+
+### `profile.info`
+
+`{"profileId"}` → 
+
+```json
+{"profileId": "…", "items": 412, "tombstones": 9, "bytes": 1843200, "maxBytes": 33554432, "seq": 1290,
+ "lastPush": 1763290000, "lastDevice": "desktop", "prunedThrough": 0}
+```
+
+An unknown profile answers as an empty one (`seq` 0, `lastPush` null). `lastPush` is unix seconds of the last push that stored something; `lastDevice` is that push's `device` (free text, at most 80 characters).
+
+### `profile.push`
+
+`{"profileId", "device", "records": [<record>, …]}` (at most 1000 records, and the line's 4 MiB) → `{"accepted", "ignored", "seq"}`. All or nothing: if the profile would pass `[profile] max_mb` (32 by default), or it is new and the hub already holds `max_profiles`, nothing is stored and the answer is `too large` with the reason. More than `[profile] pushes_per_minute` (60) pushes to one profile in a minute: `bad request` "rate limited: …"; retry after a minute. A push that stores nothing never creates a profile.
+
+### `profile.pull`
+
+`{"profileId", "after", "limit"}` (`limit` 500 by default, at most 2000) → `{"records": [{"seq", "tbl", "uid", "modified", "deleted", "blob"}, …], "next", "more", "resync"}`. Records whose `seq` is greater than `after`, oldest first; each stored record gets the profile's next `seq`, so an edited item moves to the end and appears once. A page also stops at about 3 MiB of blobs (always at least one record). Keep `next` as the cursor; call again while `more`. `resync` is true when `after` is older than tombstones the hub has pruned: pull again from 0, since a delete may be missing from the pages since `after`.
+
+### `profile.drop`
+
+`{"profileId"}` → `{"dropped": true|false}`: removes the profile and every record.
+
+Tombstones whose `modified` is older than `[profile] tombstone_days` (90) are pruned hourly; the profile's `prunedThrough` records the highest `seq` pruned.
+
 ## Planned (not in version 1 yet)
 
 | Capability | Methods | Milestone |

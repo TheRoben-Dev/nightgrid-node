@@ -4,7 +4,7 @@
 
 use std::path::Path;
 
-use nightgrid_node_proto::hub::Member;
+use nightgrid_node_proto::hub::{Member, ProfileInfo, ProfilePulled, ProfilePushResult, ProfileRecord};
 use rusqlite::{params, Connection, OptionalExtension};
 use rusqlite_migration::{Migrations, M};
 use serde_json::Value;
@@ -19,8 +19,9 @@ pub const MAX_EVENTS: i64 = 5000;
 pub const EVENT_DAYS: i64 = 90;
 
 fn migrations() -> Migrations<'static> {
-    Migrations::new(vec![M::up(
-        "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+    Migrations::new(vec![
+        M::up(
+            "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
          CREATE TABLE members (
              id TEXT PRIMARY KEY, pos INTEGER NOT NULL, name TEXT NOT NULL, address TEXT NOT NULL,
              fingerprint TEXT NOT NULL, added INTEGER NOT NULL);
@@ -39,7 +40,42 @@ fn migrations() -> Migrations<'static> {
          CREATE TABLE disk (id TEXT NOT NULL, ts INTEGER NOT NULL, mount TEXT NOT NULL, row TEXT NOT NULL,
              PRIMARY KEY (id, ts, mount)) WITHOUT ROWID;
          CREATE TABLE hub_events (seq INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL, event TEXT NOT NULL);",
-    )])
+        ),
+        // 0.45.0: the app's sealed profile (`profile` 1). The hub never
+        // reads `blob`.
+        M::up(
+            "CREATE TABLE profiles (
+                 id TEXT PRIMARY KEY, seq INTEGER NOT NULL DEFAULT 0, bytes INTEGER NOT NULL DEFAULT 0,
+                 last_push INTEGER, last_device TEXT, pruned_through INTEGER NOT NULL DEFAULT 0,
+                 created INTEGER NOT NULL);
+             CREATE TABLE profile_items (
+                 profile TEXT NOT NULL, tbl TEXT NOT NULL, uid TEXT NOT NULL, seq INTEGER NOT NULL,
+                 modified INTEGER NOT NULL, deleted INTEGER NOT NULL, blob TEXT,
+                 PRIMARY KEY (profile, tbl, uid)) WITHOUT ROWID;
+             CREATE INDEX profile_items_seq ON profile_items (profile, seq);",
+        ),
+    ])
+}
+
+/// What one profile record counts against the cap.
+pub fn record_cost(tbl: &str, uid: &str, blob: Option<&str>) -> i64 {
+    (tbl.len() + uid.len() + blob.map_or(0, str::len) + 32) as i64
+}
+
+/// Why a push stored nothing.
+#[derive(Debug)]
+pub enum PushError {
+    /// The profile would pass its cap (bytes it would have).
+    TooLarge(i64),
+    /// A new profile, and the hub holds its most already.
+    TooMany,
+    Sql(rusqlite::Error),
+}
+
+impl From<rusqlite::Error> for PushError {
+    fn from(e: rusqlite::Error) -> Self {
+        Self::Sql(e)
+    }
 }
 
 pub struct Store {
@@ -400,6 +436,206 @@ impl Store {
             self.conn.execute_batch("PRAGMA incremental_vacuum")?;
         }
         Ok((n, capped))
+    }
+
+    // ---- the app's profile (0.45.0) ---------------------------------------------------
+
+    pub fn profile_ids(&self) -> Result<Vec<String>> {
+        let mut st = self.conn.prepare("SELECT id FROM profiles ORDER BY created, id")?;
+        let r = st.query_map([], |r| r.get(0))?;
+        r.collect()
+    }
+
+    pub fn profile_info(&self, id: &str, max_bytes: u64) -> Result<Option<ProfileInfo>> {
+        let row = self
+            .conn
+            .query_row(
+                "SELECT seq, bytes, last_push, last_device, pruned_through FROM profiles WHERE id = ?1",
+                [id],
+                |r| {
+                    Ok((
+                        r.get::<_, i64>(0)?,
+                        r.get::<_, i64>(1)?,
+                        r.get::<_, Option<i64>>(2)?,
+                        r.get::<_, Option<String>>(3)?,
+                        r.get::<_, i64>(4)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let Some((seq, bytes, last_push, last_device, pruned_through)) = row else { return Ok(None) };
+        let (items, tombstones): (i64, i64) = self.conn.query_row(
+            "SELECT COALESCE(SUM(deleted = 0), 0), COALESCE(SUM(deleted != 0), 0) FROM profile_items WHERE profile = ?1",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        Ok(Some(ProfileInfo {
+            profile_id: id.to_owned(),
+            items: items as u64,
+            tombstones: tombstones as u64,
+            bytes: bytes as u64,
+            max_bytes,
+            seq,
+            last_push,
+            last_device,
+            pruned_through,
+        }))
+    }
+
+    /// Stores each record that is newer than the hub's copy (last write
+    /// wins: `modified`, then a tombstone over an item, then the larger
+    /// blob, so every copy settles on the same winner). All or nothing.
+    pub fn profile_push(
+        &mut self,
+        id: &str,
+        device: Option<&str>,
+        records: &[ProfileRecord],
+        now: i64,
+        max_bytes: u64,
+        max_profiles: usize,
+    ) -> std::result::Result<ProfilePushResult, PushError> {
+        let tx = self.conn.transaction()?;
+        let row: Option<(i64, i64)> = tx
+            .query_row("SELECT seq, bytes FROM profiles WHERE id = ?1", [id], |r| Ok((r.get(0)?, r.get(1)?)))
+            .optional()?;
+        let (mut seq, mut bytes) = match row {
+            Some(r) => r,
+            None => {
+                let n: i64 = tx.query_row("SELECT COUNT(*) FROM profiles", [], |r| r.get(0))?;
+                if n as usize >= max_profiles {
+                    return Err(PushError::TooMany);
+                }
+                (0, 0)
+            }
+        };
+        let (mut accepted, mut ignored) = (0u32, 0u32);
+        {
+            let mut get = tx.prepare_cached(
+                "SELECT modified, deleted, blob FROM profile_items WHERE profile = ?1 AND tbl = ?2 AND uid = ?3",
+            )?;
+            let mut put = tx.prepare_cached(
+                "INSERT INTO profile_items (profile, tbl, uid, seq, modified, deleted, blob)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                 ON CONFLICT(profile, tbl, uid) DO UPDATE SET seq = excluded.seq, modified = excluded.modified,
+                     deleted = excluded.deleted, blob = excluded.blob",
+            )?;
+            for r in records {
+                let old: Option<(i64, bool, Option<String>)> = get
+                    .query_row(params![id, r.tbl, r.uid], |x| Ok((x.get(0)?, x.get::<_, i64>(1)? != 0, x.get(2)?)))
+                    .optional()?;
+                if let Some((m, d, b)) = &old {
+                    if (r.modified, r.deleted, r.blob.as_deref()) <= (*m, *d, b.as_deref()) {
+                        ignored += 1;
+                        continue;
+                    }
+                    bytes -= record_cost(&r.tbl, &r.uid, b.as_deref());
+                }
+                bytes += record_cost(&r.tbl, &r.uid, r.blob.as_deref());
+                seq += 1;
+                put.execute(params![id, r.tbl, r.uid, seq, r.modified, i64::from(r.deleted), r.blob])?;
+                accepted += 1;
+            }
+        }
+        if bytes > max_bytes as i64 {
+            return Err(PushError::TooLarge(bytes));
+        }
+        if accepted == 0 {
+            // Nothing new: don't create an empty profile or touch the times.
+            return Ok(ProfilePushResult { accepted, ignored, seq });
+        }
+        tx.execute(
+            "INSERT INTO profiles (id, seq, bytes, last_push, last_device, created) VALUES (?1, ?2, ?3, ?4, ?5, ?4)
+             ON CONFLICT(id) DO UPDATE SET seq = excluded.seq, bytes = excluded.bytes,
+                 last_push = excluded.last_push, last_device = excluded.last_device",
+            params![id, seq, bytes, now, device],
+        )?;
+        tx.commit()?;
+        Ok(ProfilePushResult { accepted, ignored, seq })
+    }
+
+    /// Records with `seq > after`, oldest first, at most `limit` and about
+    /// `max_bytes` of blobs (always at least one). Also whether there are
+    /// more, and the profile's `pruned_through`.
+    pub fn profile_pull(
+        &self,
+        id: &str,
+        after: i64,
+        limit: usize,
+        max_bytes: usize,
+    ) -> Result<(Vec<ProfilePulled>, bool, i64)> {
+        let pruned: i64 = self
+            .conn
+            .query_row("SELECT pruned_through FROM profiles WHERE id = ?1", [id], |r| r.get(0))
+            .optional()?
+            .unwrap_or(0);
+        let mut st = self.conn.prepare_cached(
+            "SELECT seq, tbl, uid, modified, deleted, blob FROM profile_items
+             WHERE profile = ?1 AND seq > ?2 ORDER BY seq LIMIT ?3",
+        )?;
+        let rows = st.query_map(params![id, after, limit as i64 + 1], |r| {
+            Ok(ProfilePulled {
+                seq: r.get(0)?,
+                record: ProfileRecord {
+                    tbl: r.get(1)?,
+                    uid: r.get(2)?,
+                    modified: r.get(3)?,
+                    deleted: r.get::<_, i64>(4)? != 0,
+                    blob: r.get(5)?,
+                },
+            })
+        })?;
+        let mut out = Vec::new();
+        let mut size = 0usize;
+        let mut more = false;
+        for r in rows {
+            let r = r?;
+            let cost = record_cost(&r.record.tbl, &r.record.uid, r.record.blob.as_deref()) as usize;
+            if out.len() >= limit || (!out.is_empty() && size + cost > max_bytes) {
+                more = true;
+                break;
+            }
+            size += cost;
+            out.push(r);
+        }
+        Ok((out, more, pruned))
+    }
+
+    pub fn profile_drop(&mut self, id: &str) -> Result<bool> {
+        let tx = self.conn.transaction()?;
+        tx.execute("DELETE FROM profile_items WHERE profile = ?1", [id])?;
+        let n = tx.execute("DELETE FROM profiles WHERE id = ?1", [id])?;
+        tx.commit()?;
+        Ok(n > 0)
+    }
+
+    /// Drops tombstones last modified before `cutoff_ms`; returns how many.
+    pub fn profile_prune(&mut self, cutoff_ms: i64) -> Result<usize> {
+        let tx = self.conn.transaction()?;
+        let ids: Vec<String> = {
+            let mut st = tx.prepare("SELECT id FROM profiles")?;
+            let r = st.query_map([], |r| r.get(0))?.collect::<Result<Vec<String>>>()?;
+            r
+        };
+        let mut n = 0;
+        for id in ids {
+            let (top, cost): (Option<i64>, i64) = tx.query_row(
+                "SELECT MAX(seq), COALESCE(SUM(LENGTH(tbl) + LENGTH(uid) + COALESCE(LENGTH(blob), 0) + 32), 0)
+                 FROM profile_items WHERE profile = ?1 AND deleted != 0 AND modified < ?2",
+                params![id, cutoff_ms],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )?;
+            let Some(top) = top else { continue };
+            n += tx.execute(
+                "DELETE FROM profile_items WHERE profile = ?1 AND deleted != 0 AND modified < ?2",
+                params![id, cutoff_ms],
+            )?;
+            tx.execute(
+                "UPDATE profiles SET bytes = MAX(0, bytes - ?2), pruned_through = MAX(pruned_through, ?3) WHERE id = ?1",
+                params![id, cost, top],
+            )?;
+        }
+        tx.commit()?;
+        Ok(n)
     }
 
     /// Oldest minute point across members, for the overview after a cap.

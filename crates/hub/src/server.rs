@@ -2,7 +2,9 @@
 
 use std::sync::Arc;
 
-use nightgrid_node_proto::hub::{cap, method as hm, IngestBatch, Members, SyncParams};
+use nightgrid_node_proto::hub::{
+    cap, method as hm, IngestBatch, Members, ProfileId, ProfilePull, ProfilePush, SyncParams,
+};
 use nightgrid_node_proto::{
     method, negotiate, Caps, CursorParams, ErrorCode, Hello, Request, Response, Welcome, MAX_LINE, PROTO_MIN,
     PROTO_VERSION,
@@ -12,9 +14,14 @@ use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
 use crate::fleet::{self, Hub};
+use crate::profile;
 
-pub fn caps() -> Caps {
-    [(cap::FLEET.to_owned(), 1)].into_iter().collect()
+pub fn caps(hub: &Hub) -> Caps {
+    let mut c: Caps = [(cap::FLEET.to_owned(), 1)].into_iter().collect();
+    if hub.config.profile.enabled {
+        c.insert(cap::PROFILE.to_owned(), 1);
+    }
+    c
 }
 
 #[derive(Debug, Default)]
@@ -36,6 +43,13 @@ fn internal(e: impl std::fmt::Display) -> Response {
 fn own_uid(session: &Session) -> bool {
     // SAFETY: geteuid has no preconditions.
     session.uid.parse::<u32>().ok() == Some(unsafe { libc::geteuid() })
+}
+
+fn profile_err((c, m): (ErrorCode, String)) -> Response {
+    if c == ErrorCode::Internal {
+        return internal(m);
+    }
+    Response::err(0, c, m)
 }
 
 pub fn handle_line(hub: &Hub, session: &mut Session, line: &[u8]) -> Response {
@@ -67,7 +81,7 @@ fn dispatch(hub: &Hub, session: &mut Session, req: &Request) -> Result<Response,
         } else {
             nightgrid_node::info!("hello from {client:?} as uid {} (protocol {v})", session.uid);
         }
-        return Ok(Response::ok(0, Welcome { proto: v, node: hub.identity.clone(), caps: caps() }));
+        return Ok(Response::ok(0, Welcome { proto: v, node: hub.identity.clone(), caps: caps(hub) }));
     }
     if session.proto.is_none() {
         return Err(Response::err(0, ErrorCode::HelloRequired, "send hello first"));
@@ -110,6 +124,36 @@ fn dispatch(hub: &Hub, session: &mut Session, req: &Request) -> Result<Response,
             }
             let b: IngestBatch = params(&req.params)?;
             fleet::ingest(hub, b, now).map(|_| Response::ok(0, Value::Null)).map_err(internal)
+        }
+        hm::PROFILE_LIST => profile::list(hub).map(|v| Response::ok(0, v)).map_err(profile_err),
+        hm::PROFILE_INFO => {
+            let p: ProfileId = params(&req.params)?;
+            profile::info(hub, &p).map(|v| Response::ok(0, v)).map_err(profile_err)
+        }
+        hm::PROFILE_PUSH => {
+            let p: ProfilePush = params(&req.params)?;
+            let r = profile::push(hub, &p, now).map_err(profile_err)?;
+            if r.accepted > 0 {
+                nightgrid_node::debug!(
+                    "profile push by uid {}: {} stored, {} ignored",
+                    session.uid,
+                    r.accepted,
+                    r.ignored
+                );
+            }
+            Ok(Response::ok(0, r))
+        }
+        hm::PROFILE_PULL => {
+            let p: ProfilePull = params(&req.params)?;
+            profile::pull(hub, &p).map(|v| Response::ok(0, v)).map_err(profile_err)
+        }
+        hm::PROFILE_DROP => {
+            let p: ProfileId = params(&req.params)?;
+            let dropped = profile::drop(hub, &p).map_err(profile_err)?;
+            if dropped {
+                nightgrid_node::info!("profile {} dropped by uid {}", p.profile_id, session.uid);
+            }
+            Ok(Response::ok(0, serde_json::json!({ "dropped": dropped })))
         }
         m => Err(Response::err(0, ErrorCode::UnknownMethod, format!("unknown method {m:?}"))),
     }
@@ -192,6 +236,16 @@ mod tests {
         let w = call(&h, &mut s, method::HELLO, json!({"protoMin": 1, "protoMax": 2, "client": "test"}));
         let w: Welcome = serde_json::from_value(w.result_value().unwrap()).unwrap();
         assert_eq!((w.caps.get("fleet"), w.node.node_id.len()), (Some(&1), 32));
+        assert_eq!(w.caps.get("profile"), Some(&1));
+        let p = json!({"profileId": "p-0123456789abcdef", "device": "desk",
+                       "records": [{"tbl": "hosts", "uid": "u1", "modified": 5, "blob": "c2VhbGVk"}]});
+        let r = call(&h, &mut s, hm::PROFILE_PUSH, p.clone());
+        assert_eq!(r.result_value().unwrap()["accepted"], 1);
+        assert_eq!(call(&h, &mut s, hm::PROFILE_PUSH, p).result_value().unwrap()["ignored"], 1, "replay");
+        let r = call(&h, &mut s, hm::PROFILE_PULL, json!({"profileId": "p-0123456789abcdef", "after": 0}));
+        let v = r.result_value().unwrap();
+        assert_eq!((v["records"][0]["seq"].as_i64(), v["records"][0]["blob"].as_str()), (Some(1), Some("c2VhbGVk")));
+        assert_eq!(v["records"][0]["deleted"], false);
         assert!(call(&h, &mut s, hm::OVERVIEW, Value::Null).error.is_none());
         let r = call(&h, &mut s, hm::INGEST, json!({"fingerprint": "", "answers": []}));
         assert_eq!(r.error.unwrap().code, ErrorCode::Forbidden);

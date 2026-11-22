@@ -16,6 +16,29 @@ pub struct Config {
     pub store: StoreConfig,
     pub collect: CollectConfig,
     pub alerts: AlertsConfig,
+    pub profile: ProfileConfig,
+}
+
+/// `[profile]` (0.45.0): the app's sealed profile, kept for store-and-forward.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ProfileConfig {
+    /// Offer `profile` 1 on the socket.
+    pub enabled: bool,
+    /// Cap per profile in MB (1-1024).
+    pub max_mb: u32,
+    /// Most profiles kept (1-64).
+    pub max_profiles: u32,
+    /// Days a deleted item's tombstone is kept (7-3650).
+    pub tombstone_days: u32,
+    /// Most pushes per profile per minute (1-600).
+    pub pushes_per_minute: u32,
+}
+
+impl Default for ProfileConfig {
+    fn default() -> Self {
+        Self { enabled: true, max_mb: 32, max_profiles: 8, tombstone_days: 90, pushes_per_minute: 60 }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -116,6 +139,19 @@ impl Config {
         }
         if !(1..=256).contains(&self.server.max_connections) {
             return Err("server.max_connections must be 1-256".into());
+        }
+        let p = &self.profile;
+        if !(1..=1024).contains(&p.max_mb) {
+            return Err("profile.max_mb must be 1-1024".into());
+        }
+        if !(1..=64).contains(&p.max_profiles) {
+            return Err("profile.max_profiles must be 1-64".into());
+        }
+        if !(7..=3650).contains(&p.tombstone_days) {
+            return Err("profile.tombstone_days must be 7-3650".into());
+        }
+        if !(1..=600).contains(&p.pushes_per_minute) {
+            return Err("profile.pushes_per_minute must be 1-600".into());
         }
         let entries = self.collect.listen.entries();
         if entries.len() > 8 {
@@ -233,6 +269,21 @@ interval_secs = 60
 [alerts]
 # A member that hasn't answered the hub for this long is offline (60-3600).
 offline_secs = 120
+
+[profile]
+# Holds the Nightgrid app's profile (hosts, services, dashboards, notes) for
+# apps that are never open at the same time. The app seals every item before
+# it leaves (end-to-end encrypted): the hub stores ciphertext it can't read.
+# Off: `profile` is not offered and nothing is stored.
+enabled = true
+# Cap per profile in MB, and most profiles kept.
+max_mb = 32
+max_profiles = 8
+# Days a deleted item's tombstone is kept, so devices that were away learn of
+# the delete.
+tombstone_days = 90
+# Most pushes per profile per minute.
+pushes_per_minute = 60
 "#;
 
 #[cfg(test)]

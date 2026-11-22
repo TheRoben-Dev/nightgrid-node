@@ -85,6 +85,18 @@ hfp=$(json 'd["fingerprint"]' </tmp/ngh-allow.json)
 [ "$(json '",".join(d.get("listenAll", []))' </tmp/ngh-allow.json)" = 127.0.0.1:17420,127.0.0.2:17420 ] || fail "collector not on both addresses"
 h fleet.overview | grep -q '"listenAll":\["127.0.0.1:17420","127.0.0.2:17420"\]' || fail "overview lacks listenAll"
 
+say "profile 1: sealed records, last write wins, replay ignored"
+h hello '{"protoMin":1,"protoMax":2,"client":"ci"}' | grep -q '"profile":1' || fail "hub does not offer profile"
+pid_='"profileId":"ci-profile-0001"'
+rec='{"tbl":"hosts","uid":"u1","modified":1000,"blob":"c2VhbGVkLWNpcGhlcnRleHQ"}'
+h profile.push "{$pid_,\"device\":\"ci\",\"records\":[$rec]}" | grep -q '"accepted":1' || fail "profile push"
+h profile.push "{$pid_,\"records\":[$rec]}" | grep -q '"ignored":1' || fail "profile replay was stored"
+h profile.push "{$pid_,\"records\":[{\"tbl\":\"hosts\",\"uid\":\"u1\",\"modified\":999,\"blob\":\"b2xk\"}]}" | grep -q '"ignored":1' || fail "older edit won"
+h profile.pull "{$pid_,\"after\":0}" | grep -q '"blob":"c2VhbGVkLWNpcGhlcnRleHQ"' || fail "profile pull"
+h profile.info "{$pid_}" | grep -q '"items":1' || fail "profile info"
+h profile.list | grep -q 'ci-profile-0001' || fail "profile list"
+h profile.drop "{$pid_}" | grep -q '"dropped":true' || fail "profile drop"
+
 say "pairing: the node names the hub but serves nothing until root adds sync"
 q peers.set "{\"peers\":[{\"id\":\"$hid\",\"name\":\"hub\",\"address\":\"127.0.0.1:17420\",\"fingerprint\":\"$hfp\"}]}" >/dev/null
 q hub.member.set "{\"hubId\":\"$hid\"}" | grep -q "$hid" || fail "hub.member.set"
